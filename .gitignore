@@ -22,3 +22,6 @@ env/
 # Build / data (uncomment if you don't want to track)
 # dist/
 # *.zip
+
+# 上傳暫存（後端儲存的 ZIP）
+storage/
