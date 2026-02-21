@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+python-multipart
 psycopg2-binary
 requests
 # google-generativeai  # 若要用 Gemini 請取消註解
