@@ -89,31 +89,33 @@ def generate_question(
 
         sys_role = "你是頂尖的空間分析助教。請使用 GPT-4o 的強大邏輯來出題。"
         r_rules = """⚠️ 嚴格限制：
-1. 實作內容必須限定使用 **R 語言** (例如使用 sf, terra, tmap, tidyverse 等套件)。
-2. 🚫 禁止提及 "ArcGIS", "QGIS" 或通用的 "GIS 軟體" 字眼。
-3. 題目應引導學生寫出 R 程式碼來解決問題。
-4. **請務必使用繁體中文 (Traditional Chinese) 出題。**"""
+            1. 實作內容必須限定使用 **R 語言** (例如使用 sf, terra, tmap, tidyverse 等套件)。
+            2. 🚫 禁止提及 "ArcGIS", "QGIS" 或通用的 "GIS 軟體" 字眼。
+            3. 題目應引導學生寫出 R 程式碼來解決問題。
+            4. **請務必使用繁體中文 (Traditional Chinese) 出題。**
+        """
 
         system_instruction = f"""你必須從提供的「真實檔案列表」中選擇一個檔案來設計操作任務。
-真實檔案列表: [{file_names_str}]
-(若選擇 Shapefile，請只提及 .shp 檔，不要提及 .dbf 或 .shx)
-{r_rules}
-【出題重要規範】
-1. 在 'question_content' (題目) 中：只說明**任務目標**與**使用資料**。❌ 嚴禁直接列出步驟 1, 2, 3。請保留思考空間給學生。
-2. 在 'hint' (提示) 中：才列出詳細的解題步驟、建議使用的 R 套件與函數。"""
+            真實檔案列表: [{file_names_str}]
+            (若選擇 Shapefile，請只提及 .shp 檔，不要提及 .dbf 或 .shx)
+            {r_rules}
+            【出題重要規範】
+            1. 在 'question_content' (題目) 中：只說明**任務目標**與**使用資料**。❌ 嚴禁直接列出步驟 1, 2, 3。請保留思考空間給學生。
+            2. 在 'hint' (提示) 中：才列出詳細的解題步驟、建議使用的 R 套件與函數。
+        """
 
         task_instruction = f"目前的題型任務是：【{qtype}】。難度：{level}。"
         core_point = "🔥 **本次題目核心考點：請根據以下參考講義內容設計**"
 
         final_system_prompt = f"""
-{sys_role}
-{task_instruction}
-{core_point}
-(Please design the question around the core concept above.)
-{system_instruction}
-請以 JSON 格式回傳：
-{{ "question_content": "Question content (Markdown)...", "hint": "Hint for students...", "target_filename": "AI選擇的檔案名稱" }}
-"""
+            {sys_role}
+            {task_instruction}
+            {core_point}
+            (Please design the question around the core concept above.)
+            {system_instruction}
+            請以 JSON 格式回傳：
+            {{ "question_content": "Question content (Markdown)...", "hint": "Hint for students...", "target_filename": "AI選擇的檔案名稱" }}
+        """
         user_prompt_text = f"參考講義內容：\n{context_text}"
 
         client = OpenAI(api_key=api_key)
