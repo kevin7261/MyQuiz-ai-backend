@@ -25,6 +25,14 @@ class PackRequest(BaseModel):
     openai_api_key: str | None = None  # with_rag=True 時必填，用於 Embedding（不從環境變數讀取）
 
 
+class GenerateQuestionRequest(BaseModel):
+    """指定 RAG ZIP 的 file_id 與出題參數（由 API 傳入 openai_api_key）。"""
+    file_id: str  # 使用者選擇的 RAG zip 的 file_id（pack 回傳的 rag_file_id）
+    openai_api_key: str  # 用於 GPT-4o 出題，不從環境變數讀取
+    qtype: str  # 題型
+    level: str  # 難度
+
+
 @router.post("/second-folders")
 async def get_zip_second_folders(file: UploadFile = File(...)):
     """
@@ -119,3 +127,32 @@ def pack_folders(request: Request, body: PackRequest):
         outputs.append(item)
 
     return {"source_file_id": body.file_id, "outputs": outputs}
+
+
+@router.post("/generate-question")
+def generate_question_api(body: GenerateQuestionRequest):
+    """
+    依使用者選擇的 RAG ZIP（file_id）載入向量庫 → 檢索 Context → 呼叫 GPT-4o 生成題目。
+    需傳入 openai_api_key、題型 qtype、難度 level。回傳 JSON：question_content, hint, target_filename。
+    """
+    path = get_zip_path(body.file_id)
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="找不到該 RAG ZIP，請確認 file_id（可為 pack 回傳的 rag_file_id）")
+
+    api_key = (body.openai_api_key or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="請傳入 openai_api_key")
+
+    try:
+        from utils.question_gen import generate_question
+        result = generate_question(
+            path,
+            api_key=api_key,
+            qtype=body.qtype,
+            level=body.level,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

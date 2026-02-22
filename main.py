@@ -1,3 +1,8 @@
+import os
+
+# 避免 FAISS/NumPy 等載入時出現多份 OpenMP runtime 的 OMP Error #15（macOS 常見）
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
