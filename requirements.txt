@@ -3,4 +3,11 @@ uvicorn
 python-multipart
 psycopg2-binary
 requests
+# RAG（with_rag=True 時需要）
+langchain-text-splitters
+langchain-openai
+langchain-community
+langchain-core
+faiss-cpu
+pypdf
 # google-generativeai  # 若要用 Gemini 請取消註解

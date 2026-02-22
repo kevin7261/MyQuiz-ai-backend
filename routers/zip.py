@@ -1,8 +1,10 @@
 """ZIP 相關 API 路由。"""
 
 import io
+import os
 import zipfile
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from utils.zip_utils import (
@@ -10,7 +12,7 @@ from utils.zip_utils import (
     build_folder_map,
     repack_tasks_to_zips,
 )
-from utils.storage import save_zip, get_zip_path
+from utils.storage import save_zip, get_zip_path, get_zip_filename
 
 router = APIRouter(prefix="/zip", tags=["zip"])
 
@@ -19,6 +21,8 @@ class PackRequest(BaseModel):
     """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。"""
     file_id: str
     tasks: str  # 例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
+    with_rag: bool = False  # 若 True，每個壓縮檔都會再做成 RAG（FAISS）ZIP，並回傳下載連結
+    openai_api_key: str | None = None  # with_rag=True 時必填，用於 Embedding（不從環境變數讀取）
 
 
 @router.post("/second-folders")
@@ -50,13 +54,24 @@ async def get_zip_second_folders(file: UploadFile = File(...)):
     }
 
 
+@router.get("/download/{file_id}")
+def download_zip(file_id: str):
+    """
+    依 file_id 下載已儲存的 ZIP 檔。下載連結可供 pack 回傳的 rag_download_url 使用。
+    """
+    path = get_zip_path(file_id)
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="找不到該檔案")
+    filename = get_zip_filename(file_id) or f"{file_id}.zip"
+    return FileResponse(path, filename=filename, media_type="application/zip")
+
+
 @router.post("/pack")
-def pack_folders(body: PackRequest):
+def pack_folders(request: Request, body: PackRequest):
     """
     依先前上傳的 ZIP（file_id）與 tasks 字串，抽出指定 6 位數資料夾重新壓成 ZIP 並存到後端。
     tasks 格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
-    例："220222+220301" → 一個 ZIP；"220222,220301+220302" → 兩個 ZIP。
-    回傳新產生的 file_id、filename，可供下載或給其他 API 使用。
+    若 with_rag=True，每個壓縮檔會再做成 RAG（FAISS）ZIP，並回傳下載連結。
     """
     path = get_zip_path(body.file_id)
     if not path or not path.exists():
@@ -72,9 +87,35 @@ def pack_folders(body: PackRequest):
     if not packed:
         raise HTTPException(status_code=400, detail="tasks 為空或格式錯誤，例：220222+220301")
 
+    api_key = body.openai_api_key.strip() if (body.openai_api_key and body.openai_api_key.strip()) else None
+    if body.with_rag and not api_key:
+        raise HTTPException(status_code=400, detail="with_rag 為 true 時請傳入 openai_api_key")
+
+    base_url = str(request.base_url).rstrip("/")
+
     outputs = []
     for zip_bytes, filename in packed:
         file_id = save_zip(zip_bytes, filename)
-        outputs.append({"file_id": file_id, "filename": filename})
+        item = {
+            "file_id": file_id,
+            "filename": filename,
+            "download_url": f"{base_url}/zip/download/{file_id}",
+        }
+        if body.with_rag:
+            try:
+                from utils.rag import make_rag_zip_from_zip_path
+                rag_path = get_zip_path(file_id)
+                if rag_path and rag_path.exists():
+                    rag_bytes = make_rag_zip_from_zip_path(rag_path, api_key)
+                    rag_filename = f"faiss_db_{file_id[:8]}.zip"
+                    rag_file_id = save_zip(rag_bytes, rag_filename)
+                    item["rag_file_id"] = rag_file_id
+                    item["rag_filename"] = rag_filename
+                    item["rag_download_url"] = f"{base_url}/zip/download/{rag_file_id}"
+            except ValueError as e:
+                item["rag_error"] = str(e)
+            except Exception as e:
+                item["rag_error"] = str(e)
+        outputs.append(item)
 
     return {"source_file_id": body.file_id, "outputs": outputs}

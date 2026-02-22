@@ -3,6 +3,7 @@
 ZIP 依 file_id 存成 storage/{file_id}.zip，其他 API 可用 get_zip_path(file_id) 取得路徑讀取。
 """
 
+import json
 import os
 import uuid
 from pathlib import Path
@@ -16,6 +17,24 @@ def _storage_dir() -> Path:
     return path
 
 
+def _metadata_path() -> Path:
+    return _storage_dir() / "_metadata.json"
+
+
+def _load_metadata() -> dict:
+    p = _metadata_path()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_metadata(data: dict) -> None:
+    _metadata_path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def save_zip(contents: bytes, original_filename: str | None = None) -> str:
     """
     將 ZIP 內容寫入後端儲存，回傳唯一 file_id。
@@ -24,7 +43,16 @@ def save_zip(contents: bytes, original_filename: str | None = None) -> str:
     file_id = str(uuid.uuid4())
     path = _storage_dir() / f"{file_id}.zip"
     path.write_bytes(contents)
+    meta = _load_metadata()
+    meta[file_id] = original_filename or f"{file_id}.zip"
+    _save_metadata(meta)
     return file_id
+
+
+def get_zip_filename(file_id: str) -> str | None:
+    """依 file_id 取得儲存時使用的檔名，供下載時 Content-Disposition 使用。"""
+    meta = _load_metadata()
+    return meta.get(file_id)
 
 
 def get_zip_path(file_id: str) -> Path | None:
