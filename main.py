@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from routers.zip import router as zip_router
+from routers.grade import router as grade_router
 
 app = FastAPI()
 
@@ -23,6 +24,7 @@ app.add_middleware(
 )
 
 app.include_router(zip_router)
+app.include_router(grade_router)
 
 
 @app.get("/")
