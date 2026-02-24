@@ -257,7 +257,11 @@ async def get_grade_result(job_id: str):
     if job_id not in _grade_job_results:
         return JSONResponse(
             status_code=404,
-            content={"status": "error", "result": None, "error": "job not found"},
+            content={
+                "status": "error",
+                "result": None,
+                "error": "job not found（可能為服務重啟或冷啟動，請重新送出評分）",
+            },
         )
     data = _grade_job_results[job_id]
     return {
