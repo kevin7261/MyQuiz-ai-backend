@@ -12,7 +12,8 @@ from routers.grade import router as grade_router
 app = FastAPI()
 
 # 允許前端跨域呼叫 API，避免瀏覽器 CORS / "Failed to fetch"
-# 註：502 時回應可能來自 Render 代理，沒有 CORS 標頭；服務喚醒後正常回應會帶上
+# 註：若出現 502，回應來自 Render 代理（逾時約 30s），不會帶 CORS 標頭；
+# 評分已改為非同步：POST /api/grade_submission 回傳 202 + job_id，請用 GET /api/grade_result/{job_id} 輪詢結果
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
