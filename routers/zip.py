@@ -23,6 +23,8 @@ class PackRequest(BaseModel):
     tasks: str  # 例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
     with_rag: bool = False  # 若 True，每個壓縮檔都會再做成 RAG（FAISS）ZIP，並回傳下載連結
     openai_api_key: str | None = None  # with_rag=True 時必填，用於 Embedding（不從環境變數讀取）
+    chunk_size: int = 1000  # RAG 文件切分區塊大小
+    chunk_overlap: int = 200  # RAG 切分區塊重疊字數
 
 
 class GenerateQuestionRequest(BaseModel):
@@ -114,7 +116,12 @@ def pack_folders(request: Request, body: PackRequest):
                 from utils.rag import make_rag_zip_from_zip_path
                 rag_path = get_zip_path(file_id)
                 if rag_path and rag_path.exists():
-                    rag_bytes = make_rag_zip_from_zip_path(rag_path, api_key)
+                    rag_bytes = make_rag_zip_from_zip_path(
+                        rag_path,
+                        api_key,
+                        chunk_size=body.chunk_size,
+                        chunk_overlap=body.chunk_overlap,
+                    )
                     rag_filename = f"faiss_db_{file_id[:8]}.zip"
                     rag_file_id = save_zip(rag_bytes, rag_filename)
                     item["rag_file_id"] = rag_file_id

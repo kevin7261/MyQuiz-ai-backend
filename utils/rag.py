@@ -63,8 +63,8 @@ def process_zip_to_docs(zip_path: Path, extract_dir: Path) -> list[Document]:
 def build_faiss_zip_from_docs(
     documents: list[Document],
     api_key: str,
-    chunk_size: int = 1000,
-    chunk_overlap: int = 200,
+    chunk_size: int,
+    chunk_overlap: int,
 ) -> bytes:
     """
     將 Document 列表做切分、Embedding、FAISS 建索引，再打包成 ZIP 的 bytes。
@@ -96,7 +96,12 @@ def build_faiss_zip_from_docs(
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def make_rag_zip_from_zip_path(zip_path: Path, api_key: str) -> bytes:
+def make_rag_zip_from_zip_path(
+    zip_path: Path,
+    api_key: str,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> bytes:
     """
     從一個 ZIP 路徑：解壓 → 載入文件 → 切分 → Embedding → FAISS → 打包成 ZIP。
     回傳 ZIP 的 bytes。
@@ -106,6 +111,8 @@ def make_rag_zip_from_zip_path(zip_path: Path, api_key: str) -> bytes:
         all_docs = process_zip_to_docs(zip_path, tmp_extract)
         if not all_docs:
             raise ValueError("ZIP 內無支援的文件（需 .pdf 或 .txt）")
-        return build_faiss_zip_from_docs(all_docs, api_key)
+        return build_faiss_zip_from_docs(
+            all_docs, api_key, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        )
     finally:
         shutil.rmtree(tmp_extract, ignore_errors=True)
