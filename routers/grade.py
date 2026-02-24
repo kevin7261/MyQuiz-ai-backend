@@ -249,9 +249,10 @@ async def grade_submission_with_upload(
 
 
 @router.get("/grade_result/{job_id}")
-def get_grade_result(job_id: str):
+async def get_grade_result(job_id: str):
     """
     輪詢評分結果。回傳 status: pending | ready | error；ready 時 result 為批改結果，error 時 error 為錯誤訊息。
+    此端點僅做記憶體查表，保持輕量以避免代理（如 Render）逾時 502。
     """
     if job_id not in _grade_job_results:
         return JSONResponse(
