@@ -12,7 +12,15 @@ from utils.zip_utils import (
     build_folder_map,
     repack_tasks_to_zips,
 )
-from utils.storage import save_zip, get_zip_path, get_zip_filename
+from utils.storage import (
+    save_zip,
+    get_zip_path,
+    get_zip_filename,
+    clear_folders,
+    FOLDER_UPLOAD,
+    FOLDER_REPACK,
+    FOLDER_RAG,
+)
 
 router = APIRouter(prefix="/zip", tags=["zip"])
 
@@ -55,7 +63,8 @@ async def get_zip_second_folders(file: UploadFile = File(...)):
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="無法讀取 ZIP 檔案")
 
-    file_id = save_zip(contents, file.filename)
+    clear_folders([FOLDER_UPLOAD, FOLDER_REPACK, FOLDER_RAG])  # 新上傳時清空全部
+    file_id = save_zip(contents, file.filename, folder=FOLDER_UPLOAD)
 
     return {
         "file_id": file_id,
@@ -87,6 +96,7 @@ def pack_folders(request: Request, body: PackRequest):
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail="找不到該上傳的 ZIP，請先上傳或確認 file_id")
 
+    clear_folders([FOLDER_REPACK, FOLDER_RAG])  # 有新的 repack 時清空 repack / rag
     try:
         with zipfile.ZipFile(path, "r") as z:
             folder_map = build_folder_map(z)
@@ -105,7 +115,7 @@ def pack_folders(request: Request, body: PackRequest):
 
     outputs = []
     for zip_bytes, filename in packed:
-        file_id = save_zip(zip_bytes, filename)
+        file_id = save_zip(zip_bytes, filename, folder=FOLDER_REPACK)
         item = {
             "file_id": file_id,
             "filename": filename,
@@ -123,7 +133,7 @@ def pack_folders(request: Request, body: PackRequest):
                         chunk_overlap=body.chunk_overlap,
                     )
                     rag_filename = f"faiss_db_{file_id[:8]}.zip"
-                    rag_file_id = save_zip(rag_bytes, rag_filename)
+                    rag_file_id = save_zip(rag_bytes, rag_filename, folder=FOLDER_RAG)
                     item["rag_file_id"] = rag_file_id
                     item["rag_filename"] = rag_filename
                     item["rag_download_url"] = f"{base_url}/zip/download/{rag_file_id}"
