@@ -75,14 +75,12 @@ def generate_question(
         context_text = "\n\n".join([d.page_content for d in docs])
 
         sys_role = "你是頂尖的「地理資訊系統與環境資料分析」課程助教。請使用 GPT-4o 的強大邏輯來出題。"
-        r_rules = """⚠️ 嚴格限制：
-            1. **請務必使用繁體中文 (Traditional Chinese) 出題。**
-        """
 
         system_instruction = f"""
             【出題重要規範】
-            1. 在 'question_content' (題目) 中：只說明**任務目標**。❌ 嚴禁直接列出步驟 1, 2, 3。請保留思考空間給學生。
-            2. 在 'hint' (提示) 中：才列出詳細的解題步驟。
+            1. **請務必使用繁體中文 (Traditional Chinese) 出題。**
+            2. 在 'question_content' (題目) 中：只說明**任務目標**。❌ 嚴禁直接列出步驟 1, 2, 3。請保留思考空間給學生。
+            3. 在 'hint' (提示) 中：才列出詳細的解題步驟。
         """
 
         task_instruction = f"目前的題型任務是：【{qtype}】。難度：{level}。"

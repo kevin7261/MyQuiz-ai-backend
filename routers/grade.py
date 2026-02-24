@@ -13,6 +13,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
@@ -22,6 +23,31 @@ from openai import OpenAI
 from utils.rag import process_zip_to_docs
 
 router = APIRouter(prefix="/api", tags=["grade"])
+
+
+class RubricItem(BaseModel):
+    """單一評分項目（GPT 可能回傳 criteria、score、comment 等）。"""
+
+    criteria: str = Field(default="", description="評分項目名稱或說明")
+    score: Optional[int] = None
+    comment: Optional[str] = None
+    model_config = ConfigDict(extra="allow")
+
+
+class GradingResult(BaseModel):
+    """批改結果結構化回傳，便於前端分項顯示。"""
+
+    score: int = Field(..., description="總分 (0–10)")
+    level: str = Field(..., description="等級，如：優秀、良好、待加強")
+    rubric: list[RubricItem] = Field(
+        default_factory=list,
+        description="各項評分 [概念正確性, 邏輯與解釋, 完整性]",
+    )
+    strengths: list[str] = Field(default_factory=list, description="優點")
+    weaknesses: list[str] = Field(default_factory=list, description="待改進之處")
+    missing_items: list[str] = Field(default_factory=list, description="遺漏或未提及的項目")
+    action_items: list[str] = Field(default_factory=list, description="建議後續行動")
+
 
 # 專案根目錄，用於預設 rag_db.zip
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -34,7 +60,7 @@ def _cleanup_grade_workspace(work_dir: Path) -> None:
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
-@router.post("/grade_submission")
+@router.post("/grade_submission", response_model=GradingResult)
 async def grade_submission_with_upload(
     background_tasks: BackgroundTasks,
     file: Optional[UploadFile] = File(None),
@@ -150,7 +176,23 @@ async def grade_submission_with_upload(
 
         background_tasks.add_task(_cleanup_grade_workspace, work_dir)
 
-        return json.loads(response.choices[0].message.content)
+        raw = json.loads(response.choices[0].message.content)
+        rubric_raw = raw.get("rubric", [])
+        rubric_list = []
+        for item in rubric_raw:
+            if isinstance(item, dict):
+                rubric_list.append(RubricItem.model_validate(item))
+            else:
+                rubric_list.append(RubricItem(criteria=str(item)))
+        return GradingResult(
+            score=raw.get("score", 0),
+            level=raw.get("level", ""),
+            rubric=rubric_list,
+            strengths=raw.get("strengths", []),
+            weaknesses=raw.get("weaknesses", []),
+            missing_items=raw.get("missing_items", []),
+            action_items=raw.get("action_items", []),
+        )
 
     except Exception as e:
         _cleanup_grade_workspace(work_dir)
