@@ -45,11 +45,16 @@ def debug_env():
     }
 
 
+# 與 DB 表一致：user_id, created_at, name, person_id, password, type, metadata
+USER_PUBLIC_COLUMNS = "user_id, created_at, name, person_id, type, metadata"
+
+
 class UserListItem(BaseModel):
     """單筆使用者（不含 password）。"""
     user_id: int
     created_at: Optional[str] = None
     name: Optional[str] = None
+    person_id: Optional[str] = None
     type: Optional[int] = None
     metadata: Optional[Any] = None
 
@@ -58,6 +63,68 @@ class ListUsersResponse(BaseModel):
     """GET /users 回應。"""
     users: list[UserListItem]
     count: int
+
+
+class LoginRequest(BaseModel):
+    """POST /users/login 請求：person_id + password。"""
+    person_id: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    """登入成功回傳使用者資訊（不含 password）。"""
+    user: UserListItem
+
+
+@router.post("/login", response_model=LoginResponse)
+def login(body: LoginRequest):
+    """
+    以 person_id 與 password 驗證登入；成功回傳該使用者資訊（不含 password）。
+    """
+    person_id = (body.person_id or "").strip()
+    pwd = (body.password or "").strip()
+    cols = f"{USER_PUBLIC_COLUMNS}, password"
+    out_keys = ("user_id", "created_at", "name", "person_id", "type", "metadata")
+    try:
+        supabase = get_supabase()
+        resp = (
+            supabase.table("User")
+            .select(cols)
+            .eq("person_id", person_id)
+            .execute()
+        )
+        if not resp.data or len(resp.data) == 0:
+            raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+        row = resp.data[0]
+        if (row.get("password") or "").strip() != pwd:
+            raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+        out = {k: row[k] for k in out_keys if k in row}
+        return LoginResponse(user=out)
+    except HTTPException:
+        raise
+    except Exception as e:
+        err = str(e).lower()
+        if "relation" in err or "does not exist" in err:
+            try:
+                resp = (
+                    get_supabase()
+                    .table("user")
+                    .select(cols)
+                    .eq("person_id", person_id)
+                    .execute()
+                )
+                if not resp.data or len(resp.data) == 0:
+                    raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+                row = resp.data[0]
+                if (row.get("password") or "").strip() != pwd:
+                    raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+                out = {k: row[k] for k in out_keys if k in row}
+                return LoginResponse(user=out)
+            except HTTPException:
+                raise
+            except Exception as e2:
+                raise HTTPException(status_code=500, detail=str(e2))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("", response_model=ListUsersResponse)
@@ -70,7 +137,7 @@ def list_users():
         # 只選取對外可曝光的欄位，不回傳 password
         resp = (
             supabase.table("User")
-            .select("user_id, created_at, name, type, metadata")
+            .select(USER_PUBLIC_COLUMNS)
             .execute()
         )
         return ListUsersResponse(users=resp.data, count=len(resp.data))
@@ -88,7 +155,7 @@ def list_users():
                 resp = (
                     get_supabase()
                     .table("user")
-                    .select("user_id, created_at, name, type, metadata")
+                    .select(USER_PUBLIC_COLUMNS)
                     .execute()
                 )
                 return ListUsersResponse(users=resp.data, count=len(resp.data))
