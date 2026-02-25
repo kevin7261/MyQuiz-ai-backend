@@ -1,5 +1,9 @@
 import os
 
+# 從專案根目錄的 .env 載入環境變數（SUPABASE_URL、SUPABASE_SERVICE_ROLE_KEY 等）
+from dotenv import load_dotenv
+load_dotenv()
+
 # 避免 FAISS/NumPy 等載入時出現多份 OpenMP runtime 的 OMP Error #15（macOS 常見）
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
@@ -8,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routers.zip import router as zip_router
 from routers.grade import router as grade_router
+from routers.users import router as users_router
 
 app = FastAPI()
 
@@ -29,6 +34,7 @@ app.add_middleware(
 
 app.include_router(zip_router)
 app.include_router(grade_router)
+app.include_router(users_router)
 
 
 @app.get("/")
