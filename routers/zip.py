@@ -3,7 +3,7 @@
 import io
 import os
 import zipfile
-from fastapi import APIRouter, HTTPException, UploadFile, File, Request
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -16,11 +16,11 @@ from utils.storage import (
     save_zip,
     get_zip_path,
     get_zip_filename,
-    clear_folders,
     FOLDER_UPLOAD,
     FOLDER_REPACK,
     FOLDER_RAG,
 )
+from utils.supabase_client import get_supabase
 
 router = APIRouter(prefix="/zip", tags=["zip"])
 
@@ -35,6 +35,12 @@ class PackRequest(BaseModel):
     chunk_overlap: int = 200  # RAG 切分區塊重疊字數
 
 
+class SetLlmApiKeyRequest(BaseModel):
+    """依 file_id 將 OpenAI API key 寫入 Rag 表的 llm_api_key 欄位。"""
+    file_id: str
+    openai_api_key: str  # 寫入 llm_api_key 欄位
+
+
 class GenerateQuestionRequest(BaseModel):
     """指定 RAG ZIP 的 file_id 與出題參數（由 API 傳入 openai_api_key）。"""
     file_id: str  # 使用者選擇的 RAG zip 的 file_id（pack 回傳的 rag_file_id）
@@ -43,10 +49,23 @@ class GenerateQuestionRequest(BaseModel):
     level: str  # 難度
 
 
-@router.post("/second-folders")
-async def get_zip_second_folders(file: UploadFile = File(...)):
+def _resolve_person_id(form_person_id: str | None, x_person_id: str | None) -> str | None:
+    """優先 Form person_id，若無則 Header X-Person-Id。回傳非空字串或 None。"""
+    for raw in (form_person_id, x_person_id):
+        if raw is not None and raw.strip():
+            return raw.strip()
+    return None
+
+
+@router.post("/upload-zip")
+async def upload_zip(
+    file: UploadFile = File(...),
+    person_id: str | None = Form(None, description="寫入 Rag 表的 person_id"),
+    x_person_id: str | None = Header(None, alias="X-Person-Id"),
+):
     """
     上傳 ZIP 檔案（由 API 傳入），會存到後端空間，回傳 file_id、第二層資料夾清單。
+    可傳入 person_id 寫入 Rag 表：Form 欄位 person_id 或 Header X-Person-Id。
     其他 API 可用 utils.storage.get_zip_path(file_id) 取得檔案路徑後讀取。
     """
     if not file.filename or not file.filename.lower().endswith(".zip"):
@@ -63,14 +82,66 @@ async def get_zip_second_folders(file: UploadFile = File(...)):
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="無法讀取 ZIP 檔案")
 
-    clear_folders([FOLDER_UPLOAD, FOLDER_REPACK, FOLDER_RAG])  # 新上傳時清空全部
+    # ZIP 永久保留，不再清空既有檔案
     file_id = save_zip(contents, file.filename, folder=FOLDER_UPLOAD)
 
-    return {
+    response = {
         "file_id": file_id,
         "filename": file.filename,
         "second_folders": folders,
     }
+
+    # 寫入資料庫：file_metadata = 本 API 的完整回傳；person_id 來自 Form person_id 或 Header X-Person-Id
+    resolved_person_id = _resolve_person_id(person_id, x_person_id)
+    try:
+        supabase = get_supabase()
+        row = {
+            "file_id": file_id,
+            "file_metadata": response,
+            "rag_list": "",
+            "rag_metadata": None,
+            "chunk_size": 0,
+            "chunk_overlap": 0,
+            "llm_api_key": "",
+            "deleted": False,
+        }
+        if resolved_person_id is not None:
+            row["person_id"] = resolved_person_id
+        supabase.table("Rag").insert(row).execute()
+    except Exception:
+        pass  # 寫入失敗不影響上傳成功，前端仍可取得回傳
+
+    return response
+
+
+@router.put("/llm-api-key")
+def set_llm_api_key(body: SetLlmApiKeyRequest):
+    """
+    依 file_id 將傳入的 OpenAI API key 寫入 Rag 表的 llm_api_key 欄位。
+    若該 file_id 在 Rag 表尚無紀錄，會回傳 404。
+    """
+    key = (body.openai_api_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="請傳入 openai_api_key")
+
+    try:
+        supabase = get_supabase()
+        r = (
+            supabase.table("Rag")
+            .update({"llm_api_key": key})
+            .eq("file_id", body.file_id)
+            .execute()
+        )
+        if not r.data or len(r.data) == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"找不到 file_id={body.file_id} 的 Rag 紀錄，請先上傳 ZIP 取得 file_id",
+            )
+        return {"file_id": body.file_id, "ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/download/{file_id}")
@@ -96,7 +167,7 @@ def pack_folders(request: Request, body: PackRequest):
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail="找不到該上傳的 ZIP，請先上傳或確認 file_id")
 
-    clear_folders([FOLDER_REPACK, FOLDER_RAG])  # 有新的 repack 時清空 repack / rag
+    # ZIP 永久保留，不再清空 repack / rag
     try:
         with zipfile.ZipFile(path, "r") as z:
             folder_map = build_folder_map(z)

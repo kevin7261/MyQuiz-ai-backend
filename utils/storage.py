@@ -59,10 +59,15 @@ def save_zip(
     """
     將 ZIP 內容寫入後端儲存，回傳唯一 file_id。
     folder 可為 FOLDER_UPLOAD（上傳）、FOLDER_REPACK（重新壓縮）、FOLDER_RAG（RAG 向量庫）。
+    上傳的 ZIP 存於 storage/{file_id}/upload/；repack/rag 仍存於 storage/repack/、storage/rag/。
     其他 API 可用 get_zip_path(file_id) 取得檔案路徑後讀取。
     """
     file_id = str(uuid.uuid4())
-    target_dir = _folder_dir(folder)
+    if folder == FOLDER_UPLOAD:
+        target_dir = _storage_base() / file_id / FOLDER_UPLOAD
+        target_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        target_dir = _folder_dir(folder)
     path = target_dir / f"{file_id}.zip"
     path.write_bytes(contents)
     meta = _load_metadata()
@@ -99,6 +104,7 @@ def _get_folder_for_file_id(file_id: str) -> str | None:
 def get_zip_path(file_id: str) -> Path | None:
     """
     依 file_id 取得已儲存的 ZIP 檔案路徑；不存在則回傳 None。
+    上傳檔路徑為 storage/{file_id}/upload/{file_id}.zip；repack/rag 為 storage/repack/、storage/rag/。
     其他 API 可這樣使用：
         path = get_zip_path(file_id)
         if path and path.exists():
@@ -108,60 +114,33 @@ def get_zip_path(file_id: str) -> Path | None:
         return None
     folder = _get_folder_for_file_id(file_id)
     if folder is not None:
-        path = _folder_dir(folder) / f"{file_id}.zip"
+        if folder == FOLDER_UPLOAD:
+            path = _storage_base() / file_id / FOLDER_UPLOAD / f"{file_id}.zip"
+        else:
+            path = _folder_dir(folder) / f"{file_id}.zip"
         if path.exists():
             return path
-    # 舊版：metadata 無此 file_id 或檔案在根目錄
-    for candidate in (FOLDER_UPLOAD,):  # 先找 upload
-        path = _folder_dir(candidate) / f"{file_id}.zip"
-        if path.exists():
-            return path
+    # 舊版：先找 storage/{file_id}/upload/，再找 storage/upload/
+    upload_by_file_id = _storage_base() / file_id / FOLDER_UPLOAD / f"{file_id}.zip"
+    if upload_by_file_id.exists():
+        return upload_by_file_id
+    path = _folder_dir(FOLDER_UPLOAD) / f"{file_id}.zip"
+    if path.exists():
+        return path
     legacy = _storage_base() / f"{file_id}.zip"
     return legacy if legacy.exists() else None
 
 
 def delete_zip(file_id: str) -> bool:
     """
-    刪除指定 file_id 的 ZIP 檔與 metadata 紀錄。
-    回傳是否成功刪除（有找到檔案且已刪除為 True）。
+    不再實際刪除：ZIP 永久保留。保留此 API 相容性，但不會刪除檔案或 metadata。
     """
-    if not file_id or "/" in file_id or "\\" in file_id:
-        return False
-    path = get_zip_path(file_id)
-    existed = path is not None and path.exists()
-    if existed:
-        try:
-            path.unlink()
-        except OSError:
-            return False
-    meta = _load_metadata()
-    if file_id in meta:
-        del meta[file_id]
-        _save_metadata(meta)
-    return existed
+    return False
 
 
 def clear_folders(folders: list[str]) -> int:
     """
-    清空指定子目錄內所有 ZIP 檔並自 metadata 移除紀錄。
-    例如 clear_folders([FOLDER_UPLOAD, FOLDER_REPACK, FOLDER_RAG]) 會刪除三個目錄內全部檔案。
-    回傳刪除的檔案數量。
+    不再實際刪除：ZIP 永久保留。保留此 API 相容性，但不刪除任何檔案。
+    回傳 0。
     """
-    meta = _load_metadata()
-    removed = 0
-    meta_changed = False
-    for folder in folders:
-        target_dir = _folder_dir(folder)
-        for path in target_dir.glob("*.zip"):
-            file_id = path.stem
-            if file_id in meta:
-                del meta[file_id]
-                meta_changed = True
-            try:
-                path.unlink()
-                removed += 1
-            except OSError:
-                pass
-    if meta_changed:
-        _save_metadata(meta)
-    return removed
+    return 0
