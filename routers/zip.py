@@ -1,6 +1,7 @@
 """ZIP 相關 API 路由。"""
 
 import io
+import uuid
 import zipfile
 from typing import Any
 
@@ -33,9 +34,9 @@ def _rag_default_row(
     file_id: str,
     *,
     person_id: str | None = None,
-    file_metadata: dict[str, Any] | None = None,
+    file_metadata: Any = None,
 ) -> dict[str, Any]:
-    """Rag 表一筆新增用的預設欄位，create-rag 與 upload-zip 共用。"""
+    """Rag 表一筆新增時的預設欄位，供 create_rag / upload_zip 共用。"""
     row: dict[str, Any] = {
         "file_id": file_id,
         "file_metadata": file_metadata,
@@ -50,17 +51,18 @@ def _rag_default_row(
     return row
 
 
-def _rag_table_select(select_spec: str = "*") -> list[dict]:
-    """查詢 Rag 表全部列（表名先試 "Rag"，失敗則試 "rag"）。回傳 resp.data 列表。"""
+def _rag_table_select(select_columns: str = "*") -> list[dict]:
+    """查詢 Rag 表全部列。回傳 list of dict。（表名為 public.Rag）"""
     supabase = get_supabase()
-    try:
-        resp = supabase.table("Rag").select(select_spec).execute()
-        return resp.data or []
-    except Exception as e:
-        if "relation" in str(e).lower() or "does not exist" in str(e).lower():
-            resp = get_supabase().table("rag").select(select_spec).execute()
-            return resp.data or []
-        raise
+    resp = supabase.table("Rag").select(select_columns).execute()
+    return resp.data or []
+
+
+def _rag_table_select_by_file_id(file_id: str, select_columns: str = "*") -> list[dict]:
+    """查詢 Rag 表指定 file_id 的列。（表名為 public.Rag）"""
+    supabase = get_supabase()
+    resp = supabase.table("Rag").select(select_columns).eq("file_id", file_id).execute()
+    return resp.data or []
 
 
 class ListRagResponse(BaseModel):
@@ -109,38 +111,34 @@ def list_rag():
 
 @router.post("/create-rag")
 def create_rag(
-    file_id: str = Form(..., description="Rag 紀錄的 file_id（由 API 傳入，可與上傳 ZIP 的 file_id 一致）"),
     person_id: str | None = Form(None, description="寫入 Rag 表的 person_id"),
     x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
-    傳入 file_id、person_id 建立或更新 Rag 表一筆資料（upsert）。
+    Create Rag：僅傳入 person_id，後端生成 file_id 並新增 Rag 表一筆資料。
     person_id 可由 Form 或 Header X-Person-Id 傳入。
-    若該 file_id 已存在則只更新 person_id；若不存在則新增一筆 Rag 紀錄。
-    上傳 ZIP 為獨立流程，不要求先上傳再呼叫此 API。
+    回傳 rag_id、file_id（後端生成）、created_at。
     """
-    fid = (file_id or "").strip()
-    if not fid:
-        raise HTTPException(status_code=400, detail="請傳入 file_id")
     resolved_person_id = _resolve_person_id(person_id, x_person_id)
     if not resolved_person_id:
         raise HTTPException(status_code=400, detail="請傳入 person_id（Form 或 Header X-Person-Id）")
 
     try:
+        file_id = str(uuid.uuid4())
         supabase = get_supabase()
         r = (
             supabase.table("Rag")
-            .update({"person_id": resolved_person_id})
-            .eq("file_id", fid)
+            .insert(_rag_default_row(file_id, person_id=resolved_person_id))
             .execute()
         )
-        if r.data and len(r.data) > 0:
-            return {"file_id": fid, "person_id": resolved_person_id, "ok": True}
-        # 無該 file_id：新增一筆 Rag 紀錄
-        supabase.table("Rag").insert(
-            _rag_default_row(fid, person_id=resolved_person_id)
-        ).execute()
-        return {"file_id": fid, "person_id": resolved_person_id, "ok": True}
+        if not r.data or len(r.data) == 0:
+            raise HTTPException(status_code=500, detail="新增 Rag 失敗")
+        row = r.data[0]
+        return {
+            "rag_id": row["rag_id"],
+            "file_id": row["file_id"],
+            "created_at": row["created_at"],
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -206,9 +204,7 @@ async def upload_zip(
             .execute()
         )
         if not r.data or len(r.data) == 0:
-            supabase.table("Rag").insert(
-                _rag_default_row(file_id, file_metadata=response)
-            ).execute()
+            supabase.table("Rag").insert(_rag_default_row(file_id, file_metadata=response)).execute()
     except Exception:
         pass
 
