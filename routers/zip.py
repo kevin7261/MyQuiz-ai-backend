@@ -1,8 +1,9 @@
 """ZIP 相關 API 路由。"""
 
 import io
-import os
 import zipfile
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -24,6 +25,49 @@ from utils.supabase_client import get_supabase
 
 router = APIRouter(prefix="/zip", tags=["zip"])
 
+# Rag 表列出全部資料時選取欄位（用 * 回傳全部欄位）
+RAG_SELECT_ALL = "*"
+
+
+def _rag_default_row(
+    file_id: str,
+    *,
+    person_id: str | None = None,
+    file_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Rag 表一筆新增用的預設欄位，create-rag 與 upload-zip 共用。"""
+    row: dict[str, Any] = {
+        "file_id": file_id,
+        "file_metadata": file_metadata,
+        "rag_list": "",
+        "rag_metadata": None,
+        "chunk_size": 0,
+        "chunk_overlap": 0,
+        "deleted": False,
+    }
+    if person_id is not None:
+        row["person_id"] = person_id
+    return row
+
+
+def _rag_table_select(select_spec: str = "*") -> list[dict]:
+    """查詢 Rag 表全部列（表名先試 "Rag"，失敗則試 "rag"）。回傳 resp.data 列表。"""
+    supabase = get_supabase()
+    try:
+        resp = supabase.table("Rag").select(select_spec).execute()
+        return resp.data or []
+    except Exception as e:
+        if "relation" in str(e).lower() or "does not exist" in str(e).lower():
+            resp = get_supabase().table("rag").select(select_spec).execute()
+            return resp.data or []
+        raise
+
+
+class ListRagResponse(BaseModel):
+    """GET /zip/rag 回應：Rag 表全部資料。"""
+    rags: list[dict]
+    count: int
+
 
 class PackRequest(BaseModel):
     """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。"""
@@ -33,12 +77,6 @@ class PackRequest(BaseModel):
     openai_api_key: str | None = None  # with_rag=True 時必填，用於 Embedding（不從環境變數讀取）
     chunk_size: int = 1000  # RAG 文件切分區塊大小
     chunk_overlap: int = 200  # RAG 切分區塊重疊字數
-
-
-class SetLlmApiKeyRequest(BaseModel):
-    """依 file_id 將 OpenAI API key 寫入 Rag 表的 llm_api_key 欄位。"""
-    file_id: str
-    openai_api_key: str  # 寫入 llm_api_key 欄位
 
 
 class GenerateQuestionRequest(BaseModel):
@@ -57,15 +95,69 @@ def _resolve_person_id(form_person_id: str | None, x_person_id: str | None) -> s
     return None
 
 
-@router.post("/upload-zip")
-async def upload_zip(
-    file: UploadFile = File(...),
+@router.get("/rag", response_model=ListRagResponse)
+def list_rag():
+    """
+    列出 Rag 表全部內容（與 GET /users 一樣回傳全部資料）。
+    """
+    try:
+        data = _rag_table_select(RAG_SELECT_ALL)
+        return ListRagResponse(rags=data, count=len(data))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/create-rag")
+def create_rag(
+    file_id: str = Form(..., description="Rag 紀錄的 file_id（由 API 傳入，可與上傳 ZIP 的 file_id 一致）"),
     person_id: str | None = Form(None, description="寫入 Rag 表的 person_id"),
     x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
-    上傳 ZIP 檔案（由 API 傳入），會存到後端空間，回傳 file_id、第二層資料夾清單。
-    可傳入 person_id 寫入 Rag 表：Form 欄位 person_id 或 Header X-Person-Id。
+    傳入 file_id、person_id 建立或更新 Rag 表一筆資料（upsert）。
+    person_id 可由 Form 或 Header X-Person-Id 傳入。
+    若該 file_id 已存在則只更新 person_id；若不存在則新增一筆 Rag 紀錄。
+    上傳 ZIP 為獨立流程，不要求先上傳再呼叫此 API。
+    """
+    fid = (file_id or "").strip()
+    if not fid:
+        raise HTTPException(status_code=400, detail="請傳入 file_id")
+    resolved_person_id = _resolve_person_id(person_id, x_person_id)
+    if not resolved_person_id:
+        raise HTTPException(status_code=400, detail="請傳入 person_id（Form 或 Header X-Person-Id）")
+
+    try:
+        supabase = get_supabase()
+        r = (
+            supabase.table("Rag")
+            .update({"person_id": resolved_person_id})
+            .eq("file_id", fid)
+            .execute()
+        )
+        if r.data and len(r.data) > 0:
+            return {"file_id": fid, "person_id": resolved_person_id, "ok": True}
+        # 無該 file_id：新增一筆 Rag 紀錄
+        supabase.table("Rag").insert(
+            _rag_default_row(fid, person_id=resolved_person_id)
+        ).execute()
+        return {"file_id": fid, "person_id": resolved_person_id, "ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/upload-zip")
+async def upload_zip(
+    file: UploadFile = File(...),
+    file_id: str = Form(..., description="由 API 傳入的 file_id，用於儲存與 file_metadata"),
+    person_id: str | None = Form(None, description="僅用於儲存路徑，不寫入 Rag 表"),
+    x_person_id: str | None = Header(None, alias="X-Person-Id"),
+):
+    """
+    上傳 ZIP 檔案（由 API 傳入），存到後端空間，並寫入 Rag 表該 file_id 的 file_metadata 欄位。
+    回傳 file_id、第二層資料夾清單。person_id 僅用於儲存路徑（可選）。
+    建立 RAG 一筆資料（寫入 person_id）請呼叫 POST /zip/create-rag。
     其他 API 可用 utils.storage.get_zip_path(file_id) 取得檔案路徑後讀取。
     """
     if not file.filename or not file.filename.lower().endswith(".zip"):
@@ -82,8 +174,21 @@ async def upload_zip(
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="無法讀取 ZIP 檔案")
 
-    # ZIP 永久保留，不再清空既有檔案
-    file_id = save_zip(contents, file.filename, folder=FOLDER_UPLOAD)
+    file_id = (file_id or "").strip()
+    if not file_id:
+        raise HTTPException(status_code=400, detail="請傳入 file_id")
+
+    resolved_person_id = _resolve_person_id(person_id, x_person_id)
+    try:
+        file_id = save_zip(
+            contents,
+            file.filename,
+            folder=FOLDER_UPLOAD,
+            person_id=resolved_person_id,
+            file_id=file_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     response = {
         "file_id": file_id,
@@ -91,57 +196,23 @@ async def upload_zip(
         "second_folders": folders,
     }
 
-    # 寫入資料庫：file_metadata = 本 API 的完整回傳；person_id 來自 Form person_id 或 Header X-Person-Id
-    resolved_person_id = _resolve_person_id(person_id, x_person_id)
-    try:
-        supabase = get_supabase()
-        row = {
-            "file_id": file_id,
-            "file_metadata": response,
-            "rag_list": "",
-            "rag_metadata": None,
-            "chunk_size": 0,
-            "chunk_overlap": 0,
-            "llm_api_key": "",
-            "deleted": False,
-        }
-        if resolved_person_id is not None:
-            row["person_id"] = resolved_person_id
-        supabase.table("Rag").insert(row).execute()
-    except Exception:
-        pass  # 寫入失敗不影響上傳成功，前端仍可取得回傳
-
-    return response
-
-
-@router.put("/llm-api-key")
-def set_llm_api_key(body: SetLlmApiKeyRequest):
-    """
-    依 file_id 將傳入的 OpenAI API key 寫入 Rag 表的 llm_api_key 欄位。
-    若該 file_id 在 Rag 表尚無紀錄，會回傳 404。
-    """
-    key = (body.openai_api_key or "").strip()
-    if not key:
-        raise HTTPException(status_code=400, detail="請傳入 openai_api_key")
-
+    # 僅寫入 Rag 表該 file_id 的 file_metadata（upsert：有則更新，無則新增一筆）
     try:
         supabase = get_supabase()
         r = (
             supabase.table("Rag")
-            .update({"llm_api_key": key})
-            .eq("file_id", body.file_id)
+            .update({"file_metadata": response})
+            .eq("file_id", file_id)
             .execute()
         )
         if not r.data or len(r.data) == 0:
-            raise HTTPException(
-                status_code=404,
-                detail=f"找不到 file_id={body.file_id} 的 Rag 紀錄，請先上傳 ZIP 取得 file_id",
-            )
-        return {"file_id": body.file_id, "ok": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+            supabase.table("Rag").insert(
+                _rag_default_row(file_id, file_metadata=response)
+            ).execute()
+    except Exception:
+        pass
+
+    return response
 
 
 @router.get("/download/{file_id}")
