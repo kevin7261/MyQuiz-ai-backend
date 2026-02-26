@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from utils.supabase_client import get_supabase
 
-router = APIRouter(prefix="/users", tags=["users"])
+router = APIRouter(prefix="/user", tags=["user"])
 
 
 @router.get("/debug")
@@ -60,13 +60,13 @@ class UserListItem(BaseModel):
 
 
 class ListUsersResponse(BaseModel):
-    """GET /users 回應。"""
+    """GET /user/users 回應。"""
     users: list[UserListItem]
     count: int
 
 
 class LoginRequest(BaseModel):
-    """POST /users/login 請求：person_id + password。"""
+    """POST /user/login 請求：person_id + password。"""
     person_id: str
     password: str
 
@@ -127,7 +127,7 @@ def login(body: LoginRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("", response_model=ListUsersResponse)
+@router.get("/users", response_model=ListUsersResponse)
 def list_users():
     """
     列出 User 表全部內容（不含 password 欄位）。

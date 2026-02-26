@@ -161,6 +161,20 @@ def get_zip_path(file_id: str) -> Path | None:
     return legacy if legacy.exists() else None
 
 
+def get_zip_path_by_person(person_id: str, file_id: str) -> Path | None:
+    """
+    依 person_id 與 file_id 取得上傳 ZIP 路徑：storage/{person_id}/{file_id}/upload/{file_id}.zip。
+    與 create-rag 儲存位置一致。不存在則回傳 None。
+    """
+    if not file_id or "/" in file_id or "\\" in file_id:
+        return None
+    pid = (person_id or "").strip() or UPLOAD_DEFAULT_PERSON
+    if "/" in pid or "\\" in pid or pid in ("", ".", ".."):
+        pid = UPLOAD_DEFAULT_PERSON
+    path = _storage_base() / pid / file_id / FOLDER_UPLOAD / f"{file_id}.zip"
+    return path if path.exists() else None
+
+
 def delete_zip(file_id: str) -> bool:
     """
     不再實際刪除：ZIP 永久保留。保留此 API 相容性，但不會刪除檔案或 metadata。

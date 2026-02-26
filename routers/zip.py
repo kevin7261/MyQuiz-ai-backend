@@ -5,8 +5,7 @@ import uuid
 import zipfile
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header, Request
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header
 from pydantic import BaseModel
 
 from utils.zip_utils import (
@@ -17,14 +16,14 @@ from utils.zip_utils import (
 from utils.storage import (
     save_zip,
     get_zip_path,
-    get_zip_filename,
+    get_zip_path_by_person,
     FOLDER_UPLOAD,
     FOLDER_REPACK,
     FOLDER_RAG,
 )
 from utils.supabase_client import get_supabase
 
-router = APIRouter(prefix="/zip", tags=["zip"])
+router = APIRouter(prefix="/rag", tags=["rag"])
 
 # Rag 表列出全部資料時選取欄位（用 * 回傳全部欄位）
 RAG_SELECT_ALL = "*"
@@ -36,7 +35,7 @@ def _rag_default_row(
     person_id: str | None = None,
     file_metadata: Any = None,
 ) -> dict[str, Any]:
-    """Rag 表一筆新增時的預設欄位，供 create_rag / upload_zip 共用。"""
+    """Rag 表一筆新增時的預設欄位，供 upload_zip 使用。"""
     row: dict[str, Any] = {
         "file_id": file_id,
         "file_metadata": file_metadata,
@@ -66,17 +65,17 @@ def _rag_table_select_by_file_id(file_id: str, select_columns: str = "*") -> lis
 
 
 class ListRagResponse(BaseModel):
-    """GET /zip/rag 回應：Rag 表全部資料。"""
+    """GET /rag/rags 回應：Rag 表全部資料。"""
     rags: list[dict]
     count: int
 
 
 class PackRequest(BaseModel):
-    """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。"""
+    """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{file_id}/upload。"""
     file_id: str
+    person_id: str  # 與 upload-zip 一致，上傳 ZIP 所在路徑的 person_id
     tasks: str  # 例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
-    with_rag: bool = False  # 若 True，每個壓縮檔都會再做成 RAG（FAISS）ZIP，並回傳下載連結
-    openai_api_key: str | None = None  # with_rag=True 時必填，用於 Embedding（不從環境變數讀取）
+    openai_api_key: str  # 用於 Embedding，必填（一律做成 RAG ZIP）
     chunk_size: int = 1000  # RAG 文件切分區塊大小
     chunk_overlap: int = 200  # RAG 切分區塊重疊字數
 
@@ -97,7 +96,7 @@ def _resolve_person_id(form_person_id: str | None, x_person_id: str | None) -> s
     return None
 
 
-@router.get("/rag", response_model=ListRagResponse)
+@router.get("/rags", response_model=ListRagResponse)
 def list_rag():
     """
     列出 Rag 表全部內容（與 GET /users 一樣回傳全部資料）。
@@ -109,54 +108,16 @@ def list_rag():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/create-rag")
-def create_rag(
-    person_id: str | None = Form(None, description="寫入 Rag 表的 person_id"),
-    x_person_id: str | None = Header(None, alias="X-Person-Id"),
-):
-    """
-    Create Rag：僅傳入 person_id，後端生成 file_id 並新增 Rag 表一筆資料。
-    person_id 可由 Form 或 Header X-Person-Id 傳入。
-    回傳 rag_id、file_id（後端生成）、created_at。
-    """
-    resolved_person_id = _resolve_person_id(person_id, x_person_id)
-    if not resolved_person_id:
-        raise HTTPException(status_code=400, detail="請傳入 person_id（Form 或 Header X-Person-Id）")
-
-    try:
-        file_id = str(uuid.uuid4())
-        supabase = get_supabase()
-        r = (
-            supabase.table("Rag")
-            .insert(_rag_default_row(file_id, person_id=resolved_person_id))
-            .execute()
-        )
-        if not r.data or len(r.data) == 0:
-            raise HTTPException(status_code=500, detail="新增 Rag 失敗")
-        row = r.data[0]
-        return {
-            "rag_id": row["rag_id"],
-            "file_id": row["file_id"],
-            "created_at": row["created_at"],
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.post("/upload-zip")
 async def upload_zip(
     file: UploadFile = File(...),
-    file_id: str = Form(..., description="由 API 傳入的 file_id，用於儲存與 file_metadata"),
-    person_id: str | None = Form(None, description="僅用於儲存路徑，不寫入 Rag 表"),
+    person_id: str | None = Form(None, description="寫入 Rag 表與儲存路徑的 person_id"),
     x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
-    上傳 ZIP 檔案（由 API 傳入），存到後端空間，並寫入 Rag 表該 file_id 的 file_metadata 欄位。
-    回傳 file_id、第二層資料夾清單。person_id 僅用於儲存路徑（可選）。
-    建立 RAG 一筆資料（寫入 person_id）請呼叫 POST /zip/create-rag。
-    其他 API 可用 utils.storage.get_zip_path(file_id) 取得檔案路徑後讀取。
+    Upload Zip：傳入 person_id 與 ZIP 檔案，後端生成 file_id、上傳 ZIP 並新增 Rag 表一筆資料。
+    person_id 可由 Form 或 Header X-Person-Id 傳入。
+    回傳 rag_id、file_id（後端生成）、created_at、filename、second_folders（並寫入 file_metadata）。
     """
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="請上傳 .zip 檔案")
@@ -172,11 +133,11 @@ async def upload_zip(
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="無法讀取 ZIP 檔案")
 
-    file_id = (file_id or "").strip()
-    if not file_id:
-        raise HTTPException(status_code=400, detail="請傳入 file_id")
-
     resolved_person_id = _resolve_person_id(person_id, x_person_id)
+    if not resolved_person_id:
+        raise HTTPException(status_code=400, detail="請傳入 person_id（Form 或 Header X-Person-Id）")
+
+    file_id = str(uuid.uuid4())
     try:
         file_id = save_zip(
             contents,
@@ -188,53 +149,48 @@ async def upload_zip(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    response = {
-        "file_id": file_id,
-        "filename": file.filename,
-        "second_folders": folders,
-    }
-
-    # 僅寫入 Rag 表該 file_id 的 file_metadata（upsert：有則更新，無則新增一筆）
     try:
         supabase = get_supabase()
         r = (
             supabase.table("Rag")
-            .update({"file_metadata": response})
-            .eq("file_id", file_id)
+            .insert(_rag_default_row(file_id, person_id=resolved_person_id, file_metadata={}))
             .execute()
         )
         if not r.data or len(r.data) == 0:
-            supabase.table("Rag").insert(_rag_default_row(file_id, file_metadata=response)).execute()
-    except Exception:
-        pass
+            raise HTTPException(status_code=500, detail="新增 Rag 失敗")
+        row = r.data[0]
+        # 完整回傳內容寫入 file_metadata
+        file_metadata = {
+            "rag_id": row["rag_id"],
+            "file_id": row["file_id"],
+            "created_at": row["created_at"],
+            "filename": file.filename,
+            "second_folders": folders,
+        }
+        supabase.table("Rag").update({"file_metadata": file_metadata}).eq("file_id", file_id).execute()
+        return file_metadata
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    return response
 
-
-@router.get("/download/{file_id}")
-def download_zip(file_id: str):
-    """
-    依 file_id 下載已儲存的 ZIP 檔。下載連結可供 pack 回傳的 rag_download_url 使用。
-    """
-    path = get_zip_path(file_id)
-    if not path or not path.exists():
-        raise HTTPException(status_code=404, detail="找不到該檔案")
-    filename = get_zip_filename(file_id) or f"{file_id}.zip"
-    return FileResponse(path, filename=filename, media_type="application/zip")
-
-
-@router.post("/pack")
-def pack_folders(request: Request, body: PackRequest):
+@router.post("/create-rag")
+def create_rag(body: PackRequest):
     """
     依先前上傳的 ZIP（file_id）與 tasks 字串，抽出指定 6 位數資料夾重新壓成 ZIP 並存到後端。
+    ZIP 檔位置為 {person_id}/{file_id}/upload（與 upload-zip 一致），body 需傳入 person_id。
     tasks 格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
-    若 with_rag=True，每個壓縮檔會再做成 RAG（FAISS）ZIP，並回傳下載連結。
+    一律做成 RAG（FAISS）ZIP，需傳入 openai_api_key。
     """
-    path = get_zip_path(body.file_id)
-    if not path or not path.exists():
-        raise HTTPException(status_code=404, detail="找不到該上傳的 ZIP，請先上傳或確認 file_id")
+    pid = (body.person_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="請傳入 person_id")
 
-    # ZIP 永久保留，不再清空 repack / rag
+    path = get_zip_path(body.file_id) or get_zip_path_by_person(pid, body.file_id)
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="找不到該上傳的 ZIP，請先上傳或確認 file_id、person_id")
+
     try:
         with zipfile.ZipFile(path, "r") as z:
             folder_map = build_folder_map(z)
@@ -245,11 +201,9 @@ def pack_folders(request: Request, body: PackRequest):
     if not packed:
         raise HTTPException(status_code=400, detail="tasks 為空或格式錯誤，例：220222+220301")
 
-    api_key = body.openai_api_key.strip() if (body.openai_api_key and body.openai_api_key.strip()) else None
-    if body.with_rag and not api_key:
-        raise HTTPException(status_code=400, detail="with_rag 為 true 時請傳入 openai_api_key")
-
-    base_url = str(request.base_url).rstrip("/")
+    api_key = (body.openai_api_key or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="請傳入 openai_api_key")
 
     outputs = []
     for zip_bytes, filename in packed:
@@ -257,28 +211,27 @@ def pack_folders(request: Request, body: PackRequest):
         item = {
             "file_id": file_id,
             "filename": filename,
-            "download_url": f"{base_url}/zip/download/{file_id}",
         }
-        if body.with_rag:
-            try:
-                from utils.rag import make_rag_zip_from_zip_path
-                rag_path = get_zip_path(file_id)
-                if rag_path and rag_path.exists():
-                    rag_bytes = make_rag_zip_from_zip_path(
-                        rag_path,
-                        api_key,
-                        chunk_size=body.chunk_size,
-                        chunk_overlap=body.chunk_overlap,
-                    )
-                    rag_filename = f"faiss_db_{file_id[:8]}.zip"
-                    rag_file_id = save_zip(rag_bytes, rag_filename, folder=FOLDER_RAG)
-                    item["rag_file_id"] = rag_file_id
-                    item["rag_filename"] = rag_filename
-                    item["rag_download_url"] = f"{base_url}/zip/download/{rag_file_id}"
-            except ValueError as e:
-                item["rag_error"] = str(e)
-            except Exception as e:
-                item["rag_error"] = str(e)
+        try:
+            from utils.rag import make_rag_zip_from_zip_path
+            rag_path = get_zip_path(file_id)
+            if rag_path and rag_path.exists():
+                rag_bytes = make_rag_zip_from_zip_path(
+                    rag_path,
+                    api_key,
+                    chunk_size=body.chunk_size,
+                    chunk_overlap=body.chunk_overlap,
+                )
+                rag_filename = f"faiss_db_{file_id[:8]}.zip"
+                rag_file_id = save_zip(rag_bytes, rag_filename, folder=FOLDER_RAG)
+                item["rag_file_id"] = rag_file_id
+                item["rag_filename"] = rag_filename
+            else:
+                item["rag_error"] = "找不到 repack ZIP 路徑"
+        except ValueError as e:
+            item["rag_error"] = str(e)
+        except Exception as e:
+            item["rag_error"] = str(e)
         outputs.append(item)
 
     return {"source_file_id": body.file_id, "outputs": outputs}
