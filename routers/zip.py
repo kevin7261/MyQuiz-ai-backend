@@ -3,6 +3,7 @@
 import io
 import uuid
 import zipfile
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header
@@ -71,18 +72,19 @@ class ListRagResponse(BaseModel):
 
 
 class PackRequest(BaseModel):
-    """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{file_id}/upload。"""
+    """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{file_id}/upload。會 update Rag 表該 file_id 的 rag_list、rag_metadata、chunk_size、chunk_overlap。"""
     file_id: str
     person_id: str  # 與 upload-zip 一致，上傳 ZIP 所在路徑的 person_id
-    tasks: str  # 例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
+    rag_list: str  # 寫入 Rag 表 rag_list 欄位；例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
     openai_api_key: str  # 用於 Embedding，必填（一律做成 RAG ZIP）
-    chunk_size: int = 1000  # RAG 文件切分區塊大小
-    chunk_overlap: int = 200  # RAG 切分區塊重疊字數
+    chunk_size: int = 1000  # 寫入 Rag 表 chunk_size 欄位
+    chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
 
 
 class GenerateQuestionRequest(BaseModel):
-    """指定 RAG ZIP 的 file_id 與出題參數（由 API 傳入 openai_api_key）。"""
-    file_id: str  # 使用者選擇的 RAG zip 的 file_id（pack 回傳的 rag_file_id）
+    """指定 RAG ZIP 的來源 file_id（upload-zip 回傳）、rag_name（rag_list 的某一段，如 220222_220301）與出題參數。"""
+    file_id: str  # upload-zip 回傳的 source file_id
+    rag_name: str  # create-rag 時 rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 rag 檔案
     openai_api_key: str  # 用於 GPT-4o 出題，不從環境變數讀取
     qtype: str  # 題型
     level: str  # 難度
@@ -178,10 +180,10 @@ async def upload_zip(
 @router.post("/create-rag")
 def create_rag(body: PackRequest):
     """
-    依先前上傳的 ZIP（file_id）與 tasks 字串，抽出指定 6 位數資料夾重新壓成 ZIP 並存到後端。
+    依先前上傳的 ZIP（file_id）與 rag_list 字串，抽出指定 6 位數資料夾重新壓成 ZIP 並存到後端。
     ZIP 檔位置為 {person_id}/{file_id}/upload（與 upload-zip 一致），body 需傳入 person_id。
-    tasks 格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
-    一律做成 RAG（FAISS）ZIP，需傳入 openai_api_key。
+    rag_list 寫入 Rag 表；格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
+    一律做成 RAG（FAISS）ZIP，需傳入 openai_api_key。回傳內容完整寫入 Rag 表 rag_metadata，並 update chunk_size、chunk_overlap。
     """
     pid = (body.person_id or "").strip()
     if not pid:
@@ -197,9 +199,9 @@ def create_rag(body: PackRequest):
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="無法讀取該 ZIP 檔案")
 
-    packed = repack_tasks_to_zips(path, folder_map, body.tasks)
+    packed = repack_tasks_to_zips(path, folder_map, body.rag_list)
     if not packed:
-        raise HTTPException(status_code=400, detail="tasks 為空或格式錯誤，例：220222+220301")
+        raise HTTPException(status_code=400, detail="rag_list 為空或格式錯誤，例：220222+220301")
 
     api_key = (body.openai_api_key or "").strip()
     if not api_key:
@@ -207,7 +209,18 @@ def create_rag(body: PackRequest):
 
     outputs = []
     for zip_bytes, filename in packed:
-        file_id = save_zip(zip_bytes, filename, folder=FOLDER_REPACK)
+        # 用 rag_list 衍生的檔名做 file_id（如 220222_220301.zip -> 220222_220301），不再生成 UUID
+        repack_file_id = Path(filename).stem if filename else None
+        if not repack_file_id or "/" in repack_file_id or "\\" in repack_file_id:
+            repack_file_id = str(uuid.uuid4())
+        file_id = save_zip(
+            zip_bytes,
+            filename,
+            folder=FOLDER_REPACK,
+            person_id=pid,
+            parent_file_id=body.file_id,
+            file_id=repack_file_id,
+        )
         item = {
             "file_id": file_id,
             "filename": filename,
@@ -222,8 +235,17 @@ def create_rag(body: PackRequest):
                     chunk_size=body.chunk_size,
                     chunk_overlap=body.chunk_overlap,
                 )
-                rag_filename = f"faiss_db_{file_id[:8]}.zip"
-                rag_file_id = save_zip(rag_bytes, rag_filename, folder=FOLDER_RAG)
+                # rag 檔名也依 rag_list，file_id 加 _rag 以區分 repack
+                rag_file_id = f"{file_id}_rag"
+                rag_filename = f"{file_id}.zip"
+                save_zip(
+                    rag_bytes,
+                    rag_filename,
+                    folder=FOLDER_RAG,
+                    person_id=pid,
+                    parent_file_id=body.file_id,
+                    file_id=rag_file_id,
+                )
                 item["rag_file_id"] = rag_file_id
                 item["rag_filename"] = rag_filename
             else:
@@ -234,18 +256,33 @@ def create_rag(body: PackRequest):
             item["rag_error"] = str(e)
         outputs.append(item)
 
-    return {"source_file_id": body.file_id, "outputs": outputs}
+    response = {"source_file_id": body.file_id, "outputs": outputs}
+    try:
+        supabase = get_supabase()
+        supabase.table("Rag").update({
+            "rag_list": body.rag_list,
+            "rag_metadata": response,
+            "chunk_size": body.chunk_size,
+            "chunk_overlap": body.chunk_overlap,
+        }).eq("file_id", body.file_id).execute()
+    except Exception:
+        pass
+    return response
 
 
 @router.post("/generate-question")
 def generate_question_api(body: GenerateQuestionRequest):
     """
-    依使用者選擇的 RAG ZIP（file_id）載入向量庫 → 檢索 Context → 呼叫 GPT-4o 生成題目。
-    需傳入 openai_api_key、題型 qtype、難度 level。回傳 JSON：question_content, hint, target_filename。
+    傳入 file_id（upload-zip 的 source file_id）與 rag_name（如 220222_220301），程式自動組出 rag_file_id={rag_name}_rag 並查找 RAG ZIP。
+    再呼叫 GPT-4o 生成題目，需傳入 openai_api_key、題型 qtype、難度 level。回傳 JSON：question_content, hint, target_filename。
     """
-    path = get_zip_path(body.file_id)
+    rag_name = (body.rag_name or "").strip()
+    if not rag_name:
+        raise HTTPException(status_code=400, detail="請傳入 rag_name（如 220222_220301）")
+    rag_file_id = f"{rag_name}_rag"
+    path = get_zip_path(rag_file_id)
     if not path or not path.exists():
-        raise HTTPException(status_code=404, detail="找不到該 RAG ZIP，請確認 file_id（可為 pack 回傳的 rag_file_id）")
+        raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 file_id={body.file_id}、rag_name={rag_name}（rag_file_id={rag_file_id}）")
 
     api_key = (body.openai_api_key or "").strip()
     if not api_key:

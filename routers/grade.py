@@ -1,7 +1,6 @@
 """
-評分 API：依題目與學生回答，以 RAG 檢索講義後由 GPT-4o 評分。
-優先使用上傳的 ZIP，若無則使用伺服器上的 rag_db.zip。
-改為非同步：POST 回傳 202 + job_id，背景執行評分；前端以 GET /api/grade_result/{job_id} 輪詢結果。
+評分 API：傳入 file_id、rag_name，程式依 {rag_name}_rag 查找 RAG ZIP，以 RAG 檢索講義後由 GPT-4o 評分。
+非同步：POST 回傳 202 + job_id，背景執行評分；前端以 GET /rag/grade_result/{job_id} 輪詢結果。
 """
 
 import json
@@ -13,7 +12,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Form
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,8 +22,9 @@ from langchain_community.vectorstores import FAISS
 from openai import OpenAI
 
 from utils.rag import process_zip_to_docs
+from utils.storage import get_zip_path
 
-router = APIRouter(prefix="/api", tags=["grade"])
+router = APIRouter(prefix="/rag", tags=["rag"])
 
 
 class RubricItem(BaseModel):
@@ -50,10 +50,6 @@ class GradingResult(BaseModel):
     missing_items: list[str] = Field(default_factory=list, description="遺漏或未提及的項目")
     action_items: list[str] = Field(default_factory=list, description="建議後續行動")
 
-
-# 專案根目錄，用於預設 rag_db.zip
-_BACKEND_ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_RAG_ZIP = _BACKEND_ROOT / "rag_db.zip"
 
 # 非同步評分結果暫存：job_id -> {"status": "pending"|"ready"|"error", "result": dict|None, "error": str|None}
 _grade_job_results: dict[str, dict[str, Any]] = {}
@@ -91,8 +87,9 @@ def _run_grade_job(
             db_folder = root
             break
 
+    # 須與建立 RAG ZIP 時一致（utils.rag 使用 text-embedding-3-small）
     embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-large",
+        model="text-embedding-3-small",
         api_key=api_key,
     )
 
@@ -182,23 +179,33 @@ def _grade_job_background(
 
 
 @router.post("/grade_submission")
-async def grade_submission_with_upload(
+async def grade_submission(
     background_tasks: BackgroundTasks,
-    file: Optional[UploadFile] = File(None),
+    file_id: str = Form(..., description="upload-zip 回傳的 source file_id"),
+    rag_name: str = Form(..., description="rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 RAG ZIP"),
     openai_api_key: str = Form(...),
     question_text: str = Form(...),
     student_answer: str = Form(...),
     qtype: str = Form(...),
 ):
     """
-    驗證並接收表單後立即回傳 202 與 job_id；實際評分在背景執行。
-    前端請以 GET /api/grade_result/{job_id} 輪詢直到 status 為 ready 或 error。
+    傳入 file_id（upload-zip 的 source file_id）與 rag_name（如 220222_220301），程式自動組出 rag_file_id={rag_name}_rag 並查找 RAG ZIP。
+    驗證後立即回傳 202 與 job_id；實際評分在背景執行。前端請以 GET /rag/grade_result/{job_id} 輪詢。
     """
     api_key = (openai_api_key or "").strip()
     if not api_key:
+        return JSONResponse(status_code=400, content={"error": "請傳入 openai_api_key"})
+
+    rag_name = (rag_name or "").strip()
+    if not rag_name:
+        return JSONResponse(status_code=400, content={"error": "請傳入 rag_name（如 220222_220301）"})
+
+    rag_file_id = f"{rag_name}_rag"
+    rag_zip_path = get_zip_path(rag_file_id)
+    if not rag_zip_path or not rag_zip_path.exists():
         return JSONResponse(
-            status_code=400,
-            content={"error": "請傳入 openai_api_key"},
+            status_code=404,
+            content={"error": f"找不到 RAG ZIP，請確認 file_id={file_id}、rag_name={rag_name}（rag_file_id={rag_file_id}）"},
         )
 
     work_dir = Path(tempfile.mkdtemp(prefix="aiquiz_grade_"))
@@ -207,32 +214,13 @@ async def grade_submission_with_upload(
     extract_folder.mkdir(parents=True, exist_ok=True)
 
     try:
-        if file and file.filename:
-            contents = await file.read()
-            zip_source_path.write_bytes(contents)
-        else:
-            if not _DEFAULT_RAG_ZIP.exists():
-                _cleanup_grade_workspace(work_dir)
-                return JSONResponse(
-                    status_code=400,
-                    content={
-                        "error": "未上傳檔案，且伺服器找不到預設的 rag_db.zip",
-                    },
-                )
-            shutil.copy(_DEFAULT_RAG_ZIP, zip_source_path)
-
+        shutil.copy(rag_zip_path, zip_source_path)
         if not zipfile.is_zipfile(zip_source_path):
             _cleanup_grade_workspace(work_dir)
-            return JSONResponse(
-                status_code=400,
-                content={"error": "無效的 ZIP 檔"},
-            )
+            return JSONResponse(status_code=400, content={"error": "無效的 ZIP 檔"})
     except Exception as e:
         _cleanup_grade_workspace(work_dir)
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)},
-        )
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
     job_id = str(uuid.uuid4())
     _grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
