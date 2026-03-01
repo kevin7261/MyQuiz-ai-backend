@@ -25,6 +25,7 @@ app.add_middleware(
         "http://localhost:8080",
         "http://127.0.0.1:8080",
         "https://kevin7261.github.io",  # GitHub Pages 前端
+        "https://aiquizfrontend.vercel.app",  # Vercel 前端
         # 若前端是專案站如 https://kevin7261.github.io/aiquiz_frontend 再補上
     ],
     allow_credentials=True,
