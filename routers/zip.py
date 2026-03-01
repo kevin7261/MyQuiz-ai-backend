@@ -18,6 +18,7 @@ from utils.storage import (
     save_zip,
     get_zip_path,
     get_zip_path_by_person,
+    generate_file_id,
     FOLDER_UPLOAD,
     FOLDER_REPACK,
     FOLDER_RAG,
@@ -42,8 +43,8 @@ def _rag_default_row(
         "file_metadata": file_metadata,
         "rag_list": "",
         "rag_metadata": None,
-        "chunk_size": 0,
-        "chunk_overlap": 0,
+        "chunk_size": 1000,
+        "chunk_overlap": 200,
         "deleted": False,
     }
     if person_id is not None:
@@ -139,7 +140,7 @@ async def upload_zip(
     if not resolved_person_id:
         raise HTTPException(status_code=400, detail="請傳入 person_id（Form 或 Header X-Person-Id）")
 
-    file_id = str(uuid.uuid4())
+    file_id = generate_file_id(resolved_person_id)
     try:
         file_id = save_zip(
             contents,

@@ -10,7 +10,17 @@ ZIP 依類型存於 storage/{person_id}/{file_id}/ 之下：
 import json
 import os
 import uuid
+from datetime import datetime
 from pathlib import Path
+
+
+def generate_file_id(person_id: str | None = None) -> str:
+    """以 person_id 與目前電腦時間產生 file_id（格式：{person_id}_yymmddhhmmss）。"""
+    safe = (person_id or "").strip() or "_"
+    if "/" in safe or "\\" in safe:
+        safe = "_"
+    time_part = datetime.now().strftime("%y%m%d%H%M%S")
+    return f"{safe}_{time_part}"
 
 # 子目錄名稱：上傳、重新壓縮、RAG
 FOLDER_UPLOAD = "upload"
@@ -75,7 +85,7 @@ def save_zip(
         if file_id:
             file_id = file_id.strip()
         else:
-            file_id = str(uuid.uuid4())
+            file_id = generate_file_id(person_id)
     else:
         if not parent_file_id or "/" in parent_file_id or "\\" in parent_file_id:
             raise ValueError("repack/rag 需傳入 parent_file_id（上傳的 file_id）")
@@ -83,7 +93,7 @@ def save_zip(
         if file_id is not None and file_id.strip() and "/" not in file_id and "\\" not in file_id:
             file_id = file_id.strip()
         else:
-            file_id = str(uuid.uuid4())
+            file_id = generate_file_id(person_id)
 
     if folder == FOLDER_UPLOAD:
         pid = (person_id or "").strip() or UPLOAD_DEFAULT_PERSON
@@ -91,19 +101,24 @@ def save_zip(
             pid = UPLOAD_DEFAULT_PERSON
         target_dir = _storage_base() / pid / file_id / FOLDER_UPLOAD
         target_dir.mkdir(parents=True, exist_ok=True)
+        # 上傳檔用原始檔名存檔，僅取 basename 避免路徑注入
+        stored_name = (Path(original_filename).name if original_filename else "").strip() or f"{file_id}.zip"
+        path = target_dir / stored_name
     else:
         pid = (person_id or "").strip() or UPLOAD_DEFAULT_PERSON
         if "/" in pid or "\\" in pid or pid in ("", ".", ".."):
             pid = UPLOAD_DEFAULT_PERSON
         target_dir = _storage_base() / pid / parent_file_id / folder
         target_dir.mkdir(parents=True, exist_ok=True)
-    path = target_dir / f"{file_id}.zip"
+        path = target_dir / f"{file_id}.zip"
     path.write_bytes(contents)
     meta = _load_metadata()
     meta[file_id] = {
-        "filename": original_filename or f"{file_id}.zip",
+        "filename": original_filename or (stored_name if folder == FOLDER_UPLOAD else f"{file_id}.zip"),
         "folder": folder,
     }
+    if folder == FOLDER_UPLOAD:
+        meta[file_id]["stored_filename"] = path.name
     if folder == FOLDER_UPLOAD:
         pid = (person_id or "").strip() or UPLOAD_DEFAULT_PERSON
         if "/" in pid or "\\" in pid or pid in ("", ".", ".."):
@@ -165,7 +180,13 @@ def get_zip_path(file_id: str) -> Path | None:
     if folder is not None:
         if folder == FOLDER_UPLOAD:
             pid = person_id or file_id  # 舊版 metadata 無 person_id，用 file_id 當目錄
-            path = _storage_base() / pid / file_id / FOLDER_UPLOAD / f"{file_id}.zip"
+            # 上傳檔可能用原始檔名存檔，先查 metadata 的 stored_filename
+            if isinstance(entry, dict):
+                stored_name = entry.get("stored_filename") or entry.get("filename") or f"{file_id}.zip"
+                stored_name = Path(stored_name).name if stored_name else f"{file_id}.zip"
+            else:
+                stored_name = f"{file_id}.zip"
+            path = _storage_base() / pid / file_id / FOLDER_UPLOAD / stored_name
         else:
             # repack/rag：storage/{person_id}/{parent_file_id}/repack|rag/{file_id}.zip
             if person_id and parent_file_id:
@@ -191,7 +212,7 @@ def get_zip_path(file_id: str) -> Path | None:
 
 def get_zip_path_by_person(person_id: str, file_id: str) -> Path | None:
     """
-    依 person_id 與 file_id 取得上傳 ZIP 路徑：storage/{person_id}/{file_id}/upload/{file_id}.zip。
+    依 person_id 與 file_id 取得上傳 ZIP 路徑。上傳檔可能用原始檔名存於 upload/ 下。
     與 create-rag 儲存位置一致。不存在則回傳 None。
     """
     if not file_id or "/" in file_id or "\\" in file_id:
@@ -199,8 +220,21 @@ def get_zip_path_by_person(person_id: str, file_id: str) -> Path | None:
     pid = (person_id or "").strip() or UPLOAD_DEFAULT_PERSON
     if "/" in pid or "\\" in pid or pid in ("", ".", ".."):
         pid = UPLOAD_DEFAULT_PERSON
-    path = _storage_base() / pid / file_id / FOLDER_UPLOAD / f"{file_id}.zip"
-    return path if path.exists() else None
+    target_dir = _storage_base() / pid / file_id / FOLDER_UPLOAD
+    # 先依 metadata 找實際檔名
+    meta = _load_metadata()
+    entry = meta.get(file_id)
+    if isinstance(entry, dict):
+        stored_name = entry.get("stored_filename") or entry.get("filename") or f"{file_id}.zip"
+        stored_name = Path(stored_name).name if stored_name else f"{file_id}.zip"
+    else:
+        stored_name = f"{file_id}.zip"
+    path = target_dir / stored_name
+    if path.exists():
+        return path
+    # 相容舊資料：若無 metadata 或檔不存在，再試 file_id.zip
+    fallback = target_dir / f"{file_id}.zip"
+    return fallback if fallback.exists() else None
 
 
 def delete_zip(file_id: str) -> bool:
