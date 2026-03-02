@@ -45,6 +45,7 @@ def _rag_default_row(
     *,
     person_id: str | None = None,
     name: str | None = None,
+    course_name: str | None = None,
     file_metadata: Any = None,
 ) -> dict[str, Any]:
     """Rag 表一筆新增時的預設欄位，供 upload_zip 使用。"""
@@ -62,6 +63,8 @@ def _rag_default_row(
         row["person_id"] = person_id
     if name is not None:
         row["name"] = name
+    if course_name is not None:
+        row["course_name"] = course_name
     return row
 
 
@@ -106,6 +109,7 @@ class GenerateQuestionRequest(BaseModel):
     qtype: str  # 題型
     level: str  # 難度
     system_instruction: str  # 出題系統指令，必填（例如出題規範、語言、格式等）
+    course_name: str  # 課程名稱，會帶入出題 prompt 中
 
 
 def _resolve_person_id(form_person_id: str | None, x_person_id: str | None) -> str | None:
@@ -133,11 +137,12 @@ async def upload_zip(
     file: UploadFile = File(...),
     person_id: str | None = Form(None, description="寫入 Rag 表與儲存路徑的 person_id"),
     name: str | None = Form(None, description="寫入 Rag 表的 name 欄位；未傳則用上傳檔名（去掉 .zip）"),
+    course_name: str | None = Form(None, description="寫入 Rag 表的 course_name 欄位"),
     x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
     Upload Zip：傳入 person_id 與 ZIP 檔案，後端生成 file_id、上傳 ZIP 並新增 Rag 表一筆資料。
-    person_id 可由 Form 或 Header X-Person-Id 傳入。name 可選，未傳則以檔名（去掉 .zip）寫入 Rag.name。
+    person_id 可由 Form 或 Header X-Person-Id 傳入。name、course_name 可選；name 未傳則以檔名（去掉 .zip）寫入 Rag.name。
     回傳 rag_id、file_id（後端生成）、created_at、filename、second_folders（並寫入 file_metadata）。
     """
     if not file.filename or not file.filename.lower().endswith(".zip"):
@@ -175,11 +180,12 @@ async def upload_zip(
     if not rag_name and file.filename:
         rag_name = Path(file.filename).stem or None
 
+    course_name_val = (course_name or "").strip() if course_name is not None else None
     try:
         supabase = get_supabase()
         r = (
             supabase.table("Rag")
-            .insert(_rag_default_row(file_id, person_id=resolved_person_id, name=rag_name, file_metadata={}))
+            .insert(_rag_default_row(file_id, person_id=resolved_person_id, name=rag_name, course_name=course_name_val, file_metadata={}))
             .execute()
         )
         if not r.data or len(r.data) == 0:
@@ -317,6 +323,10 @@ def generate_question_api(body: GenerateQuestionRequest):
     if not system_instruction:
         raise HTTPException(status_code=400, detail="請傳入 system_instruction（出題系統指令，必填）")
 
+    course_name = (body.course_name or "").strip()
+    if not course_name:
+        raise HTTPException(status_code=400, detail="請傳入 course_name（課程名稱，必填）")
+
     try:
         from utils.question_gen import generate_question
         result = generate_question(
@@ -325,6 +335,7 @@ def generate_question_api(body: GenerateQuestionRequest):
             qtype=body.qtype,
             level=body.level,
             system_instruction=system_instruction,
+            course_name=course_name,
         )
         # 明確以 UTF-8 回傳 JSON，避免 'ascii' codec can't encode 錯誤（題目/提示/答案含中文）
         body_bytes = json.dumps(result, ensure_ascii=False).encode("utf-8")
