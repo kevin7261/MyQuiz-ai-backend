@@ -103,6 +103,7 @@ class GenerateQuestionRequest(BaseModel):
     openai_api_key: str  # 用於 GPT-4o 出題，不從環境變數讀取
     qtype: str  # 題型
     level: str  # 難度
+    system_instruction: str  # 出題系統指令，必填（例如出題規範、語言、格式等）
 
 
 def _resolve_person_id(form_person_id: str | None, x_person_id: str | None) -> str | None:
@@ -310,6 +311,10 @@ def generate_question_api(body: GenerateQuestionRequest):
     if not api_key:
         raise HTTPException(status_code=400, detail="請傳入 openai_api_key")
 
+    system_instruction = (body.system_instruction or "").strip()
+    if not system_instruction:
+        raise HTTPException(status_code=400, detail="請傳入 system_instruction（出題系統指令，必填）")
+
     try:
         from utils.question_gen import generate_question
         result = generate_question(
@@ -317,6 +322,7 @@ def generate_question_api(body: GenerateQuestionRequest):
             api_key=api_key,
             qtype=body.qtype,
             level=body.level,
+            system_instruction=system_instruction,
         )
         return result
     except ValueError as e:

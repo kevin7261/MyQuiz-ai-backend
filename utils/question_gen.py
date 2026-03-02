@@ -17,6 +17,13 @@ from openai import OpenAI
 # 常見 GIS / 資料檔副檔名，用於提供給 AI 的檔案列表
 GIS_EXTENSIONS = {".shp", ".tif", ".tiff", ".gpkg", ".csv", ".rds", ".geojson", ".json"}
 
+# 預設出題系統指令（會與 API 傳入的 system_instruction 一併使用，放在其上方）
+SYSTEM_INSTRUCTION_PREDEFINE = """
+            1. **請務必使用繁體中文 (Traditional Chinese) 出題。**
+            2. 在 'question_content' (題目) 中：只說明**任務目標**。嚴禁直接列出步驟 1, 2, 3。請保留思考空間給學生。
+            3. 在 'hint' (提示) 中：才列出詳細的解題步驟。
+        """
+
 
 def get_gis_filenames(extract_folder: Path) -> list[str]:
     """掃描解壓縮目錄，回傳 GIS/資料相關檔名列表（供 AI 出題時選擇）。"""
@@ -36,14 +43,18 @@ def generate_question(
     api_key: str,
     qtype: str,
     level: str,
+    system_instruction: str,
 ) -> dict:
     """
     從現成 RAG ZIP（含 FAISS 向量庫）解壓 → 載入向量庫 → 檢索 → 呼叫 GPT-4o 出題。
     僅支援由 /zip/pack 產出的 RAG ZIP，不支援一般講義 ZIP。
+    system_instruction 為必填參數，由 API 呼叫端傳入出題系統指令。
     回傳 {"question_content": "...", "hint": "...", "answer": "..."}。
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 openai_api_key")
+    if not system_instruction or not system_instruction.strip():
+        raise ValueError("請傳入 system_instruction（出題系統指令，必填）")
 
     extract_folder = Path(tempfile.mkdtemp())
     try:
@@ -76,13 +87,6 @@ def generate_question(
 
         sys_role = "你是頂尖的「地理資訊系統與環境資料分析」課程助教。請使用 GPT-4o 的強大邏輯來出題。"
 
-        system_instruction = f"""
-            【出題重要規範】
-            1. **請務必使用繁體中文 (Traditional Chinese) 出題。**
-            2. 在 'question_content' (題目) 中：只說明**任務目標**。❌ 嚴禁直接列出步驟 1, 2, 3。請保留思考空間給學生。
-            3. 在 'hint' (提示) 中：才列出詳細的解題步驟。
-        """
-
         task_instruction = f"目前的題型任務是：【{qtype}】。難度：{level}。"
         core_point = "🔥 **本次題目核心考點：請根據以下參考講義內容設計**"
 
@@ -91,6 +95,8 @@ def generate_question(
             {task_instruction}
             {core_point}
             (Please design the question around the core concept above.)
+            【出題重要規範】
+            {SYSTEM_INSTRUCTION_PREDEFINE}
             {system_instruction}
             請以 JSON 格式回傳：
             {{ "question_content": "Question content (Markdown)...", 
