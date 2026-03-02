@@ -1,6 +1,7 @@
 """ZIP 相關 API 路由。"""
 
 import io
+import json
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header, Path as PathParam
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from utils.zip_utils import (
@@ -324,7 +326,9 @@ def generate_question_api(body: GenerateQuestionRequest):
             level=body.level,
             system_instruction=system_instruction,
         )
-        return result
+        # 明確以 UTF-8 回傳 JSON，避免 'ascii' codec can't encode 錯誤（題目/提示/答案含中文）
+        body_bytes = json.dumps(result, ensure_ascii=False).encode("utf-8")
+        return Response(content=body_bytes, media_type="application/json; charset=utf-8")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

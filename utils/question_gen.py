@@ -5,6 +5,7 @@
 import json
 import os
 import shutil
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -61,7 +62,11 @@ def generate_question(
         if not zipfile.is_zipfile(zip_path):
             raise ValueError("無效的 ZIP 檔")
 
-        with zipfile.ZipFile(zip_path, "r") as z:
+        # 使用 UTF-8 解壓，避免非 ASCII 檔名或路徑造成 'ascii' codec can't encode 錯誤
+        zip_kw: dict = {}
+        if sys.version_info >= (3, 11):
+            zip_kw["metadata_encoding"] = "utf-8"
+        with zipfile.ZipFile(zip_path, "r", **zip_kw) as z:
             z.extractall(extract_folder)
 
         db_folder = None
