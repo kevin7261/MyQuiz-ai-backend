@@ -9,6 +9,7 @@ ZIP 依類型存於 storage/{person_id}/{file_id}/ 之下：
 
 import json
 import os
+import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -235,6 +236,41 @@ def get_zip_path_by_person(person_id: str, file_id: str) -> Path | None:
     # 相容舊資料：若無 metadata 或檔不存在，再試 file_id.zip
     fallback = target_dir / f"{file_id}.zip"
     return fallback if fallback.exists() else None
+
+
+def get_file_folder_path(person_id: str, file_id: str) -> Path:
+    """
+    取得 storage/{person_id}/{file_id} 資料夾路徑（該 file_id 的 upload/repack/rag 皆在此下）。
+    """
+    if not file_id or "/" in file_id or "\\" in file_id:
+        raise ValueError("file_id 不可包含路徑字元且不可為空")
+    pid = (person_id or "").strip() or UPLOAD_DEFAULT_PERSON
+    if "/" in pid or "\\" in pid or pid in ("", ".", ".."):
+        pid = UPLOAD_DEFAULT_PERSON
+    return _storage_base() / pid / file_id.strip()
+
+
+def delete_file_folder(person_id: str, file_id: str) -> bool:
+    """
+    刪除 storage/{person_id}/{file_id}/ 整個資料夾（含 upload、repack、rag）。
+    僅在路徑位於儲存根目錄下時執行，避免路徑穿越。並清除 metadata 中該 file_id 與其下 repack/rag 的紀錄。
+    回傳是否已刪除（資料夾存在且已刪除為 True）。
+    """
+    target = get_file_folder_path(person_id, file_id)
+    base = _storage_base().resolve()
+    target_resolved = target.resolve()
+    if not target_resolved.is_relative_to(base) or target_resolved == base:
+        return False
+    if not target.exists() or not target.is_dir():
+        return False
+    shutil.rmtree(target, ignore_errors=True)
+    # 清除 metadata：該 file_id（upload）與 parent_file_id 為此 file_id 的 repack/rag
+    meta = _load_metadata()
+    to_remove = [fid for fid, entry in meta.items() if fid == file_id or (isinstance(entry, dict) and entry.get("parent_file_id") == file_id)]
+    for fid in to_remove:
+        meta.pop(fid, None)
+    _save_metadata(meta)
+    return True
 
 
 def delete_zip(file_id: str) -> bool:
