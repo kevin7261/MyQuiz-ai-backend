@@ -92,14 +92,13 @@ class ListRagResponse(BaseModel):
 
 
 class PackRequest(BaseModel):
-    """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{file_id}/upload。會 update Rag 表該 file_id 的 rag_list、rag_metadata、chunk_size、chunk_overlap（system_prompt_instruction 不存入 Rag 表）。"""
+    """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{file_id}/upload。會 update Rag 表該 file_id 的 rag_list、rag_metadata、chunk_size、chunk_overlap。"""
     file_id: str
     person_id: str  # 與 upload-zip 一致，上傳 ZIP 所在路徑的 person_id
     rag_list: str  # 寫入 Rag 表 rag_list 欄位；例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
     openai_api_key: str  # 用於 Embedding，必填（一律做成 RAG ZIP）
     chunk_size: int = 1000  # 寫入 Rag 表 chunk_size 欄位
     chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
-    system_prompt_instruction: str | None = None  # 不寫入 Rag 表；若傳入則僅供前端使用，出題時請由 generate-question 的 body 傳入
 
 
 class GenerateQuestionRequest(BaseModel):
@@ -137,12 +136,12 @@ async def upload_zip(
     file: UploadFile = File(...),
     person_id: str | None = Form(None, description="寫入 Rag 表與儲存路徑的 person_id"),
     name: str | None = Form(None, description="寫入 Rag 表的 name 欄位；未傳則用上傳檔名（去掉 .zip）"),
-    course_name: str | None = Form(None, description="寫入 Rag 表的 course_name 欄位"),
     x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
     Upload Zip：傳入 person_id 與 ZIP 檔案，後端生成 file_id、上傳 ZIP 並新增 Rag 表一筆資料。
-    person_id 可由 Form 或 Header X-Person-Id 傳入。name、course_name 可選；name 未傳則以檔名（去掉 .zip）寫入 Rag.name。
+    person_id 可由 Form 或 Header X-Person-Id 傳入。name 可選；未傳則以檔名（去掉 .zip）寫入 Rag.name。
+    course_name 不由上傳傳入，改以檔名（去掉 .zip）寫入 Rag.course_name。
     回傳 rag_id、file_id（後端生成）、created_at、filename、second_folders（並寫入 file_metadata）。
     """
     if not file.filename or not file.filename.lower().endswith(".zip"):
@@ -180,7 +179,8 @@ async def upload_zip(
     if not rag_name and file.filename:
         rag_name = Path(file.filename).stem or None
 
-    course_name_val = (course_name or "").strip() if course_name is not None else None
+    # course_name 以檔名（去掉 .zip）寫入，不由上傳傳入
+    course_name_val = Path(file.filename).stem if file.filename else None
     try:
         supabase = get_supabase()
         r = (
@@ -197,6 +197,7 @@ async def upload_zip(
             "file_id": row["file_id"],
             "created_at": row["created_at"],
             "filename": file.filename,
+            "course_name": course_name_val,
             "second_folders": folders,
         }
         supabase.table("Rag").update({"file_metadata": file_metadata, "updated_at": _now_utc_iso()}).eq("file_id", file_id).execute()
@@ -297,7 +298,6 @@ def create_rag(body: PackRequest):
             "chunk_overlap": body.chunk_overlap,
             "updated_at": _now_utc_iso(),
         }
-        # system_prompt_instruction 不寫入 Rag 表，僅由出題 API 的 request body 傳入
         supabase.table("Rag").update(update_payload).eq("file_id", body.file_id).execute()
     except Exception:
         pass
