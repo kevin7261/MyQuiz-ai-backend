@@ -33,6 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 順序影響 API 文件顯示：zip_router 先掛載，使 generate-quiz / grade_submission / grade_result 出現在 rag 群組最下面
 app.include_router(zip_router)
 app.include_router(grade_router)
 app.include_router(users_router)

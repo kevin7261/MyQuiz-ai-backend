@@ -14,7 +14,6 @@ def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header, Path as PathParam
-from fastapi.responses import Response
 from pydantic import BaseModel
 
 from utils.zip_utils import (
@@ -46,6 +45,7 @@ def _rag_default_row(
     person_id: str | None = None,
     name: str | None = None,
     course_name: str | None = None,
+    llm_api_key: str | None = None,
     file_metadata: Any = None,
 ) -> dict[str, Any]:
     """Rag 表一筆新增時的預設欄位，供 upload_zip 使用。"""
@@ -65,6 +65,8 @@ def _rag_default_row(
         row["name"] = name
     if course_name is not None:
         row["course_name"] = course_name
+    if llm_api_key is not None:
+        row["llm_api_key"] = llm_api_key
     return row
 
 
@@ -101,16 +103,6 @@ class PackRequest(BaseModel):
     chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
 
 
-class GenerateQuizRequest(BaseModel):
-    """指定 RAG ZIP 的來源 file_id（upload-zip 回傳）、rag_name（rag_list 的某一段，如 220222_220301）與出題參數。"""
-    file_id: str  # upload-zip 回傳的 source file_id
-    rag_name: str  # create-rag-zip 時 rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 rag 檔案（回傳時作為選擇單元／壓縮檔名）
-    openai_api_key: str  # 用於 GPT-4o 出題，不從環境變數讀取
-    level: str  # 難度（回傳時一併帶回）
-    system_prompt_instruction: str  # 出題系統指令（必填），不存入 Rag 表，僅由 request body 傳入
-    course_name: str  # 課程名稱，會帶入出題 prompt 中
-
-
 def _resolve_person_id(form_person_id: str | None, x_person_id: str | None) -> str | None:
     """優先 Form person_id，若無則 Header X-Person-Id。回傳非空字串或 None。"""
     for raw in (form_person_id, x_person_id):
@@ -120,9 +112,12 @@ def _resolve_person_id(form_person_id: str | None, x_person_id: str | None) -> s
 
 
 @router.get("/rags", response_model=ListRagResponse)
-def list_rag():
+def list_rag(
+    x_llm_api_key: str | None = Header(None, alias="X-LLM-Api-Key", description="LLM/OpenAI API Key（可選，與頁面 OpenAI API Key 對應）"),
+):
     """
     列出 Rag 表內容，僅回傳 deleted=False 的資料。
+    LLM/OpenAI API Key 可選，由 Header X-LLM-Api-Key 傳入（與前端 OpenAI API Key 欄位對應）。
     """
     try:
         data = _rag_table_select(RAG_SELECT_ALL, exclude_deleted=True)
@@ -136,12 +131,13 @@ async def upload_zip(
     file: UploadFile = File(...),
     person_id: str | None = Form(None, description="寫入 Rag 表與儲存路徑的 person_id"),
     name: str | None = Form(None, description="寫入 Rag 表的 name 欄位；未傳則用上傳檔名（去掉 .zip）"),
+    llm_api_key: str | None = Form(None, description="寫入 Rag 表的 llm_api_key 欄位；可選"),
     x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
     Upload Zip：傳入 person_id 與 ZIP 檔案，後端生成 file_id、上傳 ZIP 並新增 Rag 表一筆資料。
     person_id 可由 Form 或 Header X-Person-Id 傳入。name 可選；未傳則以檔名（去掉 .zip）寫入 Rag.name。
-    course_name 不由上傳傳入，改以檔名（去掉 .zip）寫入 Rag.course_name。
+    course_name 不由上傳傳入，改以檔名（去掉 .zip）寫入 Rag.course_name。llm_api_key 可選，寫入 Rag 表。
     回傳 rag_id、file_id（後端生成）、created_at、filename、second_folders（並寫入 file_metadata）。
     """
     if not file.filename or not file.filename.lower().endswith(".zip"):
@@ -183,9 +179,10 @@ async def upload_zip(
     course_name_val = Path(file.filename).stem if file.filename else None
     try:
         supabase = get_supabase()
+        llm_key = (llm_api_key or "").strip() if llm_api_key is not None else None
         r = (
             supabase.table("Rag")
-            .insert(_rag_default_row(file_id, person_id=resolved_person_id, name=rag_name, course_name=course_name_val, file_metadata={}))
+            .insert(_rag_default_row(file_id, person_id=resolved_person_id, name=rag_name, course_name=course_name_val, llm_api_key=llm_key, file_metadata={}))
             .execute()
         )
         if not r.data or len(r.data) == 0:
@@ -301,61 +298,6 @@ def create_rag(body: PackRequest):
     return response
 
 
-@router.post("/generate-quiz")
-def generate_quiz_api(body: GenerateQuizRequest):
-    """
-    傳入 file_id（upload-zip 的 source file_id）與 rag_name（如 220222_220301），程式自動組出 rag_file_id={rag_name}_rag 並查找 RAG ZIP。
-    再呼叫 GPT-4o 生成測驗，需傳入 openai_api_key、難度 level。
-    回傳 JSON：quiz_content, hint, reference_answer（參考答案；以及 system_prompt_instruction, unit_filename, level）。
-    僅在呼叫過本 API 產生測驗後才會有上述內容；未產生過測驗時前端不會有這些欄位。
-    """
-    rag_name = (body.rag_name or "").strip()
-    if not rag_name:
-        raise HTTPException(status_code=400, detail="請傳入 rag_name（如 220222_220301）")
-    rag_file_id = f"{rag_name}_rag"
-    path = get_zip_path(rag_file_id)
-    if not path or not path.exists():
-        raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 file_id={body.file_id}、rag_name={rag_name}（rag_file_id={rag_file_id}）")
-
-    api_key = (body.openai_api_key or "").strip()
-    if not api_key:
-        raise HTTPException(status_code=400, detail="請傳入 openai_api_key")
-
-    # system_prompt_instruction 僅從 request body 取得，不從 Rag 表讀取
-    system_prompt_instruction = (body.system_prompt_instruction or "").strip()
-    if not system_prompt_instruction:
-        raise HTTPException(status_code=400, detail="請傳入 system_prompt_instruction（出題系統指令，必填）")
-
-    course_name = (body.course_name or "").strip()
-    if not course_name:
-        raise HTTPException(status_code=400, detail="請傳入 course_name（課程名稱，必填）")
-
-    try:
-        from utils.quiz_gen import generate_quiz
-        result = generate_quiz(
-            path,
-            api_key=api_key,
-            level=body.level,
-            system_prompt_instruction=system_prompt_instruction,
-            course_name=course_name,
-        )
-        # 回傳加上 system_prompt_instruction、難度、rag 的 output（不含重複的 unit_filename / rag_file_id / rag_filename）
-        result["system_prompt_instruction"] = system_prompt_instruction
-        result["level"] = body.level
-        result["rag_output"] = {
-            "file_id": rag_name,
-            "rag_name": rag_name,
-            "filename": f"{rag_name}.zip",
-        }
-        # 明確以 UTF-8 回傳 JSON，避免 'ascii' codec can't encode 錯誤（測驗/提示/答案含中文）
-        body_bytes = json.dumps(result, ensure_ascii=False).encode("utf-8")
-        return Response(content=body_bytes, media_type="application/json; charset=utf-8")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 class UpdateRagNameRequest(BaseModel):
     """更新 Rag 的 name 欄位。"""
     name: str  # 新名稱，可為空字串
@@ -364,6 +306,11 @@ class UpdateRagNameRequest(BaseModel):
 class UpdateRagSystemPromptInstructionRequest(BaseModel):
     """更新 Rag 的 system_prompt_instruction 欄位。"""
     system_prompt_instruction: str  # 出題系統指令，可為空字串
+
+
+class UpdateRagLlmApiKeyRequest(BaseModel):
+    """更新 Rag 的 llm_api_key 欄位。"""
+    llm_api_key: str  # 新 API key，可為空字串
 
 
 @router.patch("/name/{file_id}", status_code=200)
@@ -428,6 +375,40 @@ def update_rag_system_prompt_instruction(
         if not r.data or len(r.data) == 0:
             raise HTTPException(status_code=404, detail="找不到該 file_id 的 Rag 資料")
         return {"message": "已更新 system_prompt_instruction", "file_id": fid}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/llm_api_key/{file_id}", status_code=200)
+def update_rag_llm_api_key(
+    file_id: str = PathParam(..., description="要更新 llm_api_key 的 Rag 的 file_id"),
+    body: UpdateRagLlmApiKeyRequest = ...,
+    x_person_id: str | None = Header(None, alias="X-Person-Id"),
+):
+    """
+    PATCH /rag/llm_api_key/{file_id}，body 傳 { "llm_api_key": "sk-..." }，person_id 請帶 Header X-Person-Id。
+    僅更新 Rag 表該筆的 llm_api_key 與 updated_at。
+    """
+    pid = (x_person_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="請傳入 Header X-Person-Id（person_id）")
+    fid = (file_id or "").strip()
+    if not fid or "/" in fid or "\\" in fid:
+        raise HTTPException(status_code=400, detail="無效的 file_id")
+    try:
+        supabase = get_supabase()
+        r = (
+            supabase.table("Rag")
+            .update({"llm_api_key": body.llm_api_key, "updated_at": _now_utc_iso()})
+            .eq("file_id", fid)
+            .eq("person_id", pid)
+            .execute()
+        )
+        if not r.data or len(r.data) == 0:
+            raise HTTPException(status_code=404, detail="找不到該 file_id 的 Rag 資料")
+        return {"message": "已更新 llm_api_key", "file_id": fid}
     except HTTPException:
         raise
     except Exception as e:

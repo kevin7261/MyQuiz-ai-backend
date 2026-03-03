@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Form
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,6 +23,7 @@ from openai import OpenAI
 
 from utils.rag import process_zip_to_docs
 from utils.storage import get_zip_path
+from utils.supabase_client import get_supabase
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -34,17 +35,6 @@ class RubricItem(BaseModel):
     score: Optional[int] = None
     comment: Optional[str] = None
     model_config = ConfigDict(extra="allow")
-
-
-class GradeSubmissionRequest(BaseModel):
-    """POST /rag/grade_submission 請求 body：file_id、rag_name 與評分參數。"""
-
-    file_id: str = Field(..., description="upload-zip 回傳的 source file_id")
-    rag_name: str = Field(..., description="rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 RAG ZIP")
-    openai_api_key: str = Field(..., description="OpenAI API key，用於 GPT 評分")
-    quiz_text: str = Field(..., description="測驗內容")
-    student_answer: str = Field(..., description="學生回答")
-    course_name: str = Field(..., description="課程名稱，會帶入評分 prompt 中")
 
 
 class GradingResult(BaseModel):
@@ -75,9 +65,9 @@ def _cleanup_grade_workspace(work_dir: Path) -> None:
 def _run_grade_job(
     work_dir: Path,
     api_key: str,
-    quiz_text: str,
+    question_text: str,
     student_answer: str,
-    course_name: str,
+    qtype: str,
 ) -> GradingResult:
     """在給定的 work_dir（已含 ref.zip）執行 RAG + GPT 評分，回傳 GradingResult。"""
     zip_source_path = work_dir / "ref.zip"
@@ -122,16 +112,16 @@ def _run_grade_job(
         vectorstore = FAISS.from_documents(split_docs, embeddings)
 
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
-    docs = retriever.invoke(quiz_text)
+    docs = retriever.invoke(question_text)
     context_text = "\n\n".join([d.page_content for d in docs])
 
-    prompt = f"""你是一位「{course_name}」助教。請批改這道**觀念簡答題**。
-                目標：評估學生對「{course_name}」的理解、邏輯推演與解釋清晰度。
+    prompt = f"""你是一位「地理資訊系統與環境資料分析」助教。請批改這道**觀念簡答題**。
+                目標：評估學生對「地理資訊系統與環境資料分析」的理解、邏輯推演與解釋清晰度。
                 【重要限制】
                 1. **請務必使用繁體中文 (Traditional Chinese) 撰寫所有評語、優點、弱點與行動建議。**
                 【評分標準】A) 概念正確性 (3分), B) 邏輯與解釋 (4分), C) 完整性 (3分)。
                 【輸出 JSON】{{ "score": int, "level": str, "rubric": [], "strengths": [], "weaknesses": [], "missing_items": [], "action_items": [] }}
-                [測驗] {quiz_text}
+                [題目] {question_text}
                 [學生回答] {student_answer}
                 [講義依據] {context_text}
             """
@@ -167,13 +157,13 @@ def _grade_job_background(
     job_id: str,
     work_dir: Path,
     api_key: str,
-    quiz_text: str,
+    question_text: str,
     student_answer: str,
-    course_name: str,
+    qtype: str,
 ) -> None:
     """背景執行評分，結果寫入 _grade_job_results[job_id]。"""
     try:
-        result = _run_grade_job(work_dir, api_key, quiz_text, student_answer, course_name)
+        result = _run_grade_job(work_dir, api_key, question_text, student_answer, qtype)
         _grade_job_results[job_id] = {
             "status": "ready",
             "result": result.model_dump(),
@@ -190,29 +180,41 @@ def _grade_job_background(
 
 
 @router.post("/grade_submission")
-async def grade_submission(background_tasks: BackgroundTasks, body: GradeSubmissionRequest):
+async def grade_submission(
+    background_tasks: BackgroundTasks,
+    file_id: str = Form(..., description="upload-zip 回傳的 source file_id"),
+    rag_name: str = Form(..., description="rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 RAG ZIP"),
+    question_text: str = Form(..., description="題目文字"),
+    student_answer: str = Form(..., description="學生回答"),
+    qtype: str = Form(..., description="題型，如 short_answer"),
+):
     """
-    傳入 JSON body：file_id、rag_name 與評分參數。程式自動組出 rag_file_id={rag_name}_rag 並查找 RAG ZIP。
+    傳入 file_id（upload-zip 的 source file_id）與 rag_name（如 220222_220301），程式自動組出 rag_file_id={rag_name}_rag 並查找 RAG ZIP。
+    OpenAI API key 由 Rag 表該 file_id 的 llm_api_key 取得；若為空則回傳 400。
     驗證後立即回傳 202 與 job_id；實際評分在背景執行。前端請以 GET /rag/grade_result/{job_id} 輪詢。
     """
-    api_key = (body.openai_api_key or "").strip()
+    file_id = (file_id or "").strip()
+    if not file_id:
+        return JSONResponse(status_code=400, content={"error": "請傳入 file_id"})
+
+    # API key 由 Rag 表該 file_id 的 llm_api_key 取得
+    supabase = get_supabase()
+    resp = supabase.table("Rag").select("llm_api_key").eq("file_id", file_id).execute()
+    row = (resp.data or [None])[0] if resp.data else None
+    api_key = (row.get("llm_api_key") or "").strip() if isinstance(row, dict) else ""
     if not api_key:
-        raise HTTPException(status_code=400, detail="請傳入 openai_api_key")
+        return JSONResponse(status_code=400, content={"error": "該 file_id 的 Rag 尚未設定 llm_api_key，請在上傳 ZIP 或「確定修改」處填入 OpenAI API Key"})
 
-    rag_name = (body.rag_name or "").strip()
+    rag_name = (rag_name or "").strip()
     if not rag_name:
-        raise HTTPException(status_code=400, detail="請傳入 rag_name（如 220222_220301）")
-
-    course_name = (body.course_name or "").strip()
-    if not course_name:
-        raise HTTPException(status_code=400, detail="請傳入 course_name（課程名稱）")
+        return JSONResponse(status_code=400, content={"error": "請傳入 rag_name（如 220222_220301）"})
 
     rag_file_id = f"{rag_name}_rag"
     rag_zip_path = get_zip_path(rag_file_id)
     if not rag_zip_path or not rag_zip_path.exists():
-        raise HTTPException(
+        return JSONResponse(
             status_code=404,
-            detail=f"找不到 RAG ZIP，請確認 file_id={body.file_id}、rag_name={rag_name}（rag_file_id={rag_file_id}）",
+            content={"error": f"找不到 RAG ZIP，請確認 file_id={file_id}、rag_name={rag_name}（rag_file_id={rag_file_id}）"},
         )
 
     work_dir = Path(tempfile.mkdtemp(prefix="aiquiz_grade_"))
@@ -224,12 +226,10 @@ async def grade_submission(background_tasks: BackgroundTasks, body: GradeSubmiss
         shutil.copy(rag_zip_path, zip_source_path)
         if not zipfile.is_zipfile(zip_source_path):
             _cleanup_grade_workspace(work_dir)
-            raise HTTPException(status_code=400, detail="無效的 ZIP 檔")
-    except HTTPException:
-        raise
+            return JSONResponse(status_code=400, content={"error": "無效的 ZIP 檔"})
     except Exception as e:
         _cleanup_grade_workspace(work_dir)
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
     job_id = str(uuid.uuid4())
     _grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
@@ -238,14 +238,14 @@ async def grade_submission(background_tasks: BackgroundTasks, body: GradeSubmiss
         job_id,
         work_dir,
         api_key,
-        body.quiz_text,
-        body.student_answer,
-        course_name,
+        question_text,
+        student_answer,
+        qtype,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
 
-@router.get("/grade_result/{job_id}")
+@router.get("/grade_result/{job_id}", tags=["rag"])
 async def get_grade_result(job_id: str):
     """
     輪詢評分結果。回傳 status: pending | ready | error；ready 時 result 為批改結果，error 時 error 為錯誤訊息。
