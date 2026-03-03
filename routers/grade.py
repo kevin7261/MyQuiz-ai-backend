@@ -42,7 +42,7 @@ class GradeSubmissionRequest(BaseModel):
     file_id: str = Field(..., description="upload-zip 回傳的 source file_id")
     rag_name: str = Field(..., description="rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 RAG ZIP")
     openai_api_key: str = Field(..., description="OpenAI API key，用於 GPT 評分")
-    question_text: str = Field(..., description="題目內容")
+    quiz_text: str = Field(..., description="測驗內容")
     student_answer: str = Field(..., description="學生回答")
     course_name: str = Field(..., description="課程名稱，會帶入評分 prompt 中")
 
@@ -75,7 +75,7 @@ def _cleanup_grade_workspace(work_dir: Path) -> None:
 def _run_grade_job(
     work_dir: Path,
     api_key: str,
-    question_text: str,
+    quiz_text: str,
     student_answer: str,
     course_name: str,
 ) -> GradingResult:
@@ -122,7 +122,7 @@ def _run_grade_job(
         vectorstore = FAISS.from_documents(split_docs, embeddings)
 
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
-    docs = retriever.invoke(question_text)
+    docs = retriever.invoke(quiz_text)
     context_text = "\n\n".join([d.page_content for d in docs])
 
     prompt = f"""你是一位「{course_name}」助教。請批改這道**觀念簡答題**。
@@ -131,7 +131,7 @@ def _run_grade_job(
                 1. **請務必使用繁體中文 (Traditional Chinese) 撰寫所有評語、優點、弱點與行動建議。**
                 【評分標準】A) 概念正確性 (3分), B) 邏輯與解釋 (4分), C) 完整性 (3分)。
                 【輸出 JSON】{{ "score": int, "level": str, "rubric": [], "strengths": [], "weaknesses": [], "missing_items": [], "action_items": [] }}
-                [題目] {question_text}
+                [測驗] {quiz_text}
                 [學生回答] {student_answer}
                 [講義依據] {context_text}
             """
@@ -167,13 +167,13 @@ def _grade_job_background(
     job_id: str,
     work_dir: Path,
     api_key: str,
-    question_text: str,
+    quiz_text: str,
     student_answer: str,
     course_name: str,
 ) -> None:
     """背景執行評分，結果寫入 _grade_job_results[job_id]。"""
     try:
-        result = _run_grade_job(work_dir, api_key, question_text, student_answer, course_name)
+        result = _run_grade_job(work_dir, api_key, quiz_text, student_answer, course_name)
         _grade_job_results[job_id] = {
             "status": "ready",
             "result": result.model_dump(),
@@ -238,7 +238,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: GradeSubmiss
         job_id,
         work_dir,
         api_key,
-        body.question_text,
+        body.quiz_text,
         body.student_answer,
         course_name,
     )

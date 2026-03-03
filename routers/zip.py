@@ -101,7 +101,7 @@ class PackRequest(BaseModel):
     chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
 
 
-class GenerateQuestionRequest(BaseModel):
+class GenerateQuizRequest(BaseModel):
     """指定 RAG ZIP 的來源 file_id（upload-zip 回傳）、rag_name（rag_list 的某一段，如 220222_220301）與出題參數。"""
     file_id: str  # upload-zip 回傳的 source file_id
     rag_name: str  # create-rag-zip 時 rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 rag 檔案（回傳時作為選擇單元／壓縮檔名）
@@ -301,13 +301,13 @@ def create_rag(body: PackRequest):
     return response
 
 
-@router.post("/generate-question")
-def generate_question_api(body: GenerateQuestionRequest):
+@router.post("/generate-quiz")
+def generate_quiz_api(body: GenerateQuizRequest):
     """
     傳入 file_id（upload-zip 的 source file_id）與 rag_name（如 220222_220301），程式自動組出 rag_file_id={rag_name}_rag 並查找 RAG ZIP。
-    再呼叫 GPT-4o 生成題目，需傳入 openai_api_key、難度 level。
-    回傳 JSON：question_content, hint, answer（以及 system_prompt_instruction, unit_filename, level）。
-    僅在呼叫過本 API 產生題目後才會有上述內容；未產生過題目時前端不會有這些欄位。
+    再呼叫 GPT-4o 生成測驗，需傳入 openai_api_key、難度 level。
+    回傳 JSON：quiz_content, hint, reference_answer（參考答案；以及 system_prompt_instruction, unit_filename, level）。
+    僅在呼叫過本 API 產生測驗後才會有上述內容；未產生過測驗時前端不會有這些欄位。
     """
     rag_name = (body.rag_name or "").strip()
     if not rag_name:
@@ -331,8 +331,8 @@ def generate_question_api(body: GenerateQuestionRequest):
         raise HTTPException(status_code=400, detail="請傳入 course_name（課程名稱，必填）")
 
     try:
-        from utils.question_gen import generate_question
-        result = generate_question(
+        from utils.quiz_gen import generate_quiz
+        result = generate_quiz(
             path,
             api_key=api_key,
             level=body.level,
@@ -347,7 +347,7 @@ def generate_question_api(body: GenerateQuestionRequest):
             "rag_name": rag_name,
             "filename": f"{rag_name}.zip",
         }
-        # 明確以 UTF-8 回傳 JSON，避免 'ascii' codec can't encode 錯誤（題目/提示/答案含中文）
+        # 明確以 UTF-8 回傳 JSON，避免 'ascii' codec can't encode 錯誤（測驗/提示/答案含中文）
         body_bytes = json.dumps(result, ensure_ascii=False).encode("utf-8")
         return Response(content=body_bytes, media_type="application/json; charset=utf-8")
     except ValueError as e:

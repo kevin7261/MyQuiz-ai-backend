@@ -1,5 +1,5 @@
 """
-從 RAG ZIP（FAISS 向量庫）載入後檢索 Context，呼叫 GPT-4o 生成題目。
+從 RAG ZIP（FAISS 向量庫）載入後檢索 Context，呼叫 GPT-4o 生成測驗。
 """
 
 import json
@@ -21,7 +21,7 @@ GIS_EXTENSIONS = {".shp", ".tif", ".tiff", ".gpkg", ".csv", ".rds", ".geojson", 
 # 預設出題系統指令（會與 API 傳入的 system_prompt_instruction 一併使用，放在其上方）
 SYSTEM_INSTRUCTION_PREDEFINE = """
             1. **請務必使用繁體中文 (Traditional Chinese) 出題。**
-            2. 在 'question_content' (題目) 中：只說明**任務目標**。嚴禁直接列出步驟 1, 2, 3。請保留思考空間給學生。
+            2. 在 'quiz_content' (測驗) 中：只說明**任務目標**。嚴禁直接列出步驟 1, 2, 3。請保留思考空間給學生。
             3. 在 'hint' (提示) 中：才列出詳細的解題步驟。
         """
 
@@ -39,7 +39,7 @@ def get_gis_filenames(extract_folder: Path) -> list[str]:
     return sorted(set(names))
 
 
-def generate_question(
+def generate_quiz(
     zip_path: Path,
     api_key: str,
     level: str,
@@ -51,7 +51,7 @@ def generate_question(
     僅支援由 /zip/pack 產出的 RAG ZIP，不支援一般講義 ZIP。
     system_prompt_instruction 為必填參數，由 API 呼叫端傳入出題系統指令。
     course_name 為課程名稱，會帶入出題 prompt 中。
-    回傳 {"question_content": "...", "hint": "...", "answer": "..."}（API 層會再加上 system_prompt_instruction、unit_filename、level）。
+    回傳 {"quiz_content": "...", "hint": "...", "reference_answer": "..."}（參考答案；API 層會再加上 system_prompt_instruction、unit_filename、level）。
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 openai_api_key")
@@ -96,20 +96,20 @@ def generate_question(
         sys_role = f"你是頂尖的「{course_name}」課程助教。請使用 GPT-4o 的強大邏輯來出題。"
 
         task_instruction = f"難度：{level}。"
-        core_point = "🔥 **本次題目核心考點：請根據以下參考講義內容設計**"
+        core_point = "🔥 **本次測驗核心考點：請根據以下參考講義內容設計**"
 
         final_system_prompt = f"""
             {sys_role}
             {task_instruction}
             {core_point}
-            (Please design the question around the core concept above.)
+            (Please design the quiz around the core concept above.)
             【出題重要規範】
             {SYSTEM_INSTRUCTION_PREDEFINE}
             {system_prompt_instruction}
             請以 JSON 格式回傳：
-            {{ "question_content": "Question content (Markdown)...", 
+            {{ "quiz_content": "Quiz content (Markdown)...", 
               "hint": "Hint for students...", 
-              "answer": "Answer for students..." }}
+              "reference_answer": "參考答案（供教師參考，非標準答案）..." }}
         """
         user_prompt_text = f"參考講義內容：\n{context_text}"
 
@@ -125,6 +125,10 @@ def generate_question(
         )
 
         content = response.choices[0].message.content
-        return json.loads(content)
+        data = json.loads(content)
+        # 統一使用 reference_answer（參考答案）；相容舊回傳 answer
+        if "reference_answer" not in data and "answer" in data:
+            data["reference_answer"] = data.pop("answer")
+        return data
     finally:
         shutil.rmtree(extract_folder, ignore_errors=True)
