@@ -253,6 +253,7 @@ def create_rag(body: PackRequest):
         )
         item = {
             "file_id": file_id,
+            "rag_name": file_id,
             "filename": filename,
         }
         try:
