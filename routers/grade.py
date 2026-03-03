@@ -192,6 +192,29 @@ def _grade_job_background(
         _cleanup_grade_workspace(work_dir)
 
 
+@router.get("/grade_result/{job_id}")
+async def get_grade_result(job_id: str):
+    """
+    輪詢評分結果。回傳 status: pending | ready | error；ready 時 result 為批改結果，error 時 error 為錯誤訊息。
+    此端點刻意保持輕量（僅記憶體查表），以減少代理逾時 502。
+    """
+    if job_id not in _grade_job_results:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "status": "error",
+                "result": None,
+                "error": "job not found（可能為服務重啟或冷啟動，請重新送出評分）",
+            },
+        )
+    data = _grade_job_results[job_id]
+    return {
+        "status": data["status"],
+        "result": data.get("result"),
+        "error": data.get("error"),
+    }
+
+
 @router.post("/grade_submission")
 async def grade_submission(background_tasks: BackgroundTasks, body: GradeSubmissionRequest):
     """
@@ -247,26 +270,3 @@ async def grade_submission(background_tasks: BackgroundTasks, body: GradeSubmiss
         course_name,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id})
-
-
-@router.get("/grade_result/{job_id}")
-async def get_grade_result(job_id: str):
-    """
-    輪詢評分結果。回傳 status: pending | ready | error；ready 時 result 為批改結果，error 時 error 為錯誤訊息。
-    此端點刻意保持輕量（僅記憶體查表），以減少代理逾時 502。
-    """
-    if job_id not in _grade_job_results:
-        return JSONResponse(
-            status_code=404,
-            content={
-                "status": "error",
-                "result": None,
-                "error": "job not found（可能為服務重啟或冷啟動，請重新送出評分）",
-            },
-        )
-    data = _grade_job_results[job_id]
-    return {
-        "status": data["status"],
-        "result": data.get("result"),
-        "error": data.get("error"),
-    }

@@ -103,12 +103,12 @@ class PackRequest(BaseModel):
 
 class GenerateQuestionRequest(BaseModel):
     """指定 RAG ZIP 的來源 file_id（upload-zip 回傳）、rag_name（rag_list 的某一段，如 220222_220301）與出題參數。"""
-    file_id: str  # upload-zip 回傳的 source file_id
-    rag_name: str  # create-rag 時 rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 rag 檔案
+    file_id: str  # upload-zip 回傳的 source file_id（用於查 Rag 表的 system_prompt_instruction）
+    rag_name: str  # create-rag-zip 時 rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 rag 檔案
     openai_api_key: str  # 用於 GPT-4o 出題，不從環境變數讀取
     qtype: str  # 題型
     level: str  # 難度
-    system_instruction: str  # 出題系統指令，必填（例如出題規範、語言、格式等）
+    system_prompt_instruction: str | None = None  # 出題系統指令（選填）；若未傳則使用 Rag 表的 system_prompt_instruction，若皆有則合併
     course_name: str  # 課程名稱，會帶入出題 prompt 中
 
 
@@ -207,7 +207,7 @@ async def upload_zip(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/create-rag")
+@router.post("/create-rag-zip")
 def create_rag(body: PackRequest):
     """
     依先前上傳的 ZIP（file_id）與 rag_list 字串，抽出指定 6 位數資料夾重新壓成 ZIP 並存到後端。
@@ -319,9 +319,16 @@ def generate_question_api(body: GenerateQuestionRequest):
     if not api_key:
         raise HTTPException(status_code=400, detail="請傳入 openai_api_key")
 
-    system_instruction = (body.system_instruction or "").strip()
-    if not system_instruction:
-        raise HTTPException(status_code=400, detail="請傳入 system_instruction（出題系統指令，必填）")
+    # 合併 Rag 表的 system_prompt_instruction 與 request body 的 system_prompt_instruction
+    rag_rows = _rag_table_select_by_file_id(body.file_id, select_columns="system_prompt_instruction")
+    rag_system = (rag_rows[0].get("system_prompt_instruction") or "").strip() if rag_rows else ""
+    body_system = (body.system_prompt_instruction or "").strip()
+    if rag_system and body_system:
+        system_prompt_instruction = f"{rag_system}\n{body_system}"
+    else:
+        system_prompt_instruction = rag_system or body_system
+    if not system_prompt_instruction:
+        raise HTTPException(status_code=400, detail="請傳入 system_prompt_instruction（request body），或於 Rag 表該 file_id 設定 system_prompt_instruction")
 
     course_name = (body.course_name or "").strip()
     if not course_name:
@@ -334,7 +341,7 @@ def generate_question_api(body: GenerateQuestionRequest):
             api_key=api_key,
             qtype=body.qtype,
             level=body.level,
-            system_instruction=system_instruction,
+            system_prompt_instruction=system_prompt_instruction,
             course_name=course_name,
         )
         # 明確以 UTF-8 回傳 JSON，避免 'ascii' codec can't encode 錯誤（題目/提示/答案含中文）

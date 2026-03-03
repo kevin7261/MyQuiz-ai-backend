@@ -214,7 +214,7 @@ def get_zip_path(file_id: str) -> Path | None:
 def get_zip_path_by_person(person_id: str, file_id: str) -> Path | None:
     """
     依 person_id 與 file_id 取得上傳 ZIP 路徑。上傳檔可能用原始檔名存於 upload/ 下。
-    與 create-rag 儲存位置一致。不存在則回傳 None。
+    與 create-rag-zip 儲存位置一致。不存在則回傳 None。
     """
     if not file_id or "/" in file_id or "\\" in file_id:
         return None
