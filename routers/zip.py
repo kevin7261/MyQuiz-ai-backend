@@ -307,7 +307,9 @@ def create_rag(body: PackRequest):
 def generate_question_api(body: GenerateQuestionRequest):
     """
     傳入 file_id（upload-zip 的 source file_id）與 rag_name（如 220222_220301），程式自動組出 rag_file_id={rag_name}_rag 並查找 RAG ZIP。
-    再呼叫 GPT-4o 生成題目，需傳入 openai_api_key、難度 level。回傳 JSON：question_content, hint, target_filename。
+    再呼叫 GPT-4o 生成題目，需傳入 openai_api_key、難度 level。
+    回傳 JSON：question_content, hint, answer（以及 system_prompt_instruction, unit_filename, level）。
+    僅在呼叫過本 API 產生題目後才會有上述內容；未產生過題目時前端不會有這些欄位。
     """
     rag_name = (body.rag_name or "").strip()
     if not rag_name:
