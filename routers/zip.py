@@ -269,17 +269,14 @@ def create_rag(body: PackRequest):
                 )
                 # rag 檔名也依 rag_list，file_id 加 _rag 以區分 repack
                 rag_file_id = f"{file_id}_rag"
-                rag_filename = f"{file_id}.zip"
                 save_zip(
                     rag_bytes,
-                    rag_filename,
+                    f"{file_id}.zip",
                     folder=FOLDER_RAG,
                     person_id=pid,
                     parent_file_id=body.file_id,
                     file_id=rag_file_id,
                 )
-                item["rag_file_id"] = rag_file_id
-                item["rag_filename"] = rag_filename
             else:
                 item["rag_error"] = "找不到 repack ZIP 路徑"
         except ValueError as e:
@@ -342,10 +339,14 @@ def generate_question_api(body: GenerateQuestionRequest):
             system_prompt_instruction=system_prompt_instruction,
             course_name=course_name,
         )
-        # 回傳加上 system_prompt_instruction、選擇單元（壓縮檔名）、難度
+        # 回傳加上 system_prompt_instruction、難度、rag 的 output（不含重複的 unit_filename / rag_file_id / rag_filename）
         result["system_prompt_instruction"] = system_prompt_instruction
-        result["unit_filename"] = f"{rag_name}_rag.zip"  # 選擇單元（壓縮檔名）
         result["level"] = body.level
+        result["rag_output"] = {
+            "file_id": rag_name,
+            "rag_name": rag_name,
+            "filename": f"{rag_name}.zip",
+        }
         # 明確以 UTF-8 回傳 JSON，避免 'ascii' codec can't encode 錯誤（題目/提示/答案含中文）
         body_bytes = json.dumps(result, ensure_ascii=False).encode("utf-8")
         return Response(content=body_bytes, media_type="application/json; charset=utf-8")
