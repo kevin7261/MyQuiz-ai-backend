@@ -44,7 +44,6 @@ class GradeSubmissionRequest(BaseModel):
     openai_api_key: str = Field(..., description="OpenAI API key，用於 GPT 評分")
     question_text: str = Field(..., description="題目內容")
     student_answer: str = Field(..., description="學生回答")
-    qtype: str = Field(..., description="題型")
     course_name: str = Field(..., description="課程名稱，會帶入評分 prompt 中")
 
 
@@ -78,7 +77,6 @@ def _run_grade_job(
     api_key: str,
     question_text: str,
     student_answer: str,
-    qtype: str,
     course_name: str,
 ) -> GradingResult:
     """在給定的 work_dir（已含 ref.zip）執行 RAG + GPT 評分，回傳 GradingResult。"""
@@ -171,12 +169,11 @@ def _grade_job_background(
     api_key: str,
     question_text: str,
     student_answer: str,
-    qtype: str,
     course_name: str,
 ) -> None:
     """背景執行評分，結果寫入 _grade_job_results[job_id]。"""
     try:
-        result = _run_grade_job(work_dir, api_key, question_text, student_answer, qtype, course_name)
+        result = _run_grade_job(work_dir, api_key, question_text, student_answer, course_name)
         _grade_job_results[job_id] = {
             "status": "ready",
             "result": result.model_dump(),
@@ -190,29 +187,6 @@ def _grade_job_background(
         }
     finally:
         _cleanup_grade_workspace(work_dir)
-
-
-@router.get("/grade_result/{job_id}")
-async def get_grade_result(job_id: str):
-    """
-    輪詢評分結果。回傳 status: pending | ready | error；ready 時 result 為批改結果，error 時 error 為錯誤訊息。
-    此端點刻意保持輕量（僅記憶體查表），以減少代理逾時 502。
-    """
-    if job_id not in _grade_job_results:
-        return JSONResponse(
-            status_code=404,
-            content={
-                "status": "error",
-                "result": None,
-                "error": "job not found（可能為服務重啟或冷啟動，請重新送出評分）",
-            },
-        )
-    data = _grade_job_results[job_id]
-    return {
-        "status": data["status"],
-        "result": data.get("result"),
-        "error": data.get("error"),
-    }
 
 
 @router.post("/grade_submission")
@@ -266,7 +240,29 @@ async def grade_submission(background_tasks: BackgroundTasks, body: GradeSubmiss
         api_key,
         body.question_text,
         body.student_answer,
-        body.qtype,
         course_name,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id})
+
+
+@router.get("/grade_result/{job_id}")
+async def get_grade_result(job_id: str):
+    """
+    輪詢評分結果。回傳 status: pending | ready | error；ready 時 result 為批改結果，error 時 error 為錯誤訊息。
+    此端點刻意保持輕量（僅記憶體查表），以減少代理逾時 502。
+    """
+    if job_id not in _grade_job_results:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "status": "error",
+                "result": None,
+                "error": "job not found（可能為服務重啟或冷啟動，請重新送出評分）",
+            },
+        )
+    data = _grade_job_results[job_id]
+    return {
+        "status": data["status"],
+        "result": data.get("result"),
+        "error": data.get("error"),
+    }

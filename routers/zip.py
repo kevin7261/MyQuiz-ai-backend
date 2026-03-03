@@ -92,23 +92,23 @@ class ListRagResponse(BaseModel):
 
 
 class PackRequest(BaseModel):
-    """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{file_id}/upload。會 update Rag 表該 file_id 的 rag_list、rag_metadata、chunk_size、chunk_overlap、system_prompt_instruction。"""
+    """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{file_id}/upload。會 update Rag 表該 file_id 的 rag_list、rag_metadata、chunk_size、chunk_overlap（system_prompt_instruction 不存入 Rag 表）。"""
     file_id: str
     person_id: str  # 與 upload-zip 一致，上傳 ZIP 所在路徑的 person_id
     rag_list: str  # 寫入 Rag 表 rag_list 欄位；例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
     openai_api_key: str  # 用於 Embedding，必填（一律做成 RAG ZIP）
     chunk_size: int = 1000  # 寫入 Rag 表 chunk_size 欄位
     chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
-    system_prompt_instruction: str | None = None  # 寫入 Rag 表 system_prompt_instruction 欄位（選填），供出題等使用
+    system_prompt_instruction: str | None = None  # 不寫入 Rag 表；若傳入則僅供前端使用，出題時請由 generate-question 的 body 傳入
 
 
 class GenerateQuestionRequest(BaseModel):
     """指定 RAG ZIP 的來源 file_id（upload-zip 回傳）、rag_name（rag_list 的某一段，如 220222_220301）與出題參數。"""
-    file_id: str  # upload-zip 回傳的 source file_id（用於查 Rag 表的 system_prompt_instruction）
+    file_id: str  # upload-zip 回傳的 source file_id
     rag_name: str  # create-rag-zip 時 rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 rag 檔案（回傳時作為選擇單元／壓縮檔名）
     openai_api_key: str  # 用於 GPT-4o 出題，不從環境變數讀取
     level: str  # 難度（回傳時一併帶回）
-    system_prompt_instruction: str | None = None  # 出題系統指令（選填）；若未傳則使用 Rag 表的 system_prompt_instruction，若皆有則合併（回傳時一併帶回）
+    system_prompt_instruction: str  # 出題系統指令（必填），不存入 Rag 表，僅由 request body 傳入
     course_name: str  # 課程名稱，會帶入出題 prompt 中
 
 
@@ -296,8 +296,7 @@ def create_rag(body: PackRequest):
             "chunk_overlap": body.chunk_overlap,
             "updated_at": _now_utc_iso(),
         }
-        if body.system_prompt_instruction is not None:
-            update_payload["system_prompt_instruction"] = (body.system_prompt_instruction or "").strip() or None
+        # system_prompt_instruction 不寫入 Rag 表，僅由出題 API 的 request body 傳入
         supabase.table("Rag").update(update_payload).eq("file_id", body.file_id).execute()
     except Exception:
         pass
@@ -308,7 +307,7 @@ def create_rag(body: PackRequest):
 def generate_question_api(body: GenerateQuestionRequest):
     """
     傳入 file_id（upload-zip 的 source file_id）與 rag_name（如 220222_220301），程式自動組出 rag_file_id={rag_name}_rag 並查找 RAG ZIP。
-    再呼叫 GPT-4o 生成題目，需傳入 openai_api_key、題型 qtype、難度 level。回傳 JSON：question_content, hint, target_filename。
+    再呼叫 GPT-4o 生成題目，需傳入 openai_api_key、難度 level。回傳 JSON：question_content, hint, target_filename。
     """
     rag_name = (body.rag_name or "").strip()
     if not rag_name:
@@ -322,16 +321,10 @@ def generate_question_api(body: GenerateQuestionRequest):
     if not api_key:
         raise HTTPException(status_code=400, detail="請傳入 openai_api_key")
 
-    # 合併 Rag 表的 system_prompt_instruction 與 request body 的 system_prompt_instruction
-    rag_rows = _rag_table_select_by_file_id(body.file_id, select_columns="system_prompt_instruction")
-    rag_system = (rag_rows[0].get("system_prompt_instruction") or "").strip() if rag_rows else ""
-    body_system = (body.system_prompt_instruction or "").strip()
-    if rag_system and body_system:
-        system_prompt_instruction = f"{rag_system}\n{body_system}"
-    else:
-        system_prompt_instruction = rag_system or body_system
+    # system_prompt_instruction 僅從 request body 取得，不從 Rag 表讀取
+    system_prompt_instruction = (body.system_prompt_instruction or "").strip()
     if not system_prompt_instruction:
-        raise HTTPException(status_code=400, detail="請傳入 system_prompt_instruction（request body），或於 Rag 表該 file_id 設定 system_prompt_instruction")
+        raise HTTPException(status_code=400, detail="請傳入 system_prompt_instruction（出題系統指令，必填）")
 
     course_name = (body.course_name or "").strip()
     if not course_name:
@@ -364,6 +357,11 @@ class UpdateRagNameRequest(BaseModel):
     name: str  # 新名稱，可為空字串
 
 
+class UpdateRagSystemPromptInstructionRequest(BaseModel):
+    """更新 Rag 的 system_prompt_instruction 欄位。"""
+    system_prompt_instruction: str  # 出題系統指令，可為空字串
+
+
 @router.patch("/name/{file_id}", status_code=200)
 def update_rag_name(
     file_id: str = PathParam(..., description="要更新 name 的 Rag 的 file_id"),
@@ -392,6 +390,40 @@ def update_rag_name(
         if not r.data or len(r.data) == 0:
             raise HTTPException(status_code=404, detail="找不到該 file_id 的 Rag 資料")
         return {"message": "已更新 name", "file_id": fid, "name": body.name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/system_prompt_instruction/{file_id}", status_code=200)
+def update_rag_system_prompt_instruction(
+    file_id: str = PathParam(..., description="要更新 system_prompt_instruction 的 Rag 的 file_id"),
+    body: UpdateRagSystemPromptInstructionRequest = ...,
+    x_person_id: str | None = Header(None, alias="X-Person-Id"),
+):
+    """
+    PATCH /rag/system_prompt_instruction/{file_id}，body 傳 { "system_prompt_instruction": "出題系統指令..." }，person_id 請帶 Header X-Person-Id。
+    僅更新 Rag 表該筆的 system_prompt_instruction 與 updated_at。
+    """
+    pid = (x_person_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="請傳入 Header X-Person-Id（person_id）")
+    fid = (file_id or "").strip()
+    if not fid or "/" in fid or "\\" in fid:
+        raise HTTPException(status_code=400, detail="無效的 file_id")
+    try:
+        supabase = get_supabase()
+        r = (
+            supabase.table("Rag")
+            .update({"system_prompt_instruction": body.system_prompt_instruction, "updated_at": _now_utc_iso()})
+            .eq("file_id", fid)
+            .eq("person_id", pid)
+            .execute()
+        )
+        if not r.data or len(r.data) == 0:
+            raise HTTPException(status_code=404, detail="找不到該 file_id 的 Rag 資料")
+        return {"message": "已更新 system_prompt_instruction", "file_id": fid}
     except HTTPException:
         raise
     except Exception as e:
