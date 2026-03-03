@@ -12,8 +12,8 @@ import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Form
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, BackgroundTasks, Form, HTTPException
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -26,6 +26,16 @@ from utils.storage import get_zip_path
 from utils.supabase_client import get_supabase
 
 router = APIRouter(prefix="/rag", tags=["rag"])
+
+
+class GenerateQuizRequest(BaseModel):
+    """POST /rag/generate-quiz 請求 body。API key 由 Rag 表該 file_id 的 llm_api_key 取得。"""
+
+    file_id: str = Field(..., description="upload-zip 回傳的 source file_id")
+    rag_name: str = Field(..., description="rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 RAG ZIP")
+    level: str = Field(..., description="難度（回傳時一併帶回）")
+    system_prompt_instruction: str = Field(..., description="出題系統指令（必填）")
+    course_name: str = Field(..., description="課程名稱，會帶入出題 prompt 中")
 
 
 class RubricItem(BaseModel):
@@ -177,6 +187,65 @@ def _grade_job_background(
         }
     finally:
         _cleanup_grade_workspace(work_dir)
+
+
+@router.post("/generate-quiz")
+def generate_quiz_api(body: GenerateQuizRequest):
+    """
+    傳入 file_id（upload-zip 的 source file_id）與 rag_name（如 220222_220301），程式自動組出 rag_file_id={rag_name}_rag 並查找 RAG ZIP。
+    OpenAI API key 由 Rag 表該 file_id 的 llm_api_key 取得；若為空則回傳 400。
+    回傳 JSON：quiz_content, hint, reference_answer（參考答案；以及 system_prompt_instruction, unit_filename, level）。
+    """
+    file_id = (body.file_id or "").strip()
+    if not file_id:
+        raise HTTPException(status_code=400, detail="請傳入 file_id")
+
+    supabase = get_supabase()
+    rag_rows = supabase.table("Rag").select("llm_api_key").eq("file_id", file_id).eq("deleted", False).execute()
+    if not rag_rows.data or len(rag_rows.data) == 0:
+        raise HTTPException(status_code=404, detail=f"找不到 file_id={file_id} 的 Rag 資料")
+    api_key = (rag_rows.data[0].get("llm_api_key") or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="該筆 Rag 的 llm_api_key 未設定，請先在 upload-zip 或 Rag 表設定 llm_api_key")
+
+    rag_name = (body.rag_name or "").strip()
+    if not rag_name:
+        raise HTTPException(status_code=400, detail="請傳入 rag_name（如 220222_220301）")
+    rag_file_id = f"{rag_name}_rag"
+    path = get_zip_path(rag_file_id)
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 file_id={body.file_id}、rag_name={rag_name}（rag_file_id={rag_file_id}）")
+
+    system_prompt_instruction = (body.system_prompt_instruction or "").strip()
+    if not system_prompt_instruction:
+        raise HTTPException(status_code=400, detail="請傳入 system_prompt_instruction（出題系統指令，必填）")
+
+    course_name = (body.course_name or "").strip()
+    if not course_name:
+        raise HTTPException(status_code=400, detail="請傳入 course_name（課程名稱，必填）")
+
+    try:
+        from utils.quiz_gen import generate_quiz
+        result = generate_quiz(
+            path,
+            api_key=api_key,
+            level=body.level,
+            system_prompt_instruction=system_prompt_instruction,
+            course_name=course_name,
+        )
+        result["system_prompt_instruction"] = system_prompt_instruction
+        result["level"] = body.level
+        result["rag_output"] = {
+            "file_id": rag_name,
+            "rag_name": rag_name,
+            "filename": f"{rag_name}.zip",
+        }
+        body_bytes = json.dumps(result, ensure_ascii=False).encode("utf-8")
+        return Response(content=body_bytes, media_type="application/json; charset=utf-8")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/grade_submission")
