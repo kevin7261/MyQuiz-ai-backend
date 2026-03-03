@@ -42,7 +42,6 @@ def get_gis_filenames(extract_folder: Path) -> list[str]:
 def generate_question(
     zip_path: Path,
     api_key: str,
-    qtype: str,
     level: str,
     system_prompt_instruction: str,
     course_name: str,
@@ -52,7 +51,7 @@ def generate_question(
     僅支援由 /zip/pack 產出的 RAG ZIP，不支援一般講義 ZIP。
     system_prompt_instruction 為必填參數，由 API 呼叫端傳入出題系統指令。
     course_name 為課程名稱，會帶入出題 prompt 中。
-    回傳 {"question_content": "...", "hint": "...", "answer": "..."}。
+    回傳 {"question_content": "...", "hint": "...", "answer": "..."}（API 層會再加上 system_prompt_instruction、unit_filename、level）。
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 openai_api_key")
@@ -89,14 +88,14 @@ def generate_question(
         file_names = get_gis_filenames(extract_folder)
         file_names_str = ", ".join(file_names) if file_names else "None"
 
-        query = f"空間分析 {level} {qtype} 重點概念與操作步驟"
+        query = f"空間分析 {level} 重點概念與操作步驟"
         retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
         docs = retriever.invoke(query)
         context_text = "\n\n".join([d.page_content for d in docs])
 
         sys_role = f"你是頂尖的「{course_name}」課程助教。請使用 GPT-4o 的強大邏輯來出題。"
 
-        task_instruction = f"目前的題型任務是：【{qtype}】。難度：{level}。"
+        task_instruction = f"難度：{level}。"
         core_point = "🔥 **本次題目核心考點：請根據以下參考講義內容設計**"
 
         final_system_prompt = f"""

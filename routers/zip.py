@@ -92,23 +92,23 @@ class ListRagResponse(BaseModel):
 
 
 class PackRequest(BaseModel):
-    """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{file_id}/upload。會 update Rag 表該 file_id 的 rag_list、rag_metadata、chunk_size、chunk_overlap。"""
+    """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{file_id}/upload。會 update Rag 表該 file_id 的 rag_list、rag_metadata、chunk_size、chunk_overlap、system_prompt_instruction。"""
     file_id: str
     person_id: str  # 與 upload-zip 一致，上傳 ZIP 所在路徑的 person_id
     rag_list: str  # 寫入 Rag 表 rag_list 欄位；例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
     openai_api_key: str  # 用於 Embedding，必填（一律做成 RAG ZIP）
     chunk_size: int = 1000  # 寫入 Rag 表 chunk_size 欄位
     chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
+    system_prompt_instruction: str | None = None  # 寫入 Rag 表 system_prompt_instruction 欄位（選填），供出題等使用
 
 
 class GenerateQuestionRequest(BaseModel):
     """指定 RAG ZIP 的來源 file_id（upload-zip 回傳）、rag_name（rag_list 的某一段，如 220222_220301）與出題參數。"""
     file_id: str  # upload-zip 回傳的 source file_id（用於查 Rag 表的 system_prompt_instruction）
-    rag_name: str  # create-rag-zip 時 rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 rag 檔案
+    rag_name: str  # create-rag-zip 時 rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 rag 檔案（回傳時作為選擇單元／壓縮檔名）
     openai_api_key: str  # 用於 GPT-4o 出題，不從環境變數讀取
-    qtype: str  # 題型
-    level: str  # 難度
-    system_prompt_instruction: str | None = None  # 出題系統指令（選填）；若未傳則使用 Rag 表的 system_prompt_instruction，若皆有則合併
+    level: str  # 難度（回傳時一併帶回）
+    system_prompt_instruction: str | None = None  # 出題系統指令（選填）；若未傳則使用 Rag 表的 system_prompt_instruction，若皆有則合併（回傳時一併帶回）
     course_name: str  # 課程名稱，會帶入出題 prompt 中
 
 
@@ -289,13 +289,16 @@ def create_rag(body: PackRequest):
     response = {"source_file_id": body.file_id, "outputs": outputs}
     try:
         supabase = get_supabase()
-        supabase.table("Rag").update({
+        update_payload = {
             "rag_list": body.rag_list,
             "rag_metadata": response,
             "chunk_size": body.chunk_size,
             "chunk_overlap": body.chunk_overlap,
             "updated_at": _now_utc_iso(),
-        }).eq("file_id", body.file_id).execute()
+        }
+        if body.system_prompt_instruction is not None:
+            update_payload["system_prompt_instruction"] = (body.system_prompt_instruction or "").strip() or None
+        supabase.table("Rag").update(update_payload).eq("file_id", body.file_id).execute()
     except Exception:
         pass
     return response
@@ -339,11 +342,14 @@ def generate_question_api(body: GenerateQuestionRequest):
         result = generate_question(
             path,
             api_key=api_key,
-            qtype=body.qtype,
             level=body.level,
             system_prompt_instruction=system_prompt_instruction,
             course_name=course_name,
         )
+        # 回傳加上 system_prompt_instruction、選擇單元（壓縮檔名）、難度
+        result["system_prompt_instruction"] = system_prompt_instruction
+        result["unit_filename"] = f"{rag_name}_rag.zip"  # 選擇單元（壓縮檔名）
+        result["level"] = body.level
         # 明確以 UTF-8 回傳 JSON，避免 'ascii' codec can't encode 錯誤（題目/提示/答案含中文）
         body_bytes = json.dumps(result, ensure_ascii=False).encode("utf-8")
         return Response(content=body_bytes, media_type="application/json; charset=utf-8")
