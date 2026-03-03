@@ -286,7 +286,7 @@ def create_rag(body: PackRequest):
             item["rag_error"] = str(e)
         outputs.append(item)
 
-    response = {"source_file_id": body.file_id, "outputs": outputs}
+    response = {"source_file_id": body.file_id, "rag_list": body.rag_list, "outputs": outputs}
     try:
         supabase = get_supabase()
         update_payload = {
