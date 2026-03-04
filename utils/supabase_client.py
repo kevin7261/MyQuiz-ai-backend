@@ -53,8 +53,3 @@ def get_supabase(use_service_role: bool = True):
     else:
         _client_anon = client
     return client
-
-
-def get_supabase_anon():
-    """取得使用 anon key 的 client（會受 RLS 限制，適合依使用者 token 查資料）。"""
-    return get_supabase(use_service_role=False)

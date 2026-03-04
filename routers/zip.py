@@ -80,13 +80,6 @@ def _rag_table_select(select_columns: str = "*", exclude_deleted: bool = False) 
     return resp.data or []
 
 
-def _rag_table_select_by_file_id(file_id: str, select_columns: str = "*") -> list[dict]:
-    """查詢 Rag 表指定 file_id 的列。（表名為 public.Rag）"""
-    supabase = get_supabase()
-    resp = supabase.table("Rag").select(select_columns).eq("file_id", file_id).execute()
-    return resp.data or []
-
-
 class ListRagResponse(BaseModel):
     """GET /rag/rags 回應：Rag 表全部資料。"""
     rags: list[dict]
@@ -94,13 +87,14 @@ class ListRagResponse(BaseModel):
 
 
 class PackRequest(BaseModel):
-    """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{file_id}/upload。會 update Rag 表該 file_id 的 rag_list、rag_metadata、chunk_size、chunk_overlap。"""
+    """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{file_id}/upload。會 update Rag 表該 file_id 的 rag_list、rag_metadata、chunk_size、chunk_overlap、system_prompt_instruction。"""
     file_id: str
     person_id: str  # 與 upload-zip 一致，上傳 ZIP 所在路徑的 person_id
     rag_list: str  # 寫入 Rag 表 rag_list 欄位；例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
     openai_api_key: str  # 用於 Embedding，必填（一律做成 RAG ZIP）
     chunk_size: int = 1000  # 寫入 Rag 表 chunk_size 欄位
     chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
+    system_prompt_instruction: str = ""  # 出題系統指令，寫入 Rag 表 system_prompt_instruction 欄位
 
 
 def _resolve_person_id(form_person_id: str | None, x_person_id: str | None) -> str | None:
@@ -290,6 +284,7 @@ def create_rag(body: PackRequest):
             "rag_metadata": response,
             "chunk_size": body.chunk_size,
             "chunk_overlap": body.chunk_overlap,
+            "system_prompt_instruction": body.system_prompt_instruction or "",
             "updated_at": _now_utc_iso(),
         }
         supabase.table("Rag").update(update_payload).eq("file_id", body.file_id).execute()
@@ -301,11 +296,6 @@ def create_rag(body: PackRequest):
 class UpdateRagNameRequest(BaseModel):
     """更新 Rag 的 name 欄位。"""
     name: str  # 新名稱，可為空字串
-
-
-class UpdateRagSystemPromptInstructionRequest(BaseModel):
-    """更新 Rag 的 system_prompt_instruction 欄位。"""
-    system_prompt_instruction: str  # 出題系統指令，可為空字串
 
 
 class UpdateRagLlmApiKeyRequest(BaseModel):
@@ -341,40 +331,6 @@ def update_rag_name(
         if not r.data or len(r.data) == 0:
             raise HTTPException(status_code=404, detail="找不到該 file_id 的 Rag 資料")
         return {"message": "已更新 name", "file_id": fid, "name": body.name}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.patch("/system_prompt_instruction/{file_id}", status_code=200)
-def update_rag_system_prompt_instruction(
-    file_id: str = PathParam(..., description="要更新 system_prompt_instruction 的 Rag 的 file_id"),
-    body: UpdateRagSystemPromptInstructionRequest = ...,
-    x_person_id: str | None = Header(None, alias="X-Person-Id"),
-):
-    """
-    PATCH /rag/system_prompt_instruction/{file_id}，body 傳 { "system_prompt_instruction": "出題系統指令..." }，person_id 請帶 Header X-Person-Id。
-    僅更新 Rag 表該筆的 system_prompt_instruction 與 updated_at。
-    """
-    pid = (x_person_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="請傳入 Header X-Person-Id（person_id）")
-    fid = (file_id or "").strip()
-    if not fid or "/" in fid or "\\" in fid:
-        raise HTTPException(status_code=400, detail="無效的 file_id")
-    try:
-        supabase = get_supabase()
-        r = (
-            supabase.table("Rag")
-            .update({"system_prompt_instruction": body.system_prompt_instruction, "updated_at": _now_utc_iso()})
-            .eq("file_id", fid)
-            .eq("person_id", pid)
-            .execute()
-        )
-        if not r.data or len(r.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該 file_id 的 Rag 資料")
-        return {"message": "已更新 system_prompt_instruction", "file_id": fid}
     except HTTPException:
         raise
     except Exception as e:

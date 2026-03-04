@@ -22,7 +22,7 @@ GIS_EXTENSIONS = {".shp", ".tif", ".tiff", ".gpkg", ".csv", ".rds", ".geojson", 
 SYSTEM_INSTRUCTION_PREDEFINE = """
             1. **請務必使用繁體中文 (Traditional Chinese) 出題。**
             2. 在 'quiz_content' (測驗) 中：只說明**任務目標**。嚴禁直接列出步驟 1, 2, 3。請保留思考空間給學生。
-            3. 在 'hint' (提示) 中：才列出詳細的解題步驟。
+            3. 在 'quiz_hint' (提示) 中：才列出詳細的解題步驟。
         """
 
 
@@ -42,7 +42,7 @@ def get_gis_filenames(extract_folder: Path) -> list[str]:
 def generate_quiz(
     zip_path: Path,
     api_key: str,
-    level: str,
+    quiz_level: str,
     system_prompt_instruction: str,
     course_name: str,
 ) -> dict:
@@ -51,7 +51,7 @@ def generate_quiz(
     僅支援由 /zip/pack 產出的 RAG ZIP，不支援一般講義 ZIP。
     system_prompt_instruction 為必填參數，由 API 呼叫端傳入出題系統指令。
     course_name 為課程名稱，會帶入出題 prompt 中。
-    回傳 {"quiz_content": "...", "hint": "...", "reference_answer": "..."}（參考答案；API 層會再加上 system_prompt_instruction、unit_filename、level）。
+    回傳 {"quiz_content": "...", "quiz_hint": "...", "reference_answer": "..."}（參考答案；API 層會再加上 system_prompt_instruction、unit_filename、quiz_level）。
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 openai_api_key")
@@ -88,14 +88,14 @@ def generate_quiz(
         file_names = get_gis_filenames(extract_folder)
         file_names_str = ", ".join(file_names) if file_names else "None"
 
-        query = f"空間分析 {level} 重點概念與操作步驟"
+        query = f"空間分析 {quiz_level} 重點概念與操作步驟"
         retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
         docs = retriever.invoke(query)
         context_text = "\n\n".join([d.page_content for d in docs])
 
         sys_role = f"你是頂尖的「{course_name}」課程助教。請使用 GPT-4o 的強大邏輯來出題。"
 
-        task_instruction = f"難度：{level}。"
+        task_instruction = f"難度：{quiz_level}。"
         core_point = "🔥 **本次測驗核心考點：請根據以下參考講義內容設計**"
 
         final_system_prompt = f"""
@@ -108,7 +108,7 @@ def generate_quiz(
             {system_prompt_instruction}
             請以 JSON 格式回傳：
             {{ "quiz_content": "Quiz content (Markdown)...", 
-              "hint": "Hint for students...", 
+              "quiz_hint": "Hint for students...", 
               "reference_answer": "參考答案（供教師參考，非標準答案）..." }}
         """
         user_prompt_text = f"參考講義內容：\n{context_text}"
@@ -129,6 +129,9 @@ def generate_quiz(
         # 統一使用 reference_answer（參考答案）；相容舊回傳 answer
         if "reference_answer" not in data and "answer" in data:
             data["reference_answer"] = data.pop("answer")
+        # 統一使用 quiz_hint；相容舊回傳 hint
+        if "quiz_hint" not in data and "hint" in data:
+            data["quiz_hint"] = data.pop("hint")
         return data
     finally:
         shutil.rmtree(extract_folder, ignore_errors=True)

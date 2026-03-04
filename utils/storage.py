@@ -132,17 +132,6 @@ def save_zip(
     return file_id
 
 
-def get_zip_filename(file_id: str) -> str | None:
-    """依 file_id 取得儲存時使用的檔名，供下載時 Content-Disposition 使用。"""
-    meta = _load_metadata()
-    entry = meta.get(file_id)
-    if entry is None:
-        return None
-    if isinstance(entry, dict):
-        return entry.get("filename")
-    return entry
-
-
 def _get_folder_for_file_id(file_id: str) -> str | None:
     """從 metadata 取得該 file_id 所屬子目錄；舊資料僅有 filename 字串時視為 upload。"""
     meta = _load_metadata()
@@ -271,18 +260,3 @@ def delete_file_folder(person_id: str, file_id: str) -> bool:
         meta.pop(fid, None)
     _save_metadata(meta)
     return True
-
-
-def delete_zip(file_id: str) -> bool:
-    """
-    不再實際刪除：ZIP 永久保留。保留此 API 相容性，但不會刪除檔案或 metadata。
-    """
-    return False
-
-
-def clear_folders(folders: list[str]) -> int:
-    """
-    不再實際刪除：ZIP 永久保留。保留此 API 相容性，但不刪除任何檔案。
-    回傳 0。
-    """
-    return 0
