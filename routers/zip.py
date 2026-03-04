@@ -96,7 +96,7 @@ def _quizzes_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
 
 
 def _answers_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
-    """依 rag_id 查詢 Answer 表，回傳 rag_id -> list of answer 列。"""
+    """依 rag_id 查詢 Answer 表，回傳 rag_id -> list of answer 列（與資料庫欄位一致）。"""
     if not rag_ids:
         return {}
     supabase = get_supabase()

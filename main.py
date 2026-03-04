@@ -18,7 +18,7 @@ app = FastAPI()
 
 # 允許前端跨域呼叫 API，避免瀏覽器 CORS / "Failed to fetch"
 # 註：若出現 502，回應來自 Render 代理（逾時約 30s），不會帶 CORS 標頭；
-# 評分已改為非同步：POST /rag/grade_submission 回傳 202 + job_id，請用 GET /rag/grade_result/{job_id} 輪詢結果
+# 評分已改為非同步：POST /rag/quiz-grade 回傳 202 + job_id，請用 GET /rag/quiz-grade-result/{job_id} 輪詢結果
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -33,7 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 順序影響 API 文件顯示：zip_router 先掛載，使 generate-quiz / grade_submission / grade_result 出現在 rag 群組最下面
+# 順序影響 API 文件顯示：zip_router 先掛載，使 generate-quiz / quiz-grade / quiz-grade-result 出現在 rag 群組最下面
 app.include_router(zip_router)
 app.include_router(grade_router)
 app.include_router(users_router)

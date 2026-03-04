@@ -1,6 +1,6 @@
 """
 評分 API：傳入 file_id、rag_name，程式依 {rag_name}_rag 查找 RAG ZIP，以 RAG 檢索講義後由 GPT-4o 評分。
-非同步：POST 回傳 202 + job_id，背景執行評分；前端以 GET /rag/grade_result/{job_id} 輪詢結果。
+非同步：POST 回傳 202 + job_id，背景執行評分；前端以 GET /rag/quiz-grade-result/{job_id} 輪詢結果。
 """
 
 import json
@@ -184,6 +184,8 @@ def _grade_job_background(
         answer_id = None
         try:
             supabase = get_supabase()
+            # 完整批改結果以 JSON 字串存入 answer_feedback_metadata，便於前端解析顯示
+            answer_feedback_json = json.dumps(result_dict, ensure_ascii=False)
             answer_row = {
                 "quiz_id": quiz_id,
                 "rag_id": rag_id,
@@ -193,7 +195,8 @@ def _grade_job_background(
                 "rag_name": rag_name or "",
                 "quiz_level": qtype or "",
                 "student_answer": student_answer or "",
-                "score_or_feedback": f"{result.score} - {result.level}",
+                "answer_grade": result.score,
+                "answer_feedback_metadata": answer_feedback_json,
                 "answer_metadata": result_dict,
                 "quiz_type": 0,
             }
@@ -303,7 +306,7 @@ def generate_quiz_api(body: GenerateQuizRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/grade_submission")
+@router.post("/quiz-grade")
 async def grade_submission(
     background_tasks: BackgroundTasks,
     file_id: str = Form(..., description="upload-zip 回傳的 source file_id"),
@@ -317,7 +320,7 @@ async def grade_submission(
     """
     傳入 file_id（upload-zip 的 source file_id）與 rag_name（如 220222_220301），程式自動組出 rag_file_id={rag_name}_rag 並查找 RAG ZIP。
     OpenAI API key 由 Rag 表該 file_id 的 llm_api_key 取得；若為空則回傳 400。
-    驗證後立即回傳 202 與 job_id；實際評分在背景執行，完成後寫入 public.Answer 表。前端請以 GET /rag/grade_result/{job_id} 輪詢，ready 時 result 含 answer_id。
+    驗證後立即回傳 202 與 job_id；實際評分在背景執行，完成後寫入 public.Answer 表。前端請以 GET /rag/quiz-grade-result/{job_id} 輪詢，ready 時 result 含 answer_id。
     """
     file_id = (file_id or "").strip()
     if not file_id:
@@ -379,7 +382,7 @@ async def grade_submission(
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
 
-@router.get("/grade_result/{job_id}", tags=["rag"])
+@router.get("/quiz-grade-result/{job_id}", tags=["rag"])
 async def get_grade_result(job_id: str):
     """
     輪詢評分結果。回傳 status: pending | ready | error；ready 時 result 為批改結果（含 answer_id，對應 public.Answer 表），error 時 error 為錯誤訊息。
