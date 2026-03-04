@@ -169,13 +169,44 @@ def _grade_job_background(
     question_text: str,
     student_answer: str,
     qtype: str,
+    *,
+    file_id: str = "",
+    rag_name: str = "",
+    person_id: str = "",
+    rag_id: int = 0,
+    course_name: str = "",
+    quiz_id: int = 0,
 ) -> None:
-    """背景執行評分，結果寫入 _grade_job_results[job_id]。"""
+    """背景執行評分，結果寫入 _grade_job_results[job_id]，並寫入 public.Answer 表。"""
     try:
         result = _run_grade_job(work_dir, api_key, question_text, student_answer, qtype)
+        result_dict = result.model_dump()
+        answer_id = None
+        try:
+            supabase = get_supabase()
+            answer_row = {
+                "quiz_id": quiz_id,
+                "rag_id": rag_id,
+                "file_id": file_id or "",
+                "person_id": person_id or "",
+                "course_name": course_name or "",
+                "rag_name": rag_name or "",
+                "quiz_level": qtype or "",
+                "student_answer": student_answer or "",
+                "score_or_feedback": f"{result.score} - {result.level}",
+                "answer_metadata": result_dict,
+                "quiz_type": 0,
+            }
+            ins = supabase.table("Answer").insert(answer_row).execute()
+            if ins.data and len(ins.data) > 0:
+                answer_id = ins.data[0].get("answer_id")
+        except Exception:
+            pass  # 不因寫入 Answer 失敗而影響輪詢結果
+        if answer_id is not None:
+            result_dict["answer_id"] = answer_id
         _grade_job_results[job_id] = {
             "status": "ready",
-            "result": result.model_dump(),
+            "result": result_dict,
             "error": None,
         }
     except Exception as e:
@@ -193,14 +224,14 @@ def generate_quiz_api(body: GenerateQuizRequest):
     """
     傳入 file_id（upload-zip 的 source file_id）與 rag_name（如 220222_220301），程式自動組出 rag_file_id={rag_name}_rag 並查找 RAG ZIP。
     OpenAI API key 與 system_prompt_instruction 由 Rag 表該 file_id 取得；若未設定則回傳 400。
-    回傳 JSON：quiz_content, quiz_hint, reference_answer（參考答案；以及 system_prompt_instruction, unit_filename, quiz_level）。
+    出題成功後會自動寫入 public.Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, reference_answer、quiz_id（若寫入成功）等。
     """
     file_id = (body.file_id or "").strip()
     if not file_id:
         raise HTTPException(status_code=400, detail="請傳入 file_id")
 
     supabase = get_supabase()
-    rag_rows = supabase.table("Rag").select("llm_api_key, system_prompt_instruction").eq("file_id", file_id).eq("deleted", False).execute()
+    rag_rows = supabase.table("Rag").select("llm_api_key, system_prompt_instruction, person_id").eq("file_id", file_id).eq("deleted", False).execute()
     if not rag_rows.data or len(rag_rows.data) == 0:
         raise HTTPException(status_code=404, detail=f"找不到 file_id={file_id} 的 Rag 資料")
     row = rag_rows.data[0]
@@ -239,6 +270,29 @@ def generate_quiz_api(body: GenerateQuizRequest):
             "rag_name": rag_name,
             "filename": f"{rag_name}.zip",
         }
+        # 寫入 public.Quiz 表
+        quiz_row: dict[str, Any] = {
+            "file_id": file_id,
+            "person_id": row.get("person_id") or "",
+            "course_name": course_name,
+            "system_prompt_instruction": system_prompt_instruction,
+            "rag_name": rag_name,
+            "quiz_level": body.quiz_level,
+            "quiz_content": result.get("quiz_content") or "",
+            "quiz_hint": result.get("quiz_hint") or "",
+            "reference_answer": result.get("reference_answer") or "",
+            "quiz_type": 0,
+        }
+        # 完整 API 回傳內容寫入 quiz_metadata（與 file_metadata、rag_metadata 模式一致）
+        quiz_row["quiz_metadata"] = result
+        try:
+            quiz_resp = supabase.table("Quiz").insert(quiz_row).execute()
+            if quiz_resp.data and len(quiz_resp.data) > 0:
+                result["quiz_id"] = quiz_resp.data[0].get("quiz_id")
+                # 以含 quiz_id 的完整回傳更新 quiz_metadata，與實際 API 回傳一致
+                supabase.table("Quiz").update({"quiz_metadata": result}).eq("quiz_id", result["quiz_id"]).eq("file_id", file_id).execute()
+        except Exception:
+            pass  # 不因寫入 Quiz 失敗而影響回傳出題結果
         body_bytes = json.dumps(result, ensure_ascii=False).encode("utf-8")
         return Response(content=body_bytes, media_type="application/json; charset=utf-8")
     except ValueError as e:
@@ -255,23 +309,27 @@ async def grade_submission(
     question_text: str = Form(..., description="題目文字"),
     student_answer: str = Form(..., description="學生回答"),
     qtype: str = Form(..., description="題型，如 short_answer"),
+    course_name: str = Form("", description="選填，寫入 Answer 表 course_name"),
+    quiz_id: int = Form(0, description="選填，寫入 Answer 表 quiz_id；若已知題目對應的 quiz_id 可傳入"),
 ):
     """
     傳入 file_id（upload-zip 的 source file_id）與 rag_name（如 220222_220301），程式自動組出 rag_file_id={rag_name}_rag 並查找 RAG ZIP。
     OpenAI API key 由 Rag 表該 file_id 的 llm_api_key 取得；若為空則回傳 400。
-    驗證後立即回傳 202 與 job_id；實際評分在背景執行。前端請以 GET /rag/grade_result/{job_id} 輪詢。
+    驗證後立即回傳 202 與 job_id；實際評分在背景執行，完成後寫入 public.Answer 表。前端請以 GET /rag/grade_result/{job_id} 輪詢，ready 時 result 含 answer_id。
     """
     file_id = (file_id or "").strip()
     if not file_id:
         return JSONResponse(status_code=400, content={"error": "請傳入 file_id"})
 
-    # API key 由 Rag 表該 file_id 的 llm_api_key 取得
+    # API key 與 Answer 寫入用欄位由 Rag 表該 file_id 取得
     supabase = get_supabase()
-    resp = supabase.table("Rag").select("llm_api_key").eq("file_id", file_id).execute()
+    resp = supabase.table("Rag").select("llm_api_key, person_id, rag_id").eq("file_id", file_id).execute()
     row = (resp.data or [None])[0] if resp.data else None
     api_key = (row.get("llm_api_key") or "").strip() if isinstance(row, dict) else ""
     if not api_key:
         return JSONResponse(status_code=400, content={"error": "該 file_id 的 Rag 尚未設定 llm_api_key，請在上傳 ZIP 或「確定修改」處填入 OpenAI API Key"})
+    person_id = (row.get("person_id") or "") if isinstance(row, dict) else ""
+    rag_id = int(row.get("rag_id") or 0) if isinstance(row, dict) else 0
 
     rag_name = (rag_name or "").strip()
     if not rag_name:
@@ -309,6 +367,12 @@ async def grade_submission(
         question_text,
         student_answer,
         qtype,
+        file_id=file_id,
+        rag_name=rag_name,
+        person_id=person_id,
+        rag_id=rag_id,
+        course_name=(course_name or "").strip(),
+        quiz_id=quiz_id,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
@@ -316,7 +380,7 @@ async def grade_submission(
 @router.get("/grade_result/{job_id}", tags=["rag"])
 async def get_grade_result(job_id: str):
     """
-    輪詢評分結果。回傳 status: pending | ready | error；ready 時 result 為批改結果，error 時 error 為錯誤訊息。
+    輪詢評分結果。回傳 status: pending | ready | error；ready 時 result 為批改結果（含 answer_id，對應 public.Answer 表），error 時 error 為錯誤訊息。
     此端點刻意保持輕量（僅記憶體查表），以減少代理逾時 502。
     """
     if job_id not in _grade_job_results:
