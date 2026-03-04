@@ -231,7 +231,7 @@ def generate_quiz_api(body: GenerateQuizRequest):
         raise HTTPException(status_code=400, detail="請傳入 file_id")
 
     supabase = get_supabase()
-    rag_rows = supabase.table("Rag").select("llm_api_key, system_prompt_instruction, person_id").eq("file_id", file_id).eq("deleted", False).execute()
+    rag_rows = supabase.table("Rag").select("llm_api_key, system_prompt_instruction, person_id, rag_id").eq("file_id", file_id).eq("deleted", False).execute()
     if not rag_rows.data or len(rag_rows.data) == 0:
         raise HTTPException(status_code=404, detail=f"找不到 file_id={file_id} 的 Rag 資料")
     row = rag_rows.data[0]
@@ -270,8 +270,10 @@ def generate_quiz_api(body: GenerateQuizRequest):
             "rag_name": rag_name,
             "filename": f"{rag_name}.zip",
         }
-        # 寫入 public.Quiz 表
+        # 寫入 public.Quiz 表（須帶入 rag_id，與 Rag 表對應）
+        rag_id = int(row.get("rag_id") or 0) if isinstance(row, dict) else 0
         quiz_row: dict[str, Any] = {
+            "rag_id": rag_id,
             "file_id": file_id,
             "person_id": row.get("person_id") or "",
             "course_name": course_name,

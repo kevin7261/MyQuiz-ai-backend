@@ -80,8 +80,38 @@ def _rag_table_select(select_columns: str = "*", exclude_deleted: bool = False) 
     return resp.data or []
 
 
+def _quizzes_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
+    """依 rag_id 查詢 Quiz 表，回傳 rag_id -> list of quiz 列。"""
+    if not rag_ids:
+        return {}
+    supabase = get_supabase()
+    resp = supabase.table("Quiz").select("*").in_("rag_id", rag_ids).execute()
+    rows = resp.data or []
+    out: dict[int, list[dict]] = {rid: [] for rid in rag_ids}
+    for row in rows:
+        rid = row.get("rag_id")
+        if rid is not None:
+            out.setdefault(rid, []).append(row)
+    return out
+
+
+def _answers_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
+    """依 rag_id 查詢 Answer 表，回傳 rag_id -> list of answer 列。"""
+    if not rag_ids:
+        return {}
+    supabase = get_supabase()
+    resp = supabase.table("Answer").select("*").in_("rag_id", rag_ids).execute()
+    rows = resp.data or []
+    out: dict[int, list[dict]] = {rid: [] for rid in rag_ids}
+    for row in rows:
+        rid = row.get("rag_id")
+        if rid is not None:
+            out.setdefault(rid, []).append(row)
+    return out
+
+
 class ListRagResponse(BaseModel):
-    """GET /rag/rags 回應：Rag 表全部資料。"""
+    """GET /rag/rags 回應：Rag 表全部資料，每筆含關聯的 quizzes、answers。"""
     rags: list[dict]
     count: int
 
@@ -110,11 +140,27 @@ def list_rag(
     x_llm_api_key: str | None = Header(None, alias="X-LLM-Api-Key", description="LLM/OpenAI API Key（可選，與頁面 OpenAI API Key 對應）"),
 ):
     """
-    列出 Rag 表內容，僅回傳 deleted=False 的資料。
+    列出 Rag 表內容，僅回傳 deleted=False 的資料；每筆 Rag 會帶關聯的 Quiz（quizzes）與 Answer（answers），依 rag_id 關聯。
     LLM/OpenAI API Key 可選，由 Header X-LLM-Api-Key 傳入（與前端 OpenAI API Key 欄位對應）。
     """
     try:
         data = _rag_table_select(RAG_SELECT_ALL, exclude_deleted=True)
+        rag_ids = []
+        for row in data:
+            rid = row.get("rag_id")
+            if rid is not None:
+                try:
+                    rag_ids.append(int(rid))
+                except (TypeError, ValueError):
+                    pass
+        rag_ids = list(dict.fromkeys(rag_ids))  # 去重且保持順序
+        quizzes_by_rag = _quizzes_by_rag_id(rag_ids)
+        answers_by_rag = _answers_by_rag_id(rag_ids)
+        for row in data:
+            rid = row.get("rag_id")
+            rid_int = int(rid) if rid is not None else None
+            row["quizzes"] = quizzes_by_rag.get(rid_int, []) if rid_int is not None else []
+            row["answers"] = answers_by_rag.get(rid_int, []) if rid_int is not None else []
         return ListRagResponse(rags=data, count=len(data))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
