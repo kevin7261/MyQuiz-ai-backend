@@ -14,7 +14,7 @@ def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header, Path as PathParam
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from utils.zip_utils import (
     get_second_level_folders_from_zip_file,
@@ -25,8 +25,7 @@ from utils.storage import (
     save_zip,
     get_zip_path,
     get_zip_path_by_person,
-    generate_file_id,
-    delete_file_folder,
+    delete_tab_folder,
     FOLDER_UPLOAD,
     FOLDER_REPACK,
     FOLDER_RAG,
@@ -40,18 +39,18 @@ RAG_SELECT_ALL = "*"
 
 
 def _rag_default_row(
-    file_id: str,
+    rag_tab_id: str,
     *,
     person_id: str | None = None,
-    name: str | None = None,
+    rag_name: str | None = None,
     course_name: str | None = None,
     llm_api_key: str | None = None,
     system_prompt_instruction: str | None = None,
     file_metadata: Any = None,
 ) -> dict[str, Any]:
-    """Rag 表一筆新增時的預設欄位，供 upload_zip 使用。"""
+    """Rag 表一筆新增時的預設欄位，供 create_rag、upload_zip 使用。"""
     row: dict[str, Any] = {
-        "file_id": file_id,
+        "rag_tab_id": rag_tab_id,
         "file_metadata": file_metadata,
         "rag_list": "",
         "rag_metadata": None,
@@ -63,8 +62,8 @@ def _rag_default_row(
     }
     if person_id is not None:
         row["person_id"] = person_id
-    if name is not None:
-        row["name"] = name
+    if rag_name is not None:
+        row["rag_name"] = rag_name
     if course_name is not None:
         row["course_name"] = course_name
     if llm_api_key is not None:
@@ -85,11 +84,11 @@ def _rag_table_select(select_columns: str = "*", exclude_deleted: bool = False) 
 
 
 def _quizzes_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
-    """依 rag_id 查詢 Quiz 表，回傳 rag_id -> list of quiz 列。"""
+    """依 rag_id 查詢 Rag_Quiz 表，回傳 rag_id -> list of quiz 列。"""
     if not rag_ids:
         return {}
     supabase = get_supabase()
-    resp = supabase.table("Quiz").select("*").in_("rag_id", rag_ids).execute()
+    resp = supabase.table("Rag_Quiz").select("*").in_("rag_id", rag_ids).execute()
     rows = resp.data or []
     out: dict[int, list[dict]] = {rid: [] for rid in rag_ids}
     for row in rows:
@@ -100,11 +99,11 @@ def _quizzes_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
 
 
 def _answers_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
-    """依 rag_id 查詢 Answer 表，回傳 rag_id -> list of answer 列（與資料庫欄位一致）。"""
+    """依 rag_id 查詢 Rag_Answer 表，回傳 rag_id -> list of answer 列（與資料庫欄位一致）。"""
     if not rag_ids:
         return {}
     supabase = get_supabase()
-    resp = supabase.table("Answer").select("*").in_("rag_id", rag_ids).execute()
+    resp = supabase.table("Rag_Answer").select("*").in_("rag_id", rag_ids).execute()
     rows = resp.data or []
     out: dict[int, list[dict]] = {rid: [] for rid in rag_ids}
     for row in rows:
@@ -115,14 +114,21 @@ def _answers_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
 
 
 class ListRagResponse(BaseModel):
-    """GET /rag/rags 回應：Rag 表全部資料（含 applied、llm_api_key 等欄位），每筆另含關聯的 quizzes（每筆 quiz 帶 answers）、以及頂層 answers。"""
+    """GET /rag/rags 回應：Rag 表全部資料（含 applied、llm_api_key 等欄位），每筆另含關聯的 Rag_Quiz（quizzes，每筆帶 answers）、以及頂層 Rag_Answer（answers）。"""
     rags: list[dict]
     count: int
 
 
+class CreateRagRequest(BaseModel):
+    """POST /rag/create-rag：只建立一筆 Rag 資料，接受 rag_tab_id、person_id、rag_name。system_prompt_instruction 請在 build-rag-zip 傳入。"""
+    rag_tab_id: str = Field(..., description="Rag 的 tab 識別，對應 Rag 表 rag_tab_id 欄位")
+    person_id: str = Field(..., description="使用者/路徑識別")
+    rag_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 rag_name 欄位")
+
+
 class PackRequest(BaseModel):
-    """指定先前上傳的 ZIP（file_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{file_id}/upload。會 update Rag 表該 file_id 的 rag_list、rag_metadata、chunk_size、chunk_overlap、system_prompt_instruction。"""
-    file_id: str
+    """指定先前上傳的 ZIP（rag_tab_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{rag_tab_id}/upload。會 update Rag 表該 rag_tab_id 的 rag_list、rag_metadata、chunk_size、chunk_overlap、system_prompt_instruction。"""
+    rag_tab_id: str
     person_id: str  # 與 upload-zip 一致，上傳 ZIP 所在路徑的 person_id
     rag_list: str  # 寫入 Rag 表 rag_list 欄位；例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
     openai_api_key: str  # 用於 Embedding，必填（一律做成 RAG ZIP）
@@ -144,8 +150,8 @@ def list_rag(
     x_llm_api_key: str | None = Header(None, alias="X-LLM-Api-Key", description="LLM/OpenAI API Key（可選，與頁面 OpenAI API Key 對應）"),
 ):
     """
-    列出 Rag 表內容，僅回傳 deleted=False 的資料；每筆 Rag 含表上所有欄位（含 applied、llm_api_key），並帶關聯的 Quiz（quizzes）與 Answer（answers）。
-    關聯方式：quizzes 下每筆 quiz 帶 answers（依 quiz_id 關聯）；頂層 answers 為該 rag 下全部答案的扁平列表。
+    列出 Rag 表內容，僅回傳 deleted=False 的資料；每筆 Rag 含表上所有欄位（含 applied、llm_api_key），並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
+    關聯方式：quizzes 下每筆 quiz 帶 answers（依 rag_quiz_id 關聯）；頂層 answers 為該 rag 下全部答案的扁平列表。
     LLM/OpenAI API Key 可選，由 Header X-LLM-Api-Key 傳入（與前端 OpenAI API Key 欄位對應）。
     """
     try:
@@ -161,15 +167,15 @@ def list_rag(
         rag_ids = list(dict.fromkeys(rag_ids))  # 去重且保持順序
         quizzes_by_rag = _quizzes_by_rag_id(rag_ids)
         answers_by_rag = _answers_by_rag_id(rag_ids)
-        # 依 quiz_id 彙總 answers，供每筆 quiz 帶關聯的 answers
-        answers_by_quiz_id: dict[int, list[dict]] = {}
+        # 依 rag_quiz_id 彙總 answers，供每筆 quiz 帶關聯的 answers
+        answers_by_rag_quiz_id: dict[int, list[dict]] = {}
         for rid in rag_ids:
             for a in answers_by_rag.get(rid, []):
-                qid = a.get("quiz_id")
+                qid = a.get("rag_quiz_id")
                 if qid is not None:
                     try:
                         qid_int = int(qid)
-                        answers_by_quiz_id.setdefault(qid_int, []).append(a)
+                        answers_by_rag_quiz_id.setdefault(qid_int, []).append(a)
                     except (TypeError, ValueError):
                         pass
         for row in data:
@@ -177,9 +183,9 @@ def list_rag(
             rid_int = int(rid) if rid is not None else None
             row_quizzes = quizzes_by_rag.get(rid_int, []) if rid_int is not None else []
             for quiz in row_quizzes:
-                qid = quiz.get("quiz_id")
+                qid = quiz.get("rag_quiz_id")
                 qid_int = int(qid) if qid is not None else None
-                quiz["answers"] = answers_by_quiz_id.get(qid_int, []) if qid_int is not None else []
+                quiz["answers"] = answers_by_rag_quiz_id.get(qid_int, []) if qid_int is not None else []
             row["quizzes"] = row_quizzes
             row["answers"] = answers_by_rag.get(rid_int, []) if rid_int is not None else []
             # 確保每筆都帶 llm_api_key（Rag 表欄位），供前端顯示／預填 API Key
@@ -192,23 +198,64 @@ def list_rag(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/create-rag")
+def create_rag(body: CreateRagRequest):
+    """
+    只建立一筆 Rag 資料，接受 rag_tab_id、person_id、rag_name（必填）。system_prompt_instruction 請在 build-rag-zip 傳入。
+    回傳新增的 rag_id、rag_tab_id、person_id、rag_name、created_at。
+    """
+    fid = (body.rag_tab_id or "").strip()
+    if not fid or "/" in fid or "\\" in fid:
+        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
+    pid = (body.person_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="請傳入 person_id")
+    rag_name = (body.rag_name or "").strip()
+    if not rag_name:
+        raise HTTPException(status_code=400, detail="請傳入 rag_name")
+    try:
+        supabase = get_supabase()
+        r = (
+            supabase.table("Rag")
+            .insert(_rag_default_row(fid, person_id=pid, rag_name=rag_name, file_metadata=None))
+            .execute()
+        )
+        if not r.data or len(r.data) == 0:
+            raise HTTPException(status_code=500, detail="新增 Rag 失敗")
+        row = r.data[0]
+        return {
+            "rag_id": row["rag_id"],
+            "rag_tab_id": row["rag_tab_id"],
+            "person_id": row.get("person_id"),
+            "rag_name": row.get("rag_name"),
+            "created_at": row.get("created_at"),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/upload-zip")
 async def upload_zip(
     file: UploadFile = File(...),
-    person_id: str | None = Form(None, description="寫入 Rag 表與儲存路徑的 person_id"),
-    name: str | None = Form(None, description="寫入 Rag 表的 name 欄位；未傳則用上傳檔名（去掉 .zip）"),
-    llm_api_key: str = Form(..., description="寫入 Rag 表的 llm_api_key 欄位；必填"),
-    system_prompt_instruction: str | None = Form(None, description="寫入 Rag 表的 system_prompt_instruction 欄位；可選，出題系統指令"),
-    x_person_id: str | None = Header(None, alias="X-Person-Id"),
+    rag_tab_id: str = Form(..., description="對應 create-rag 建立的 rag_tab_id（Rag 表 rag_tab_id），ZIP 會存於此路徑"),
+    person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 create-rag 一致"),
+    llm_api_key: str | None = Form(None, description="選填，寫入 Rag 表 llm_api_key；僅能在此或 GET /rag/rags 取得，generate-quiz/quiz-grade 需由呼叫端傳入"),
 ):
     """
-    Upload Zip：傳入 person_id、ZIP 檔案與 llm_api_key，後端生成 file_id、上傳 ZIP 並新增 Rag 表一筆資料。
-    person_id 可由 Form 或 Header X-Person-Id 傳入。name 可選；未傳則以檔名（去掉 .zip）寫入 Rag.name。
-    course_name 不由上傳傳入，改以檔名（去掉 .zip）寫入 Rag.course_name。llm_api_key 必填。system_prompt_instruction 可選，寫入 Rag 表。
-    回傳 rag_id、file_id（後端生成）、created_at、filename、second_folders（並寫入 file_metadata）。
+    Upload Zip：只做上傳並寫入資料庫。需先以 create-rag 建立該 rag_tab_id 的 Rag 資料。
+    傳入 rag_tab_id（create-rag 的 rag_tab_id）、ZIP 檔案與 person_id（Form 必填）。
+    可選傳入 llm_api_key，會寫入 Rag 表（供 GET /rag/rags 回傳；generate-quiz/quiz-grade 須由呼叫端傳入此 key）。
+    會更新該筆 Rag 的 file_metadata（filename、second_folders、course_name 等）。
+    回傳 file_metadata。
     """
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="請上傳 .zip 檔案")
+
+    fid = (rag_tab_id or "").strip()
+    if not fid or "/" in fid or "\\" in fid:
+        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
 
     try:
         contents = await file.read()
@@ -221,65 +268,60 @@ async def upload_zip(
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="無法讀取 ZIP 檔案")
 
-    resolved_person_id = _resolve_person_id(person_id, x_person_id)
+    resolved_person_id = (person_id or "").strip()
     if not resolved_person_id:
-        raise HTTPException(status_code=400, detail="請傳入 person_id（Form 或 Header X-Person-Id）")
+        raise HTTPException(status_code=400, detail="請傳入 person_id")
 
-    file_id = generate_file_id(resolved_person_id)
-    try:
-        file_id = save_zip(
-            contents,
-            file.filename,
-            folder=FOLDER_UPLOAD,
-            person_id=resolved_person_id,
-            file_id=file_id,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Rag.name：優先 Form name，否則用上傳檔名（去掉 .zip）
-    rag_name = (name or "").strip() if name is not None else None
-    if not rag_name and file.filename:
-        rag_name = Path(file.filename).stem or None
-
-    # course_name 以檔名（去掉 .zip）寫入，不由上傳傳入
-    course_name_val = Path(file.filename).stem if file.filename else None
-    llm_key = (llm_api_key or "").strip()
-    if not llm_key:
-        raise HTTPException(status_code=400, detail="請傳入 llm_api_key（必填）")
-    sys_prompt = (system_prompt_instruction or "").strip() or None
     try:
         supabase = get_supabase()
-        r = (
-            supabase.table("Rag")
-            .insert(_rag_default_row(file_id, person_id=resolved_person_id, name=rag_name, course_name=course_name_val, llm_api_key=llm_key, system_prompt_instruction=sys_prompt, file_metadata={}))
-            .execute()
-        )
+        r = supabase.table("Rag").select("rag_id, created_at").eq("rag_tab_id", fid).eq("person_id", resolved_person_id).execute()
         if not r.data or len(r.data) == 0:
-            raise HTTPException(status_code=500, detail="新增 Rag 失敗")
+            raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料，請先呼叫 create-rag 建立")
         row = r.data[0]
-        # 完整回傳內容寫入 file_metadata
-        file_metadata = {
-            "rag_id": row["rag_id"],
-            "file_id": row["file_id"],
-            "created_at": row["created_at"],
-            "filename": file.filename,
-            "course_name": course_name_val,
-            "second_folders": folders,
-        }
-        supabase.table("Rag").update({"file_metadata": file_metadata, "updated_at": _now_utc_iso()}).eq("file_id", file_id).execute()
-        return file_metadata
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    try:
+        save_zip(
+            contents,
+            file.filename,
+            folder=FOLDER_UPLOAD,
+            person_id=resolved_person_id,
+            tab_id=fid,  # storage 內部仍用 tab_id 路徑
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/create-rag-zip")
-def create_rag(body: PackRequest):
+    course_name_val = Path(file.filename).stem if file.filename else None
+    file_metadata = {
+        "rag_id": row["rag_id"],
+        "rag_tab_id": fid,
+        "created_at": row["created_at"],
+        "filename": file.filename,
+        "course_name": course_name_val,
+        "second_folders": folders,
+    }
+    update_payload: dict[str, Any] = {
+        "file_metadata": file_metadata,
+        "updated_at": _now_utc_iso(),
+        "course_name": course_name_val,
+    }
+    if llm_api_key is not None:
+        update_payload["llm_api_key"] = (llm_api_key or "").strip() or None
+    try:
+        supabase.table("Rag").update(update_payload).eq("rag_tab_id", fid).eq("person_id", resolved_person_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return file_metadata
+
+
+@router.post("/build-rag-zip")
+def build_rag_zip(body: PackRequest):
     """
-    依先前上傳的 ZIP（file_id）與 rag_list 字串，抽出指定 6 位數資料夾重新壓成 ZIP 並存到後端。
-    ZIP 檔位置為 {person_id}/{file_id}/upload（與 upload-zip 一致），body 需傳入 person_id。
+    依先前上傳的 ZIP（rag_tab_id）與 rag_list 字串，抽出指定 6 位數資料夾重新壓成 ZIP 並存到後端。
+    ZIP 檔位置為 {person_id}/{rag_tab_id}/upload（與 upload-zip 一致），body 需傳入 person_id。
     rag_list 寫入 Rag 表；格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
     一律做成 RAG（FAISS）ZIP，需傳入 openai_api_key。回傳內容完整寫入 Rag 表 rag_metadata，並 update chunk_size、chunk_overlap。
     """
@@ -287,9 +329,9 @@ def create_rag(body: PackRequest):
     if not pid:
         raise HTTPException(status_code=400, detail="請傳入 person_id")
 
-    path = get_zip_path(body.file_id) or get_zip_path_by_person(pid, body.file_id)
+    path = get_zip_path(body.rag_tab_id) or get_zip_path_by_person(pid, body.rag_tab_id)
     if not path or not path.exists():
-        raise HTTPException(status_code=404, detail="找不到該上傳的 ZIP，請先上傳或確認 file_id、person_id")
+        raise HTTPException(status_code=404, detail="找不到該上傳的 ZIP，請先上傳或確認 rag_tab_id、person_id")
 
     try:
         with zipfile.ZipFile(path, "r") as z:
@@ -307,26 +349,26 @@ def create_rag(body: PackRequest):
 
     outputs = []
     for zip_bytes, filename in packed:
-        # 用 rag_list 衍生的檔名做 file_id（如 220222_220301.zip -> 220222_220301），不再生成 UUID
-        repack_file_id = Path(filename).stem if filename else None
-        if not repack_file_id or "/" in repack_file_id or "\\" in repack_file_id:
-            repack_file_id = str(uuid.uuid4())
-        file_id = save_zip(
+        # 用 rag_list 衍生的檔名做 tab_id（如 220222_220301.zip -> 220222_220301），不再生成 UUID
+        repack_tab_id = Path(filename).stem if filename else None
+        if not repack_tab_id or "/" in repack_tab_id or "\\" in repack_tab_id:
+            repack_tab_id = str(uuid.uuid4())
+        tab_id = save_zip(
             zip_bytes,
             filename,
             folder=FOLDER_REPACK,
             person_id=pid,
-            parent_file_id=body.file_id,
-            file_id=repack_file_id,
+            parent_tab_id=body.rag_tab_id,
+            tab_id=repack_tab_id,
         )
         item = {
-            "file_id": file_id,
-            "rag_name": file_id,
+            "rag_tab_id": tab_id,
+            "rag_name": tab_id,
             "filename": filename,
         }
         try:
             from utils.rag import make_rag_zip_from_zip_path
-            rag_path = get_zip_path(file_id)
+            rag_path = get_zip_path(tab_id)
             if rag_path and rag_path.exists():
                 rag_bytes = make_rag_zip_from_zip_path(
                     rag_path,
@@ -334,15 +376,15 @@ def create_rag(body: PackRequest):
                     chunk_size=body.chunk_size,
                     chunk_overlap=body.chunk_overlap,
                 )
-                # rag 檔名也依 rag_list，file_id 加 _rag 以區分 repack
-                rag_file_id = f"{file_id}_rag"
+                # rag 檔名也依 rag_list，tab_id 加 _rag 以區分 repack
+                rag_tab_id = f"{tab_id}_rag"
                 save_zip(
                     rag_bytes,
-                    f"{file_id}.zip",
+                    f"{tab_id}.zip",
                     folder=FOLDER_RAG,
                     person_id=pid,
-                    parent_file_id=body.file_id,
-                    file_id=rag_file_id,
+                    parent_tab_id=body.rag_tab_id,
+                    tab_id=rag_tab_id,
                 )
             else:
                 item["rag_error"] = "找不到 repack ZIP 路徑"
@@ -352,7 +394,7 @@ def create_rag(body: PackRequest):
             item["rag_error"] = str(e)
         outputs.append(item)
 
-    response = {"source_file_id": body.file_id, "rag_list": body.rag_list, "outputs": outputs}
+    response = {"source_rag_tab_id": body.rag_tab_id, "rag_list": body.rag_list, "outputs": outputs}
     try:
         supabase = get_supabase()
         update_payload = {
@@ -361,17 +403,13 @@ def create_rag(body: PackRequest):
             "chunk_size": body.chunk_size,
             "chunk_overlap": body.chunk_overlap,
             "system_prompt_instruction": body.system_prompt_instruction or "",
+            "llm_api_key": (body.openai_api_key or "").strip() or None,
             "updated_at": _now_utc_iso(),
         }
-        supabase.table("Rag").update(update_payload).eq("file_id", body.file_id).execute()
+        supabase.table("Rag").update(update_payload).eq("rag_tab_id", body.rag_tab_id).execute()
     except Exception:
         pass
     return response
-
-
-class UpdateRagNameRequest(BaseModel):
-    """更新 Rag 的 name 欄位。"""
-    name: str  # 新名稱，可為空字串
 
 
 class UpdateRagLlmApiKeyRequest(BaseModel):
@@ -379,101 +417,72 @@ class UpdateRagLlmApiKeyRequest(BaseModel):
     llm_api_key: str  # 新 API key，可為空字串
 
 
-def _set_applied_only_for_file_id(supabase, pid: str, fid: str, extra_target_fields: dict | None = None) -> None:
-    """將同一 person_id 下該 file_id 的 Rag 設為 applied=true，其餘皆設為 applied=false。extra_target_fields 會一併寫入該筆。"""
+def _set_applied_only_for_rag_tab_id(supabase, pid: str, fid: str, extra_target_fields: dict | None = None) -> None:
+    """將同一 person_id 下該 rag_tab_id 的 Rag 設為 applied=true，其餘皆設為 applied=false。extra_target_fields 會一併寫入該筆。"""
     now = _now_utc_iso()
-    supabase.table("Rag").update({"applied": False, "updated_at": now}).eq("person_id", pid).neq("file_id", fid).execute()
+    supabase.table("Rag").update({"applied": False, "updated_at": now}).eq("person_id", pid).neq("rag_tab_id", fid).execute()
     payload = {"applied": True, "updated_at": now}
     if extra_target_fields:
         payload.update(extra_target_fields)
-    supabase.table("Rag").update(payload).eq("file_id", fid).eq("person_id", pid).execute()
+    supabase.table("Rag").update(payload).eq("rag_tab_id", fid).eq("person_id", pid).execute()
 
 
-@router.patch("/name/{file_id}", status_code=200)
-def update_rag_name(
-    file_id: str = PathParam(..., description="要更新 name 的 Rag 的 file_id"),
-    body: UpdateRagNameRequest = ...,
-    x_person_id: str | None = Header(None, alias="X-Person-Id"),
-):
-    """
-    PATCH /rag/name/{file_id}，body 傳 { "name": "新名稱" }，person_id 請帶 Header X-Person-Id。
-    更新 Rag 表該筆的 name、updated_at，並將該筆 applied 設為 true、同 person_id 下其餘皆設為 false。
-    """
-    pid = (x_person_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="請傳入 Header X-Person-Id（person_id）")
-    fid = (file_id or "").strip()
-    if not fid or "/" in fid or "\\" in fid:
-        raise HTTPException(status_code=400, detail="無效的 file_id")
-    try:
-        supabase = get_supabase()
-        r = supabase.table("Rag").select("rag_id").eq("file_id", fid).eq("person_id", pid).execute()
-        if not r.data or len(r.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該 file_id 的 Rag 資料")
-        _set_applied_only_for_file_id(supabase, pid, fid, extra_target_fields={"name": body.name})
-        return {"message": "已更新 name 並設為目前套用", "file_id": fid, "name": body.name}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.patch("/applied/{file_id}", status_code=200)
+@router.patch("/applied/{rag_tab_id}", status_code=200)
 def set_rag_applied(
-    file_id: str = PathParam(..., description="要設為套用中的 Rag 的 file_id"),
+    rag_tab_id: str = PathParam(..., description="要設為套用中的 Rag 的 rag_tab_id"),
     x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
-    PATCH /rag/applied/{file_id}，person_id 請帶 Header X-Person-Id。
-    將該 file_id 的 Rag 設為 applied=true，同 person_id 下其餘 Rag 皆設為 applied=false。
+    PATCH /rag/applied/{rag_tab_id}，person_id 請帶 Header X-Person-Id。
+    將該 rag_tab_id 的 Rag 設為 applied=true，同 person_id 下其餘 Rag 皆設為 applied=false。
     """
     pid = (x_person_id or "").strip()
     if not pid:
         raise HTTPException(status_code=400, detail="請傳入 Header X-Person-Id（person_id）")
-    fid = (file_id or "").strip()
+    fid = (rag_tab_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
-        raise HTTPException(status_code=400, detail="無效的 file_id")
+        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
     try:
         supabase = get_supabase()
-        r = supabase.table("Rag").select("rag_id").eq("file_id", fid).eq("person_id", pid).eq("deleted", False).execute()
+        r = supabase.table("Rag").select("rag_id").eq("rag_tab_id", fid).eq("person_id", pid).eq("deleted", False).execute()
         if not r.data or len(r.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該 file_id 的 Rag 資料")
-        _set_applied_only_for_file_id(supabase, pid, fid)
-        return {"message": "已設為目前套用", "file_id": fid}
+            raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料")
+        _set_applied_only_for_rag_tab_id(supabase, pid, fid)
+        return {"message": "已設為目前套用", "rag_tab_id": fid}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.patch("/llm_api_key/{file_id}", status_code=200)
+@router.patch("/llm_api_key/{rag_tab_id}", status_code=200)
 def update_rag_llm_api_key(
-    file_id: str = PathParam(..., description="要更新 llm_api_key 的 Rag 的 file_id"),
+    rag_tab_id: str = PathParam(..., description="要更新 llm_api_key 的 Rag 的 rag_tab_id"),
     body: UpdateRagLlmApiKeyRequest = ...,
     x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
-    PATCH /rag/llm_api_key/{file_id}，body 傳 { "llm_api_key": "sk-..." }，person_id 請帶 Header X-Person-Id。
+    PATCH /rag/llm_api_key/{rag_tab_id}，body 傳 { "llm_api_key": "sk-..." }，person_id 請帶 Header X-Person-Id。
     僅更新 Rag 表該筆的 llm_api_key 與 updated_at。
     """
     pid = (x_person_id or "").strip()
     if not pid:
         raise HTTPException(status_code=400, detail="請傳入 Header X-Person-Id（person_id）")
-    fid = (file_id or "").strip()
+    fid = (rag_tab_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
-        raise HTTPException(status_code=400, detail="無效的 file_id")
+        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
     try:
         supabase = get_supabase()
         r = (
             supabase.table("Rag")
             .update({"llm_api_key": body.llm_api_key, "updated_at": _now_utc_iso()})
-            .eq("file_id", fid)
+            .eq("rag_tab_id", fid)
             .eq("person_id", pid)
             .execute()
         )
         if not r.data or len(r.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該 file_id 的 Rag 資料")
-        return {"message": "已更新 llm_api_key", "file_id": fid}
+            raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料")
+        return {"message": "已更新 llm_api_key", "rag_tab_id": fid}
     except HTTPException:
         raise
     except Exception as e:
@@ -484,35 +493,35 @@ def _do_delete_rag_file(pid: str, fid: str):
     """共用：將 Rag 表該筆 deleted 設為 true 並刪除 storage 資料夾。"""
     try:
         supabase = get_supabase()
-        supabase.table("Rag").update({"deleted": True, "updated_at": _now_utc_iso()}).eq("file_id", fid).eq("person_id", pid).execute()
+        supabase.table("Rag").update({"deleted": True, "updated_at": _now_utc_iso()}).eq("rag_tab_id", fid).eq("person_id", pid).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新 Rag 表失敗: {e}")
     try:
-        folder_deleted = delete_file_folder(pid, fid)
+        folder_deleted = delete_tab_folder(pid, fid)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return folder_deleted
 
 
-@router.post("/delete/{file_id}", status_code=200)
+@router.post("/delete/{rag_tab_id}", status_code=200)
 def delete_rag_file(
-    file_id: str = PathParam(..., description="要刪除的 file_id"),
+    rag_tab_id: str = PathParam(..., description="要刪除的 rag_tab_id"),
     x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
-    POST /rag/delete/{file_id}，person_id 請帶 Header X-Person-Id。
-    軟刪除：將 Rag 表該筆 deleted 設為 true，並刪除 storage/{person_id}/{file_id}/ 整個資料夾。
+    POST /rag/delete/{rag_tab_id}，person_id 請帶 Header X-Person-Id。
+    軟刪除：將 Rag 表該筆 deleted 設為 true，並刪除 storage/{person_id}/{rag_tab_id}/ 整個資料夾。
     """
     pid = (x_person_id or "").strip()
     if not pid:
         raise HTTPException(status_code=400, detail="請傳入 Header X-Person-Id（person_id）")
-    fid = (file_id or "").strip()
+    fid = (rag_tab_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
-        raise HTTPException(status_code=400, detail="無效的 file_id")
+        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
     folder_deleted = _do_delete_rag_file(pid, fid)
     return {
         "message": "已將 RAG 資料標記為刪除並刪除儲存資料夾",
-        "file_id": fid,
+        "rag_tab_id": fid,
         "person_id": pid,
         "rag_updated": True,
         "folder_deleted": folder_deleted,
