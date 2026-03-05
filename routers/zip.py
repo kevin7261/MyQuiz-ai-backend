@@ -56,6 +56,7 @@ def _rag_default_row(
         "rag_metadata": None,
         "chunk_size": 1000,
         "chunk_overlap": 200,
+        "applied": False,
         "deleted": False,
         "updated_at": _now_utc_iso(),
     }
@@ -111,7 +112,7 @@ def _answers_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
 
 
 class ListRagResponse(BaseModel):
-    """GET /rag/rags 回應：Rag 表全部資料，每筆含關聯的 quizzes、answers。"""
+    """GET /rag/rags 回應：Rag 表全部資料（含 applied 等欄位），每筆另含關聯的 quizzes、answers。"""
     rags: list[dict]
     count: int
 
@@ -140,7 +141,7 @@ def list_rag(
     x_llm_api_key: str | None = Header(None, alias="X-LLM-Api-Key", description="LLM/OpenAI API Key（可選，與頁面 OpenAI API Key 對應）"),
 ):
     """
-    列出 Rag 表內容，僅回傳 deleted=False 的資料；每筆 Rag 會帶關聯的 Quiz（quizzes）與 Answer（answers），依 rag_id 關聯。
+    列出 Rag 表內容，僅回傳 deleted=False 的資料；每筆 Rag 含表上所有欄位（含 applied），並帶關聯的 Quiz（quizzes）與 Answer（answers），依 rag_id 關聯。
     LLM/OpenAI API Key 可選，由 Header X-LLM-Api-Key 傳入（與前端 OpenAI API Key 欄位對應）。
     """
     try:
@@ -349,6 +350,16 @@ class UpdateRagLlmApiKeyRequest(BaseModel):
     llm_api_key: str  # 新 API key，可為空字串
 
 
+def _set_applied_only_for_file_id(supabase, pid: str, fid: str, extra_target_fields: dict | None = None) -> None:
+    """將同一 person_id 下該 file_id 的 Rag 設為 applied=true，其餘皆設為 applied=false。extra_target_fields 會一併寫入該筆。"""
+    now = _now_utc_iso()
+    supabase.table("Rag").update({"applied": False, "updated_at": now}).eq("person_id", pid).neq("file_id", fid).execute()
+    payload = {"applied": True, "updated_at": now}
+    if extra_target_fields:
+        payload.update(extra_target_fields)
+    supabase.table("Rag").update(payload).eq("file_id", fid).eq("person_id", pid).execute()
+
+
 @router.patch("/name/{file_id}", status_code=200)
 def update_rag_name(
     file_id: str = PathParam(..., description="要更新 name 的 Rag 的 file_id"),
@@ -357,7 +368,7 @@ def update_rag_name(
 ):
     """
     PATCH /rag/name/{file_id}，body 傳 { "name": "新名稱" }，person_id 請帶 Header X-Person-Id。
-    僅更新 Rag 表該筆的 name 與 updated_at。
+    更新 Rag 表該筆的 name、updated_at，並將該筆 applied 設為 true、同 person_id 下其餘皆設為 false。
     """
     pid = (x_person_id or "").strip()
     if not pid:
@@ -367,16 +378,39 @@ def update_rag_name(
         raise HTTPException(status_code=400, detail="無效的 file_id")
     try:
         supabase = get_supabase()
-        r = (
-            supabase.table("Rag")
-            .update({"name": body.name, "updated_at": _now_utc_iso()})
-            .eq("file_id", fid)
-            .eq("person_id", pid)
-            .execute()
-        )
+        r = supabase.table("Rag").select("rag_id").eq("file_id", fid).eq("person_id", pid).execute()
         if not r.data or len(r.data) == 0:
             raise HTTPException(status_code=404, detail="找不到該 file_id 的 Rag 資料")
-        return {"message": "已更新 name", "file_id": fid, "name": body.name}
+        _set_applied_only_for_file_id(supabase, pid, fid, extra_target_fields={"name": body.name})
+        return {"message": "已更新 name 並設為目前套用", "file_id": fid, "name": body.name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/applied/{file_id}", status_code=200)
+def set_rag_applied(
+    file_id: str = PathParam(..., description="要設為套用中的 Rag 的 file_id"),
+    x_person_id: str | None = Header(None, alias="X-Person-Id"),
+):
+    """
+    PATCH /rag/applied/{file_id}，person_id 請帶 Header X-Person-Id。
+    將該 file_id 的 Rag 設為 applied=true，同 person_id 下其餘 Rag 皆設為 applied=false。
+    """
+    pid = (x_person_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="請傳入 Header X-Person-Id（person_id）")
+    fid = (file_id or "").strip()
+    if not fid or "/" in fid or "\\" in fid:
+        raise HTTPException(status_code=400, detail="無效的 file_id")
+    try:
+        supabase = get_supabase()
+        r = supabase.table("Rag").select("rag_id").eq("file_id", fid).eq("person_id", pid).eq("deleted", False).execute()
+        if not r.data or len(r.data) == 0:
+            raise HTTPException(status_code=404, detail="找不到該 file_id 的 Rag 資料")
+        _set_applied_only_for_file_id(supabase, pid, fid)
+        return {"message": "已設為目前套用", "file_id": fid}
     except HTTPException:
         raise
     except Exception as e:
