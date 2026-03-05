@@ -46,6 +46,7 @@ def _rag_default_row(
     name: str | None = None,
     course_name: str | None = None,
     llm_api_key: str | None = None,
+    system_prompt_instruction: str | None = None,
     file_metadata: Any = None,
 ) -> dict[str, Any]:
     """Rag 表一筆新增時的預設欄位，供 upload_zip 使用。"""
@@ -68,6 +69,8 @@ def _rag_default_row(
         row["course_name"] = course_name
     if llm_api_key is not None:
         row["llm_api_key"] = llm_api_key
+    if system_prompt_instruction is not None:
+        row["system_prompt_instruction"] = system_prompt_instruction
     return row
 
 
@@ -112,7 +115,7 @@ def _answers_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
 
 
 class ListRagResponse(BaseModel):
-    """GET /rag/rags 回應：Rag 表全部資料（含 applied 等欄位），每筆另含關聯的 quizzes、answers。"""
+    """GET /rag/rags 回應：Rag 表全部資料（含 applied、llm_api_key 等欄位），每筆另含關聯的 quizzes（每筆 quiz 帶 answers）、以及頂層 answers。"""
     rags: list[dict]
     count: int
 
@@ -141,7 +144,8 @@ def list_rag(
     x_llm_api_key: str | None = Header(None, alias="X-LLM-Api-Key", description="LLM/OpenAI API Key（可選，與頁面 OpenAI API Key 對應）"),
 ):
     """
-    列出 Rag 表內容，僅回傳 deleted=False 的資料；每筆 Rag 含表上所有欄位（含 applied），並帶關聯的 Quiz（quizzes）與 Answer（answers），依 rag_id 關聯。
+    列出 Rag 表內容，僅回傳 deleted=False 的資料；每筆 Rag 含表上所有欄位（含 applied、llm_api_key），並帶關聯的 Quiz（quizzes）與 Answer（answers）。
+    關聯方式：quizzes 下每筆 quiz 帶 answers（依 quiz_id 關聯）；頂層 answers 為該 rag 下全部答案的扁平列表。
     LLM/OpenAI API Key 可選，由 Header X-LLM-Api-Key 傳入（與前端 OpenAI API Key 欄位對應）。
     """
     try:
@@ -157,11 +161,32 @@ def list_rag(
         rag_ids = list(dict.fromkeys(rag_ids))  # 去重且保持順序
         quizzes_by_rag = _quizzes_by_rag_id(rag_ids)
         answers_by_rag = _answers_by_rag_id(rag_ids)
+        # 依 quiz_id 彙總 answers，供每筆 quiz 帶關聯的 answers
+        answers_by_quiz_id: dict[int, list[dict]] = {}
+        for rid in rag_ids:
+            for a in answers_by_rag.get(rid, []):
+                qid = a.get("quiz_id")
+                if qid is not None:
+                    try:
+                        qid_int = int(qid)
+                        answers_by_quiz_id.setdefault(qid_int, []).append(a)
+                    except (TypeError, ValueError):
+                        pass
         for row in data:
             rid = row.get("rag_id")
             rid_int = int(rid) if rid is not None else None
-            row["quizzes"] = quizzes_by_rag.get(rid_int, []) if rid_int is not None else []
+            row_quizzes = quizzes_by_rag.get(rid_int, []) if rid_int is not None else []
+            for quiz in row_quizzes:
+                qid = quiz.get("quiz_id")
+                qid_int = int(qid) if qid is not None else None
+                quiz["answers"] = answers_by_quiz_id.get(qid_int, []) if qid_int is not None else []
+            row["quizzes"] = row_quizzes
             row["answers"] = answers_by_rag.get(rid_int, []) if rid_int is not None else []
+            # 確保每筆都帶 llm_api_key（Rag 表欄位），供前端顯示／預填 API Key
+            if "llm_api_key" not in row:
+                row["llm_api_key"] = None
+            # 別名 apikey，與 llm_api_key 同值，方便前端讀取
+            row["apikey"] = row.get("llm_api_key") or ""
         return ListRagResponse(rags=data, count=len(data))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -172,13 +197,14 @@ async def upload_zip(
     file: UploadFile = File(...),
     person_id: str | None = Form(None, description="寫入 Rag 表與儲存路徑的 person_id"),
     name: str | None = Form(None, description="寫入 Rag 表的 name 欄位；未傳則用上傳檔名（去掉 .zip）"),
-    llm_api_key: str | None = Form(None, description="寫入 Rag 表的 llm_api_key 欄位；可選"),
+    llm_api_key: str = Form(..., description="寫入 Rag 表的 llm_api_key 欄位；必填"),
+    system_prompt_instruction: str | None = Form(None, description="寫入 Rag 表的 system_prompt_instruction 欄位；可選，出題系統指令"),
     x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
-    Upload Zip：傳入 person_id 與 ZIP 檔案，後端生成 file_id、上傳 ZIP 並新增 Rag 表一筆資料。
+    Upload Zip：傳入 person_id、ZIP 檔案與 llm_api_key，後端生成 file_id、上傳 ZIP 並新增 Rag 表一筆資料。
     person_id 可由 Form 或 Header X-Person-Id 傳入。name 可選；未傳則以檔名（去掉 .zip）寫入 Rag.name。
-    course_name 不由上傳傳入，改以檔名（去掉 .zip）寫入 Rag.course_name。llm_api_key 可選，寫入 Rag 表。
+    course_name 不由上傳傳入，改以檔名（去掉 .zip）寫入 Rag.course_name。llm_api_key 必填。system_prompt_instruction 可選，寫入 Rag 表。
     回傳 rag_id、file_id（後端生成）、created_at、filename、second_folders（並寫入 file_metadata）。
     """
     if not file.filename or not file.filename.lower().endswith(".zip"):
@@ -218,12 +244,15 @@ async def upload_zip(
 
     # course_name 以檔名（去掉 .zip）寫入，不由上傳傳入
     course_name_val = Path(file.filename).stem if file.filename else None
+    llm_key = (llm_api_key or "").strip()
+    if not llm_key:
+        raise HTTPException(status_code=400, detail="請傳入 llm_api_key（必填）")
+    sys_prompt = (system_prompt_instruction or "").strip() or None
     try:
         supabase = get_supabase()
-        llm_key = (llm_api_key or "").strip() if llm_api_key is not None else None
         r = (
             supabase.table("Rag")
-            .insert(_rag_default_row(file_id, person_id=resolved_person_id, name=rag_name, course_name=course_name_val, llm_api_key=llm_key, file_metadata={}))
+            .insert(_rag_default_row(file_id, person_id=resolved_person_id, name=rag_name, course_name=course_name_val, llm_api_key=llm_key, system_prompt_instruction=sys_prompt, file_metadata={}))
             .execute()
         )
         if not r.data or len(r.data) == 0:

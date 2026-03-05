@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routers.zip import router as zip_router
 from routers.grade import router as grade_router
+from routers.quiz import router as quiz_router
 from routers.users import router as users_router
 
 app = FastAPI()
@@ -36,6 +37,7 @@ app.add_middleware(
 # 順序影響 API 文件顯示：zip_router 先掛載，使 generate-quiz / quiz-grade / quiz-grade-result 出現在 rag 群組最下面
 app.include_router(zip_router)
 app.include_router(grade_router)
+app.include_router(quiz_router)
 app.include_router(users_router)
 
 

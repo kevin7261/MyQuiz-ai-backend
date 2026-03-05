@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Form, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -36,6 +36,18 @@ class GenerateQuizRequest(BaseModel):
     quiz_level: int = Field(0, description="難度等級（數字，會寫入 Quiz 表 quiz_level 並帶入出題 prompt）")
     course_name: str = Field(..., description="課程名稱，會帶入出題 prompt 中")
     quiz_type: int = Field(0, description="題型代碼（如 0=預設），會寫入 Quiz 表並帶入出題 prompt")
+
+
+class QuizGradeRequest(BaseModel):
+    """POST /rag/quiz-grade 請求 body（與 generate-quiz 一致使用 JSON）。"""
+
+    file_id: str = Field(..., description="upload-zip 回傳的 source file_id")
+    rag_name: str = Field(..., description="rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 RAG ZIP")
+    quiz_content: str = Field(..., description="測驗題目內容（與 Quiz 表 quiz_content 一致）")
+    student_answer: str = Field(..., description="學生回答")
+    qtype: str = Field(..., description="題型，如 short_answer")
+    course_name: str = Field("", description="選填，寫入 Answer 表 course_name")
+    quiz_id: int = Field(0, description="選填，寫入 Answer 表 quiz_id；若已知題目對應的 quiz_id 可傳入")
 
 
 class RubricItem(BaseModel):
@@ -75,7 +87,7 @@ def _cleanup_grade_workspace(work_dir: Path) -> None:
 def _run_grade_job(
     work_dir: Path,
     api_key: str,
-    question_text: str,
+    quiz_content: str,
     student_answer: str,
     qtype: str,
 ) -> GradingResult:
@@ -122,7 +134,7 @@ def _run_grade_job(
         vectorstore = FAISS.from_documents(split_docs, embeddings)
 
     retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
-    docs = retriever.invoke(question_text)
+    docs = retriever.invoke(quiz_content)
     context_text = "\n\n".join([d.page_content for d in docs])
 
     prompt = f"""你是一位「地理資訊系統與環境資料分析」助教。請批改這道**觀念簡答題**。
@@ -131,7 +143,7 @@ def _run_grade_job(
                 1. **請務必使用繁體中文 (Traditional Chinese) 撰寫所有評語、優點、弱點與行動建議。**
                 【評分標準】A) 概念正確性 (3分), B) 邏輯與解釋 (4分), C) 完整性 (3分)。
                 【輸出 JSON】{{ "score": int, "level": str, "rubric": [], "strengths": [], "weaknesses": [], "missing_items": [], "action_items": [] }}
-                [題目] {question_text}
+                [測驗題目（quiz）] {quiz_content}
                 [學生回答] {student_answer}
                 [講義依據] {context_text}
             """
@@ -167,7 +179,7 @@ def _grade_job_background(
     job_id: str,
     work_dir: Path,
     api_key: str,
-    question_text: str,
+    quiz_content: str,
     student_answer: str,
     qtype: str,
     *,
@@ -180,7 +192,7 @@ def _grade_job_background(
 ) -> None:
     """背景執行評分，結果寫入 _grade_job_results[job_id]，並寫入 public.Answer 表。"""
     try:
-        result = _run_grade_job(work_dir, api_key, question_text, student_answer, qtype)
+        result = _run_grade_job(work_dir, api_key, quiz_content, student_answer, qtype)
         result_dict = result.model_dump()
         answer_id = None
         try:
@@ -194,12 +206,10 @@ def _grade_job_background(
                 "person_id": person_id or "",
                 "course_name": course_name or "",
                 "rag_name": rag_name or "",
-                "quiz_level": qtype or "",
                 "student_answer": student_answer or "",
                 "answer_grade": result.score,
                 "answer_feedback_metadata": answer_feedback_json,
                 "answer_metadata": result_dict,
-                "quiz_type": 0,
             }
             ins = supabase.table("Answer").insert(answer_row).execute()
             if ins.data and len(ins.data) > 0:
@@ -310,22 +320,14 @@ def generate_quiz_api(body: GenerateQuizRequest):
 
 
 @router.post("/quiz-grade")
-async def grade_submission(
-    background_tasks: BackgroundTasks,
-    file_id: str = Form(..., description="upload-zip 回傳的 source file_id"),
-    rag_name: str = Form(..., description="rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 RAG ZIP"),
-    question_text: str = Form(..., description="題目文字"),
-    student_answer: str = Form(..., description="學生回答"),
-    qtype: str = Form(..., description="題型，如 short_answer"),
-    course_name: str = Form("", description="選填，寫入 Answer 表 course_name"),
-    quiz_id: int = Form(0, description="選填，寫入 Answer 表 quiz_id；若已知題目對應的 quiz_id 可傳入"),
-):
+async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest):
     """
     傳入 file_id（upload-zip 的 source file_id）與 rag_name（如 220222_220301），程式自動組出 rag_file_id={rag_name}_rag 並查找 RAG ZIP。
     OpenAI API key 由 Rag 表該 file_id 的 llm_api_key 取得；若為空則回傳 400。
     驗證後立即回傳 202 與 job_id；實際評分在背景執行，完成後寫入 public.Answer 表。前端請以 GET /rag/quiz-grade-result/{job_id} 輪詢，ready 時 result 含 answer_id。
+    請求 body 為 JSON（與 generate-quiz 一致）。
     """
-    file_id = (file_id or "").strip()
+    file_id = (body.file_id or "").strip()
     if not file_id:
         return JSONResponse(status_code=400, content={"error": "請傳入 file_id"})
 
@@ -339,7 +341,7 @@ async def grade_submission(
     person_id = (row.get("person_id") or "") if isinstance(row, dict) else ""
     rag_id = int(row.get("rag_id") or 0) if isinstance(row, dict) else 0
 
-    rag_name = (rag_name or "").strip()
+    rag_name = (body.rag_name or "").strip()
     if not rag_name:
         return JSONResponse(status_code=400, content={"error": "請傳入 rag_name（如 220222_220301）"})
 
@@ -367,12 +369,17 @@ async def grade_submission(
 
     job_id = str(uuid.uuid4())
     _grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
+    quiz_content = body.quiz_content or ""
+    student_answer = body.student_answer or ""
+    qtype = body.qtype or ""
+    course_name = body.course_name or ""
+    quiz_id = body.quiz_id or 0
     background_tasks.add_task(
         _grade_job_background,
         job_id,
         work_dir,
         api_key,
-        question_text,
+        quiz_content,
         student_answer,
         qtype,
         file_id=file_id,

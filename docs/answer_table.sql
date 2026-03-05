@@ -14,12 +14,10 @@ CREATE TABLE public."Answer" (
   person_id varchar(255) null default ''::character varying,
   course_name varchar(255) null default ''::character varying,
   rag_name varchar(255) null default ''::character varying,
-  quiz_level varchar(64) null default ''::character varying,
   student_answer text null default ''::character varying,
   answer_grade smallint null default 0,
   answer_feedback_metadata text null default ''::character varying,
   answer_metadata json null,
-  quiz_type smallint null default 0,
   updated_at timestamp without time zone null default now(),
   created_at timestamp without time zone null default now(),
 
