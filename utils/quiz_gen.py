@@ -42,16 +42,18 @@ def get_gis_filenames(extract_folder: Path) -> list[str]:
 def generate_quiz(
     zip_path: Path,
     api_key: str,
-    quiz_level: str,
+    quiz_level: int,
     system_prompt_instruction: str,
     course_name: str,
+    quiz_type: int = 0,
 ) -> dict:
     """
     從現成 RAG ZIP（含 FAISS 向量庫）解壓 → 載入向量庫 → 檢索 → 呼叫 GPT-4o 出題。
     僅支援由 /zip/pack 產出的 RAG ZIP，不支援一般講義 ZIP。
     system_prompt_instruction 為必填參數，由 API 呼叫端傳入出題系統指令。
     course_name 為課程名稱，會帶入出題 prompt 中。
-    回傳 {"quiz_content": "...", "quiz_hint": "...", "reference_answer": "..."}（參考答案；API 層會再加上 system_prompt_instruction、unit_filename、quiz_level）。
+    quiz_type 為題型代碼，會帶入出題 prompt 供模型參考。
+    回傳 {"quiz_content": "...", "quiz_hint": "...", "reference_answer": "..."}（參考答案；API 層會再加上 system_prompt_instruction、unit_filename、quiz_level、quiz_type）。
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 openai_api_key")
@@ -95,7 +97,7 @@ def generate_quiz(
 
         sys_role = f"你是頂尖的「{course_name}」課程助教。請使用 GPT-4o 的強大邏輯來出題。"
 
-        task_instruction = f"難度：{quiz_level}。"
+        task_instruction = f"難度：{quiz_level}。題型代碼：{quiz_type}。"
         core_point = "🔥 **本次測驗核心考點：請根據以下參考講義內容設計**"
 
         final_system_prompt = f"""

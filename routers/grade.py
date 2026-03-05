@@ -33,8 +33,9 @@ class GenerateQuizRequest(BaseModel):
 
     file_id: str = Field(..., description="upload-zip 回傳的 source file_id")
     rag_name: str = Field(..., description="rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 RAG ZIP")
-    quiz_level: str = Field(..., description="難度（回傳時一併帶回為 quiz_level）")
+    quiz_level: int = Field(0, description="難度等級（數字，會寫入 Quiz 表 quiz_level 並帶入出題 prompt）")
     course_name: str = Field(..., description="課程名稱，會帶入出題 prompt 中")
+    quiz_type: int = Field(0, description="題型代碼（如 0=預設），會寫入 Quiz 表並帶入出題 prompt")
 
 
 class RubricItem(BaseModel):
@@ -265,9 +266,11 @@ def generate_quiz_api(body: GenerateQuizRequest):
             quiz_level=body.quiz_level,
             system_prompt_instruction=system_prompt_instruction,
             course_name=course_name,
+            quiz_type=body.quiz_type,
         )
         result["system_prompt_instruction"] = system_prompt_instruction
         result["quiz_level"] = body.quiz_level
+        result["quiz_type"] = body.quiz_type
         result["rag_output"] = {
             "file_id": rag_name,
             "rag_name": rag_name,
@@ -286,7 +289,7 @@ def generate_quiz_api(body: GenerateQuizRequest):
             "quiz_content": result.get("quiz_content") or "",
             "quiz_hint": result.get("quiz_hint") or "",
             "reference_answer": result.get("reference_answer") or "",
-            "quiz_type": 0,
+            "quiz_type": body.quiz_type,
         }
         # 完整 API 回傳內容寫入 quiz_metadata（與 file_metadata、rag_metadata 模式一致）
         quiz_row["quiz_metadata"] = result
