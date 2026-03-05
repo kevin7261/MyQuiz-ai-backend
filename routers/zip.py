@@ -43,7 +43,6 @@ def _rag_default_row(
     *,
     person_id: str | None = None,
     rag_name: str | None = None,
-    course_name: str | None = None,
     llm_api_key: str | None = None,
     system_prompt_instruction: str | None = None,
     file_metadata: Any = None,
@@ -64,8 +63,6 @@ def _rag_default_row(
         row["person_id"] = person_id
     if rag_name is not None:
         row["rag_name"] = rag_name
-    if course_name is not None:
-        row["course_name"] = course_name
     if llm_api_key is not None:
         row["llm_api_key"] = llm_api_key
     if system_prompt_instruction is not None:
@@ -247,7 +244,7 @@ async def upload_zip(
     Upload Zip：只做上傳並寫入資料庫。需先以 create-rag 建立該 rag_tab_id 的 Rag 資料。
     傳入 rag_tab_id（create-rag 的 rag_tab_id）、ZIP 檔案與 person_id（Form 必填）。
     可選傳入 llm_api_key，會寫入 Rag 表（供 GET /rag/rags 回傳；generate-quiz/quiz-grade 須由呼叫端傳入此 key）。
-    會更新該筆 Rag 的 file_metadata（filename、second_folders、course_name 等）。
+    會更新該筆 Rag 的 file_metadata（filename、second_folders 等）。
     回傳 file_metadata。
     """
     if not file.filename or not file.filename.lower().endswith(".zip"):
@@ -294,19 +291,16 @@ async def upload_zip(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    course_name_val = Path(file.filename).stem if file.filename else None
     file_metadata = {
         "rag_id": row["rag_id"],
         "rag_tab_id": fid,
         "created_at": row["created_at"],
         "filename": file.filename,
-        "course_name": course_name_val,
         "second_folders": folders,
     }
     update_payload: dict[str, Any] = {
         "file_metadata": file_metadata,
         "updated_at": _now_utc_iso(),
-        "course_name": course_name_val,
     }
     if llm_api_key is not None:
         update_payload["llm_api_key"] = (llm_api_key or "").strip() or None
@@ -412,9 +406,30 @@ def build_rag_zip(body: PackRequest):
     return response
 
 
-class UpdateRagLlmApiKeyRequest(BaseModel):
-    """更新 Rag 的 llm_api_key 欄位。"""
-    llm_api_key: str  # 新 API key，可為空字串
+@router.get("/applied", tags=["rag"])
+def get_applied_rag():
+    """
+    取得 Rag 表中 applied=true 的資料，僅回傳 deleted=False，只會有 0 或 1 筆。不需輸入參數。
+    """
+    try:
+        supabase = get_supabase()
+        resp = (
+            supabase.table("Rag")
+            .select(RAG_SELECT_ALL)
+            .eq("applied", True)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+        data = resp.data or []
+        rag = data[0] if data else None
+        if rag is not None and "llm_api_key" not in rag:
+            rag["llm_api_key"] = None
+        if rag is not None:
+            rag["apikey"] = rag.get("llm_api_key") or ""
+        return {"rag_metadata": rag}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def _set_applied_only_for_rag_tab_id(supabase, pid: str, fid: str, extra_target_fields: dict | None = None) -> None:
@@ -449,40 +464,6 @@ def set_rag_applied(
             raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料")
         _set_applied_only_for_rag_tab_id(supabase, pid, fid)
         return {"message": "已設為目前套用", "rag_tab_id": fid}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.patch("/llm_api_key/{rag_tab_id}", status_code=200)
-def update_rag_llm_api_key(
-    rag_tab_id: str = PathParam(..., description="要更新 llm_api_key 的 Rag 的 rag_tab_id"),
-    body: UpdateRagLlmApiKeyRequest = ...,
-    x_person_id: str | None = Header(None, alias="X-Person-Id"),
-):
-    """
-    PATCH /rag/llm_api_key/{rag_tab_id}，body 傳 { "llm_api_key": "sk-..." }，person_id 請帶 Header X-Person-Id。
-    僅更新 Rag 表該筆的 llm_api_key 與 updated_at。
-    """
-    pid = (x_person_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="請傳入 Header X-Person-Id（person_id）")
-    fid = (rag_tab_id or "").strip()
-    if not fid or "/" in fid or "\\" in fid:
-        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
-    try:
-        supabase = get_supabase()
-        r = (
-            supabase.table("Rag")
-            .update({"llm_api_key": body.llm_api_key, "updated_at": _now_utc_iso()})
-            .eq("rag_tab_id", fid)
-            .eq("person_id", pid)
-            .execute()
-        )
-        if not r.data or len(r.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料")
-        return {"message": "已更新 llm_api_key", "rag_tab_id": fid}
     except HTTPException:
         raise
     except Exception as e:
