@@ -427,7 +427,8 @@ def get_applied_rag():
             rag["llm_api_key"] = None
         if rag is not None:
             rag["apikey"] = rag.get("llm_api_key") or ""
-        return {"rag_metadata": rag}
+        apikey = (rag.get("llm_api_key") or rag.get("apikey") or "") if rag else ""
+        return {"rag_metadata": rag, "apikey": apikey}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
