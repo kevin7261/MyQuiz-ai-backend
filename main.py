@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers.zip import router as zip_router
 from routers.grade import router as grade_router
 from routers.quiz import router as quiz_router
-from routers.test import router as test_router
+from routers.exam import router as exam_router
 from routers.users import router as users_router
 
 app = FastAPI()
@@ -39,7 +39,7 @@ app.add_middleware(
 app.include_router(zip_router)
 app.include_router(grade_router)
 app.include_router(quiz_router)
-app.include_router(test_router)
+app.include_router(exam_router)
 app.include_router(users_router)
 
 

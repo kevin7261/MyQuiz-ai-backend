@@ -42,7 +42,6 @@ class GenerateQuizRequest(BaseModel):
     rag_name: str = Field(..., description="rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 RAG ZIP")
     quiz_level: int = Field(0, description="難度等級（數字，會寫入 Rag_Quiz 表 quiz_level 並帶入出題 prompt）")
     course_name: str = Field(..., description="課程名稱，會帶入出題 prompt 中")
-    quiz_type: int = Field(0, description="題型代碼（如 0=預設），會寫入 Rag_Quiz 表並帶入出題 prompt")
 
 
 class QuizGradeRequest(BaseModel):
@@ -208,12 +207,10 @@ def _grade_job_background(
             # 完整批改結果以 JSON 字串存入 answer_feedback_metadata，便於前端解析顯示
             answer_feedback_json = json.dumps(result_dict, ensure_ascii=False)
             answer_row = {
-                "rag_quiz_id": rag_quiz_id,
                 "rag_id": rag_id,
                 "rag_tab_id": rag_tab_id or "",
+                "rag_quiz_id": rag_quiz_id,
                 "person_id": person_id or "",
-                "course_name": course_name or "",
-                "rag_name": rag_name or "",
                 "student_answer": student_answer or "",
                 "answer_grade": result.score,
                 "answer_feedback_metadata": answer_feedback_json,
@@ -290,11 +287,9 @@ def generate_quiz_api(body: GenerateQuizRequest):
             quiz_level=body.quiz_level,
             system_prompt_instruction=system_prompt_instruction,
             course_name=course_name,
-            quiz_type=body.quiz_type,
         )
         result["system_prompt_instruction"] = system_prompt_instruction
         result["quiz_level"] = body.quiz_level
-        result["quiz_type"] = body.quiz_type
         result["rag_output"] = {
             "rag_tab_id": rag_name,
             "rag_name": rag_name,
@@ -306,14 +301,10 @@ def generate_quiz_api(body: GenerateQuizRequest):
             "rag_id": rag_id,
             "rag_tab_id": source_rag_tab_id,
             "person_id": row.get("person_id") or "",
-            "course_name": course_name,
-            "system_prompt_instruction": system_prompt_instruction,
-            "rag_name": rag_name,
             "quiz_level": body.quiz_level,
             "quiz_content": result.get("quiz_content") or "",
             "quiz_hint": result.get("quiz_hint") or "",
             "reference_answer": result.get("reference_answer") or "",
-            "quiz_type": body.quiz_type,
         }
         # 完整 API 回傳內容寫入 quiz_metadata（與 file_metadata、rag_metadata 模式一致）
         quiz_row["quiz_metadata"] = result

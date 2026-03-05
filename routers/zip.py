@@ -1,10 +1,11 @@
 """ZIP 相關 API 路由。"""
 
 import io
+import logging
 import json
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,24 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 
 # Rag 表列出全部資料時選取欄位（用 * 回傳全部欄位）
 RAG_SELECT_ALL = "*"
+
+
+def _to_json_safe(obj: Any) -> Any:
+    """將 Supabase/DB 回傳值轉成可 JSON 序列化的型別（避免 500）。"""
+    if obj is None:
+        return None
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: _to_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_json_safe(v) for v in obj]
+    # Row-like 物件（有 .keys() 但不是 dict 子類）
+    if hasattr(obj, "keys") and not isinstance(obj, dict):
+        return _to_json_safe(dict(obj))
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    return obj
 
 
 def _rag_default_row(
@@ -142,6 +161,32 @@ def _resolve_person_id(form_person_id: str | None, x_person_id: str | None) -> s
     return None
 
 
+@router.get("/applied")
+def get_applied_rag():
+    """
+    Get Applied Rag：取得 Rag 表中 applied=true 的資料，僅回傳 deleted=False，只會有 0 或 1 筆。不需輸入參數。
+    """
+    try:
+        supabase = get_supabase()
+        resp = (
+            supabase.table("Rag")
+            .select(RAG_SELECT_ALL)
+            .eq("applied", True)
+            .eq("deleted", False)
+            .execute()
+        )
+        data = resp.data or []
+        if len(data) == 0:
+            return {"applied_rag": None}
+        return {"applied_rag": _to_json_safe(data[0])}
+    except Exception as e:
+        logging.exception("GET /rag/applied 錯誤")
+        raise HTTPException(
+            status_code=500,
+            detail=f"取得 applied Rag 失敗: {e!s}",
+        )
+
+
 @router.get("/rags", response_model=ListRagResponse)
 def list_rag(
     x_llm_api_key: str | None = Header(None, alias="X-LLM-Api-Key", description="LLM/OpenAI API Key（可選，與頁面 OpenAI API Key 對應）"),
@@ -190,9 +235,12 @@ def list_rag(
                 row["llm_api_key"] = None
             # 別名 apikey，與 llm_api_key 同值，方便前端讀取
             row["apikey"] = row.get("llm_api_key") or ""
+        # 轉成可 JSON 序列化（Supabase 的 datetime 等），避免 500
+        data = _to_json_safe(data)
         return ListRagResponse(rags=data, count=len(data))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.exception("GET /rag/rags 錯誤")
+        raise HTTPException(status_code=500, detail=f"列出 Rag 失敗: {e!s}")
 
 
 @router.post("/create-rag")
