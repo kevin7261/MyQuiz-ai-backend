@@ -35,23 +35,23 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 
 
 class GenerateQuizRequest(BaseModel):
-    """POST /rag/generate-quiz 請求 body。"""
+    """POST /rag/generate-quiz 請求 body。欄位順序與 Rag_Quiz 表一致：rag_id, rag_tab_id, quiz_level；llm_api_key 為呼叫用。"""
 
-    llm_api_key: str = Field(..., description="OpenAI API Key")
     rag_id: int = Field(0, description="Rag 表主鍵 rag_id；程式依該筆 rag_metadata.outputs 查找 RAG ZIP")
     rag_tab_id: int = Field(0, description="選填，Rag 表 rag_tab_id（來源 upload 識別）")
     quiz_level: int = Field(0, description="難度等級，會寫入 Rag_Quiz 表 quiz_level")
+    llm_api_key: str = Field(..., description="LLM API Key")
 
 
 class QuizGradeRequest(BaseModel):
-    """POST /rag/quiz-grade 請求 body。"""
+    """POST /rag/quiz-grade 請求 body。欄位順序與 Rag_Answer 表一致：rag_id, rag_tab_id, rag_quiz_id, quiz_content, answer；llm_api_key 為呼叫用。"""
 
-    llm_api_key: str = Field(..., description="OpenAI API Key")
     rag_id: str = Field("", description="Rag 表主鍵 rag_id（字串，會轉成數字查詢）")
     rag_tab_id: str = Field("", description="選填，Rag 表 rag_tab_id（來源識別）")
     rag_quiz_id: str = Field("", description="選填，寫入 Rag_Answer 表 rag_quiz_id")
     quiz_content: str = Field(..., description="測驗題目內容（與 Rag_Quiz 表 quiz_content 一致）")
     answer: str = Field(..., description="學生回答")
+    llm_api_key: str = Field(..., description="LLM API Key")
 
 
 class RubricItem(BaseModel):

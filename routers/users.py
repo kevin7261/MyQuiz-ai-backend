@@ -45,18 +45,20 @@ def debug_env():
     }
 
 
-# 與 DB 表一致：user_id, created_at, name, person_id, password, type, metadata
-USER_PUBLIC_COLUMNS = "user_id, created_at, name, person_id, type, metadata"
+# 與 DB 表一致（User 表）：user_id, person_id, name, user_type, llm_api_key, user_metadata, updated_at, created_at；不含 password
+USER_PUBLIC_COLUMNS = "user_id, person_id, name, user_type, llm_api_key, user_metadata, updated_at, created_at"
 
 
 class UserListItem(BaseModel):
     """單筆使用者（不含 password）。"""
     user_id: int
-    created_at: Optional[str] = None
-    name: Optional[str] = None
     person_id: Optional[str] = None
-    type: Optional[int] = None
-    metadata: Optional[Any] = None
+    name: Optional[str] = None
+    user_type: Optional[int] = None
+    llm_api_key: Optional[str] = None
+    user_metadata: Optional[Any] = None
+    updated_at: Optional[str] = None
+    created_at: Optional[str] = None
 
 
 class ListUsersResponse(BaseModel):
@@ -84,7 +86,7 @@ def login(body: LoginRequest):
     person_id = (body.person_id or "").strip()
     pwd = (body.password or "").strip()
     cols = f"{USER_PUBLIC_COLUMNS}, password"
-    out_keys = ("user_id", "created_at", "name", "person_id", "type", "metadata")
+    out_keys = ("user_id", "person_id", "name", "user_type", "llm_api_key", "user_metadata", "updated_at", "created_at")
     try:
         supabase = get_supabase()
         resp = (
@@ -98,7 +100,7 @@ def login(body: LoginRequest):
         row = resp.data[0]
         if (row.get("password") or "").strip() != pwd:
             raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
-        out = {k: row[k] for k in out_keys if k in row}
+        out = {k: row.get(k) for k in out_keys}
         return LoginResponse(user=out)
     except HTTPException:
         raise
@@ -118,7 +120,7 @@ def login(body: LoginRequest):
                 row = resp.data[0]
                 if (row.get("password") or "").strip() != pwd:
                     raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
-                out = {k: row[k] for k in out_keys if k in row}
+                out = {k: row.get(k) for k in out_keys}
                 return LoginResponse(user=out)
             except HTTPException:
                 raise

@@ -17,7 +17,7 @@ FastAPI 後端：使用者登入（Supabase）、ZIP RAG、出題、評分。
    uvicorn main:app --reload
    ```
 
-OpenAI API key 由前端在請求中傳入，不需寫入 `.env`。
+LLM API key 由前端在請求中傳入，不需寫入 `.env`。
 
 ## Render 部署
 

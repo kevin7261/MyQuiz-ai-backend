@@ -82,8 +82,7 @@ def _rag_default_row(
         row["person_id"] = person_id
     if rag_name is not None:
         row["rag_name"] = rag_name
-    if llm_api_key is not None:
-        row["llm_api_key"] = llm_api_key
+    # llm_api_key 不寫入 Rag 表（該表無此欄位）；由 User 表依 person_id 取得
     if system_prompt_instruction is not None:
         row["system_prompt_instruction"] = system_prompt_instruction
     return row
@@ -136,18 +135,18 @@ class ListRagResponse(BaseModel):
 
 
 class CreateRagRequest(BaseModel):
-    """POST /rag/create-rag：只建立一筆 Rag 資料，接受 rag_tab_id、person_id、rag_name。system_prompt_instruction 請在 build-rag-zip 傳入。"""
+    """POST /rag/create-rag：只建立一筆 Rag 資料。欄位順序與 Rag 表一致：rag_tab_id, person_id, rag_name。system_prompt_instruction 請在 build-rag-zip 傳入。"""
     rag_tab_id: str = Field(..., description="Rag 的 tab 識別，對應 Rag 表 rag_tab_id 欄位")
     person_id: str = Field(..., description="使用者/路徑識別")
     rag_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 rag_name 欄位")
 
 
 class PackRequest(BaseModel):
-    """指定先前上傳的 ZIP（rag_tab_id）與要打包的資料夾規則。ZIP 路徑為 {person_id}/{rag_tab_id}/upload。會 update Rag 表該 rag_tab_id 的 rag_list、rag_metadata、chunk_size、chunk_overlap、system_prompt_instruction。"""
+    """指定先前上傳的 ZIP（rag_tab_id）與要打包的資料夾規則。欄位順序與 Rag 表一致：rag_tab_id, person_id, rag_list；其後為 Rag 表 chunk_size, chunk_overlap, system_prompt_instruction；llm_api_key 為 Embedding 用（必填）。"""
     rag_tab_id: str
     person_id: str  # 與 upload-zip 一致，上傳 ZIP 所在路徑的 person_id
     rag_list: str  # 寫入 Rag 表 rag_list 欄位；例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
-    openai_api_key: str  # 用於 Embedding，必填（一律做成 RAG ZIP）
+    llm_api_key: str  # 用於 Embedding，必填（一律做成 RAG ZIP）
     chunk_size: int = 1000  # 寫入 Rag 表 chunk_size 欄位
     chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
     system_prompt_instruction: str = ""  # 出題系統指令，寫入 Rag 表 system_prompt_instruction 欄位
@@ -218,12 +217,12 @@ def get_for_exam_rag():
 
 @router.get("/rags", response_model=ListRagResponse)
 def list_rag(
-    x_llm_api_key: str | None = Header(None, alias="X-LLM-Api-Key", description="LLM/OpenAI API Key（可選，與頁面 OpenAI API Key 對應）"),
+    x_llm_api_key: str | None = Header(None, alias="X-LLM-Api-Key", description="LLM API Key（可選）"),
 ):
     """
     列出 Rag 表內容，僅回傳 deleted=False 的資料；每筆 Rag 含表上所有欄位（含 for_exam、llm_api_key），並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
     關聯方式：quizzes 下每筆 quiz 帶 answers（依 rag_quiz_id 關聯）；頂層 answers 為該 rag 下全部答案的扁平列表。
-    LLM/OpenAI API Key 可選，由 Header X-LLM-Api-Key 傳入（與前端 OpenAI API Key 欄位對應）。
+    LLM API Key 可選，由 Header X-LLM-Api-Key 傳入。
     """
     try:
         data = _rag_table_select(RAG_SELECT_ALL, exclude_deleted=True)
@@ -313,12 +312,12 @@ async def upload_zip(
     file: UploadFile = File(...),
     rag_tab_id: str = Form(..., description="對應 create-rag 建立的 rag_tab_id（Rag 表 rag_tab_id），ZIP 會存於此路徑"),
     person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 create-rag 一致"),
-    llm_api_key: str | None = Form(None, description="選填，寫入 Rag 表 llm_api_key；僅能在此或 GET /rag/rags 取得，generate-quiz/quiz-grade 需由呼叫端傳入"),
+    llm_api_key: str | None = Form(None, description="選填，目前未寫入 Rag 表；generate-quiz/quiz-grade 由後端依 person_id 自 User 表取得 llm_api_key"),
 ):
     """
     Upload Zip：只做上傳並寫入資料庫。需先以 create-rag 建立該 rag_tab_id 的 Rag 資料。
     傳入 rag_tab_id（create-rag 的 rag_tab_id）、ZIP 檔案與 person_id（Form 必填）。
-    可選傳入 llm_api_key，會寫入 Rag 表（供 GET /rag/rags 回傳；generate-quiz/quiz-grade 須由呼叫端傳入此 key）。
+    llm_api_key 不寫入 Rag 表；出題/評分時由後端依 person_id 自 User 表取得。
     會更新該筆 Rag 的 file_metadata（filename、second_folders 等）。
     回傳 file_metadata。
     """
@@ -377,8 +376,7 @@ async def upload_zip(
         "file_metadata": file_metadata,
         "updated_at": _now_utc_iso(),
     }
-    if llm_api_key is not None:
-        update_payload["llm_api_key"] = (llm_api_key or "").strip() or None
+    # llm_api_key 不寫入 Rag 表（該表無此欄位）；由 User 表依 person_id 取得
     try:
         supabase.table("Rag").update(update_payload).eq("rag_tab_id", fid).eq("person_id", resolved_person_id).execute()
     except Exception as e:
@@ -392,7 +390,7 @@ def build_rag_zip(body: PackRequest):
     依先前上傳的 ZIP（rag_tab_id）與 rag_list 字串，抽出指定 6 位數資料夾重新壓成 ZIP 並存到後端。
     ZIP 檔位置為 {person_id}/{rag_tab_id}/upload（與 upload-zip 一致），body 需傳入 person_id。
     rag_list 寫入 Rag 表；格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
-    一律做成 RAG（FAISS）ZIP，需傳入 openai_api_key。回傳內容完整寫入 Rag 表 rag_metadata，並 update chunk_size、chunk_overlap。
+    一律做成 RAG（FAISS）ZIP，需傳入 llm_api_key。回傳內容完整寫入 Rag 表 rag_metadata，並 update chunk_size、chunk_overlap。
     """
     pid = (body.person_id or "").strip()
     if not pid:
@@ -412,9 +410,9 @@ def build_rag_zip(body: PackRequest):
     if not packed:
         raise HTTPException(status_code=400, detail="rag_list 為空或格式錯誤，例：220222+220301")
 
-    api_key = (body.openai_api_key or "").strip()
+    api_key = (body.llm_api_key or "").strip()
     if not api_key:
-        raise HTTPException(status_code=400, detail="請傳入 openai_api_key")
+        raise HTTPException(status_code=400, detail="請傳入 llm_api_key")
 
     outputs = []
     for zip_bytes, filename in packed:
@@ -472,9 +470,9 @@ def build_rag_zip(body: PackRequest):
             "chunk_size": body.chunk_size,
             "chunk_overlap": body.chunk_overlap,
             "system_prompt_instruction": body.system_prompt_instruction or "",
-            "llm_api_key": (body.openai_api_key or "").strip() or None,
             "updated_at": _now_utc_iso(),
         }
+        # llm_api_key 不寫入 Rag 表（該表無此欄位）；generate-quiz/quiz-grade 由 User 表依 person_id 取得
         supabase.table("Rag").update(update_payload).eq("rag_tab_id", body.rag_tab_id).execute()
     except Exception:
         pass

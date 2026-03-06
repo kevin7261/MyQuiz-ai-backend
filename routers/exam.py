@@ -164,7 +164,7 @@ def list_exams(
 
 
 class CreateExamRequest(BaseModel):
-    """POST /exam/create-exam 請求 body。"""
+    """POST /exam/create-exam 請求 body。欄位順序與 Exam 表一致：exam_tab_id, person_id, exam_name。"""
 
     exam_tab_id: str | None = Field(None, description="選填；未傳則由後端產生（格式同 tab_id）")
     person_id: str = Field("", description="選填，寫入 Exam 表 person_id")
@@ -172,23 +172,23 @@ class CreateExamRequest(BaseModel):
 
 
 class ExamGenerateQuizRequest(BaseModel):
-    """POST /exam/generate-quiz 請求 body。"""
+    """POST /exam/generate-quiz 請求 body。欄位順序與 Exam_Quiz 表一致：exam_id, exam_tab_id, quiz_level；llm_api_key 為呼叫用。"""
 
-    llm_api_key: str = Field(..., description="OpenAI API Key")
     exam_id: int = Field(0, description="Exam 表主鍵 exam_id")
     exam_tab_id: str | int = Field("", description="create-exam 回傳的 exam_tab_id（Exam 表識別）；與 exam_id 二擇一，可傳字串或 0")
     quiz_level: int = Field(0, description="難度等級，寫入 Exam_Quiz 表 quiz_level")
+    llm_api_key: str = Field(..., description="LLM API Key")
 
 
 class ExamQuizGradeRequest(BaseModel):
-    """POST /exam/quiz-grade 請求 body。"""
+    """POST /exam/quiz-grade 請求 body。欄位順序與 Exam_Answer 表一致：exam_id, exam_tab_id, exam_quiz_id, quiz_content, answer；llm_api_key 為呼叫用。"""
 
-    llm_api_key: str = Field(..., description="OpenAI API Key")
     exam_id: str = Field("", description="Exam 表主鍵 exam_id（字串）")
     exam_tab_id: str = Field("", description="create-exam 回傳的 exam_tab_id；與 exam_id 二擇一")
     exam_quiz_id: str = Field("", description="選填，寫入 Exam_Answer 表 exam_quiz_id")
     quiz_content: str = Field(..., description="測驗題目內容（與 Exam_Quiz 表 quiz_content 一致）")
     answer: str = Field(..., description="學生回答")
+    llm_api_key: str = Field(..., description="LLM API Key")
 
 
 # 非同步評分結果暫存：job_id -> {"status": "pending"|"ready"|"error", "result": dict|None, "error": str|None}

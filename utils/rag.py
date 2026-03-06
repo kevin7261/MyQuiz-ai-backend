@@ -1,6 +1,6 @@
 """
 從 ZIP 製作 RAG 用 FAISS 向量庫，並打包成 ZIP 供下載。
-OpenAI API key 由呼叫端傳入，不從環境變數讀取。
+LLM API key 由呼叫端傳入，不從環境變數讀取。
 """
 
 import io

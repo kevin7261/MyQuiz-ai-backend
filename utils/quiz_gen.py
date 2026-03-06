@@ -52,7 +52,7 @@ def generate_quiz(
     回傳 {"quiz_content": "...", "quiz_hint": "...", "reference_answer": "..."}（參考答案；API 層會再加上 system_prompt_instruction、quiz_level 等）。
     """
     if not api_key or not api_key.strip():
-        raise ValueError("請傳入 openai_api_key")
+        raise ValueError("請傳入 llm_api_key")
     if not system_prompt_instruction or not system_prompt_instruction.strip():
         raise ValueError("請傳入 system_prompt_instruction（出題系統指令，必填）")
 
