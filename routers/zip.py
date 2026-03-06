@@ -5,18 +5,14 @@ import logging
 import json
 import uuid
 import zipfile
-from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
-
-
-def _now_utc_iso() -> str:
-    """回傳目前 UTC 時間的 ISO 字串，供 Rag 表 updated_at 使用。"""
-    return datetime.now(timezone.utc).isoformat()
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header, Path as PathParam
 from pydantic import BaseModel, Field
 
+from utils.datetime_utils import now_utc_iso
+from utils.json_utils import to_json_safe
 from utils.zip_utils import (
     get_second_level_folders_from_zip_file,
     build_folder_map,
@@ -39,24 +35,6 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 RAG_SELECT_ALL = "*"
 
 
-def _to_json_safe(obj: Any) -> Any:
-    """將 Supabase/DB 回傳值轉成可 JSON 序列化的型別（避免 500）。"""
-    if obj is None:
-        return None
-    if isinstance(obj, (datetime, date)):
-        return obj.isoformat()
-    if isinstance(obj, dict):
-        return {k: _to_json_safe(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_to_json_safe(v) for v in obj]
-    # Row-like 物件（有 .keys() 但不是 dict 子類）
-    if hasattr(obj, "keys") and not isinstance(obj, dict):
-        return _to_json_safe(dict(obj))
-    if isinstance(obj, (str, int, float, bool)):
-        return obj
-    return obj
-
-
 def _rag_default_row(
     rag_tab_id: str,
     *,
@@ -76,7 +54,7 @@ def _rag_default_row(
         "chunk_overlap": 200,
         "for_exam": False,
         "deleted": False,
-        "updated_at": _now_utc_iso(),
+        "updated_at": now_utc_iso(),
     }
     if person_id is not None:
         row["person_id"] = person_id
@@ -195,13 +173,13 @@ def get_for_exam_rag():
             "system_prompt_instruction": row.get("system_prompt_instruction"),
         }
         if isinstance(meta, dict) and "source_rag_tab_id" in meta and "outputs" in meta:
-            return _to_json_safe({
+            return to_json_safe({
                 "source_rag_tab_id": meta.get("source_rag_tab_id"),
                 "rag_list": meta.get("rag_list"),
                 "outputs": meta.get("outputs", []),
                 **extra,
             })
-        return _to_json_safe({
+        return to_json_safe({
             "source_rag_tab_id": row.get("rag_tab_id"),
             "rag_list": row.get("rag_list") or "",
             "outputs": (meta or {}).get("outputs", []) if isinstance(meta, dict) else [],
@@ -262,7 +240,7 @@ def list_rag(
             if "llm_api_key" not in row:
                 row["llm_api_key"] = None
         # 轉成可 JSON 序列化（Supabase 的 datetime 等），避免 500
-        data = _to_json_safe(data)
+        data = to_json_safe(data)
         return ListRagResponse(rags=data, count=len(data))
     except Exception as e:
         logging.exception("GET /rag/rags 錯誤")
@@ -374,7 +352,7 @@ async def upload_zip(
     }
     update_payload: dict[str, Any] = {
         "file_metadata": file_metadata,
-        "updated_at": _now_utc_iso(),
+        "updated_at": now_utc_iso(),
     }
     # llm_api_key 不寫入 Rag 表（該表無此欄位）；由 User 表依 person_id 取得
     try:
@@ -470,7 +448,7 @@ def build_rag_zip(body: PackRequest):
             "chunk_size": body.chunk_size,
             "chunk_overlap": body.chunk_overlap,
             "system_prompt_instruction": body.system_prompt_instruction or "",
-            "updated_at": _now_utc_iso(),
+            "updated_at": now_utc_iso(),
         }
         # llm_api_key 不寫入 Rag 表（該表無此欄位）；generate-quiz/quiz-grade 由 User 表依 person_id 取得
         supabase.table("Rag").update(update_payload).eq("rag_tab_id", body.rag_tab_id).execute()
@@ -481,7 +459,7 @@ def build_rag_zip(body: PackRequest):
 
 def _set_for_exam_only_for_rag_tab_id(supabase, pid: str, fid: str, extra_target_fields: dict | None = None) -> None:
     """將同一 person_id 下該 rag_tab_id 的 Rag 設為 for_exam=true，其餘皆設為 for_exam=false。extra_target_fields 會一併寫入該筆。"""
-    now = _now_utc_iso()
+    now = now_utc_iso()
     supabase.table("Rag").update({"for_exam": False, "updated_at": now}).eq("person_id", pid).neq("rag_tab_id", fid).execute()
     payload = {"for_exam": True, "updated_at": now}
     if extra_target_fields:
@@ -521,7 +499,7 @@ def _do_delete_rag_file(pid: str, fid: str):
     """共用：將 Rag 表該筆 deleted 設為 true 並刪除 storage 資料夾。"""
     try:
         supabase = get_supabase()
-        supabase.table("Rag").update({"deleted": True, "updated_at": _now_utc_iso()}).eq("rag_tab_id", fid).eq("person_id", pid).execute()
+        supabase.table("Rag").update({"deleted": True, "updated_at": now_utc_iso()}).eq("rag_tab_id", fid).eq("person_id", pid).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新 Rag 表失敗: {e}")
     try:

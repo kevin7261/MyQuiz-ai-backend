@@ -9,14 +9,8 @@ import shutil
 import tempfile
 import uuid
 import zipfile
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
-
-
-def _now_utc_iso() -> str:
-    """回傳目前 UTC 時間的 ISO 字串，供 Rag 表 updated_at 使用。"""
-    return datetime.now(timezone.utc).isoformat()
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse, Response
@@ -27,6 +21,7 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from openai import OpenAI
 
+from utils.datetime_utils import now_utc_iso
 from utils.rag import process_zip_to_docs
 from utils.storage import get_zip_path
 from utils.supabase_client import get_supabase
@@ -272,7 +267,7 @@ def generate_quiz_api(body: GenerateQuizRequest):
 
     # 更新該筆 RAG ZIP 對應的 Rag 列（以 rag_zip_tab_id 識別）的 llm_api_key
     try:
-        supabase.table("Rag").update({"llm_api_key": (api_key or "").strip() or None, "updated_at": _now_utc_iso()}).eq("rag_tab_id", rag_zip_tab_id).execute()
+        supabase.table("Rag").update({"llm_api_key": (api_key or "").strip() or None, "updated_at": now_utc_iso()}).eq("rag_tab_id", rag_zip_tab_id).execute()
     except Exception:
         pass
     path = get_zip_path(rag_zip_tab_id)
@@ -350,7 +345,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     rag_id_for_answer = int(row.get("rag_id") or 0)
 
     try:
-        supabase.table("Rag").update({"llm_api_key": (api_key or "").strip() or None, "updated_at": _now_utc_iso()}).eq("rag_tab_id", rag_zip_tab_id).execute()
+        supabase.table("Rag").update({"llm_api_key": (api_key or "").strip() or None, "updated_at": now_utc_iso()}).eq("rag_tab_id", rag_zip_tab_id).execute()
     except Exception:
         pass
     rag_zip_path = get_zip_path(rag_zip_tab_id)

@@ -6,7 +6,6 @@
 """
 
 import json
-from datetime import date, datetime
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Path as PathParam
@@ -14,25 +13,9 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from routers.exam import _answers_by_exam_quiz_ids, _quizzes_by_person_id
+from utils.json_utils import to_json_safe
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
-
-
-def _to_json_safe(obj: Any) -> Any:
-    """將 Supabase/DB 回傳值轉成可 JSON 序列化的型別（與 rag、exam 一致，避免 500）。"""
-    if obj is None:
-        return None
-    if isinstance(obj, (datetime, date)):
-        return obj.isoformat()
-    if isinstance(obj, dict):
-        return {k: _to_json_safe(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_to_json_safe(v) for v in obj]
-    if hasattr(obj, "keys") and not isinstance(obj, dict):
-        return _to_json_safe(dict(obj))
-    if isinstance(obj, (str, int, float, bool)):
-        return obj
-    return obj
 
 
 class ListQuizzesByPersonResponse(BaseModel):
@@ -121,7 +104,7 @@ def list_quizzes_by_person(
             qid_int = int(qid) if qid is not None else None
             quiz["answers"] = answers_by_quiz.get(qid_int, []) if qid_int is not None else []
         # 與 rag、exam 一致：轉成可 JSON 序列化（datetime 等轉成 ISO 字串）
-        data = _to_json_safe(quizzes)
+        data = to_json_safe(quizzes)
         weakness_report: Optional[str] = None
         if (llm_api_key or "").strip():
             weakness_report = _generate_weakness_report_md(data, language, (llm_api_key or "").strip())

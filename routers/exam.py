@@ -12,17 +12,14 @@ import shutil
 import tempfile
 import uuid
 import zipfile
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
-
-def _now_utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Path as PathParam, Query
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from utils.datetime_utils import now_utc_iso
 from utils.storage import generate_tab_id, get_zip_path
 from utils.supabase_client import get_supabase
 
@@ -303,7 +300,7 @@ def delete_exam(
     r = supabase.table("Exam").select("exam_id").eq("exam_tab_id", fid).eq("person_id", pid).eq("deleted", False).execute()
     if not r.data or len(r.data) == 0:
         raise HTTPException(status_code=404, detail="找不到該 exam_tab_id 的 Exam 資料")
-    supabase.table("Exam").update({"deleted": True, "updated_at": _now_utc_iso()}).eq("exam_tab_id", fid).eq("person_id", pid).execute()
+    supabase.table("Exam").update({"deleted": True, "updated_at": now_utc_iso()}).eq("exam_tab_id", fid).eq("person_id", pid).execute()
     return {
         "message": "已將 Exam 標記為刪除",
         "exam_tab_id": fid,
