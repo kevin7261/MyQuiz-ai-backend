@@ -74,7 +74,7 @@ def _rag_default_row(
         "rag_metadata": None,
         "chunk_size": 1000,
         "chunk_overlap": 200,
-        "applied": False,
+        "for_exam": False,
         "deleted": False,
         "updated_at": _now_utc_iso(),
     }
@@ -130,7 +130,7 @@ def _answers_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
 
 
 class ListRagResponse(BaseModel):
-    """GET /rag/rags 回應：Rag 表全部資料（含 applied、llm_api_key 等欄位），每筆另含關聯的 Rag_Quiz（quizzes，每筆帶 answers）、以及頂層 Rag_Answer（answers）。"""
+    """GET /rag/rags 回應：Rag 表全部資料（含 for_exam、llm_api_key 等欄位），每筆另含關聯的 Rag_Quiz（quizzes，每筆帶 answers）、以及頂層 Rag_Answer（answers）。"""
     rags: list[dict]
     count: int
 
@@ -161,29 +161,29 @@ def _resolve_person_id(form_person_id: str | None, x_person_id: str | None) -> s
     return None
 
 
-@router.get("/applied")
-def get_applied_rag():
+@router.get("/for-exam")
+def get_for_exam_rag():
     """
-    Get Applied Rag：取得 Rag 表中 applied=true 的資料，僅回傳 deleted=False，只會有 0 或 1 筆。不需輸入參數。
+    Get For-Exam Rag：取得 Rag 表中 for_exam=true 的資料，僅回傳 deleted=False，只會有 0 或 1 筆。不需輸入參數。
     """
     try:
         supabase = get_supabase()
         resp = (
             supabase.table("Rag")
             .select(RAG_SELECT_ALL)
-            .eq("applied", True)
+            .eq("for_exam", True)
             .eq("deleted", False)
             .execute()
         )
         data = resp.data or []
         if len(data) == 0:
-            return {"applied_rag": None}
-        return {"applied_rag": _to_json_safe(data[0])}
+            return {"for_exam_rag": None}
+        return {"for_exam_rag": _to_json_safe(data[0])}
     except Exception as e:
-        logging.exception("GET /rag/applied 錯誤")
+        logging.exception("GET /rag/for-exam 錯誤")
         raise HTTPException(
             status_code=500,
-            detail=f"取得 applied Rag 失敗: {e!s}",
+            detail=f"取得 for_exam Rag 失敗: {e!s}",
         )
 
 
@@ -192,7 +192,7 @@ def list_rag(
     x_llm_api_key: str | None = Header(None, alias="X-LLM-Api-Key", description="LLM/OpenAI API Key（可選，與頁面 OpenAI API Key 對應）"),
 ):
     """
-    列出 Rag 表內容，僅回傳 deleted=False 的資料；每筆 Rag 含表上所有欄位（含 applied、llm_api_key），並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
+    列出 Rag 表內容，僅回傳 deleted=False 的資料；每筆 Rag 含表上所有欄位（含 for_exam、llm_api_key），並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
     關聯方式：quizzes 下每筆 quiz 帶 answers（依 rag_quiz_id 關聯）；頂層 answers 為該 rag 下全部答案的扁平列表。
     LLM/OpenAI API Key 可選，由 Header X-LLM-Api-Key 傳入（與前端 OpenAI API Key 欄位對應）。
     """
@@ -454,51 +454,24 @@ def build_rag_zip(body: PackRequest):
     return response
 
 
-@router.get("/applied", tags=["rag"])
-def get_applied_rag():
-    """
-    取得 Rag 表中 applied=true 的資料，僅回傳 deleted=False，只會有 0 或 1 筆。不需輸入參數。
-    """
-    try:
-        supabase = get_supabase()
-        resp = (
-            supabase.table("Rag")
-            .select(RAG_SELECT_ALL)
-            .eq("applied", True)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
-        )
-        data = resp.data or []
-        rag = data[0] if data else None
-        if rag is not None and "llm_api_key" not in rag:
-            rag["llm_api_key"] = None
-        if rag is not None:
-            rag["apikey"] = rag.get("llm_api_key") or ""
-        apikey = (rag.get("llm_api_key") or rag.get("apikey") or "") if rag else ""
-        return {"rag_metadata": rag, "apikey": apikey}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-def _set_applied_only_for_rag_tab_id(supabase, pid: str, fid: str, extra_target_fields: dict | None = None) -> None:
-    """將同一 person_id 下該 rag_tab_id 的 Rag 設為 applied=true，其餘皆設為 applied=false。extra_target_fields 會一併寫入該筆。"""
+def _set_for_exam_only_for_rag_tab_id(supabase, pid: str, fid: str, extra_target_fields: dict | None = None) -> None:
+    """將同一 person_id 下該 rag_tab_id 的 Rag 設為 for_exam=true，其餘皆設為 for_exam=false。extra_target_fields 會一併寫入該筆。"""
     now = _now_utc_iso()
-    supabase.table("Rag").update({"applied": False, "updated_at": now}).eq("person_id", pid).neq("rag_tab_id", fid).execute()
-    payload = {"applied": True, "updated_at": now}
+    supabase.table("Rag").update({"for_exam": False, "updated_at": now}).eq("person_id", pid).neq("rag_tab_id", fid).execute()
+    payload = {"for_exam": True, "updated_at": now}
     if extra_target_fields:
         payload.update(extra_target_fields)
     supabase.table("Rag").update(payload).eq("rag_tab_id", fid).eq("person_id", pid).execute()
 
 
-@router.patch("/applied/{rag_tab_id}", status_code=200)
-def set_rag_applied(
-    rag_tab_id: str = PathParam(..., description="要設為套用中的 Rag 的 rag_tab_id"),
+@router.patch("/for-exam/{rag_tab_id}", status_code=200)
+def set_rag_for_exam(
+    rag_tab_id: str = PathParam(..., description="要設為供測驗使用的 Rag 的 rag_tab_id"),
     x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
-    PATCH /rag/applied/{rag_tab_id}，person_id 請帶 Header X-Person-Id。
-    將該 rag_tab_id 的 Rag 設為 applied=true，同 person_id 下其餘 Rag 皆設為 applied=false。
+    PATCH /rag/for-exam/{rag_tab_id}，person_id 請帶 Header X-Person-Id。
+    將該 rag_tab_id 的 Rag 設為 for_exam=true，同 person_id 下其餘 Rag 皆設為 for_exam=false。
     """
     pid = (x_person_id or "").strip()
     if not pid:
@@ -511,8 +484,8 @@ def set_rag_applied(
         r = supabase.table("Rag").select("rag_id").eq("rag_tab_id", fid).eq("person_id", pid).eq("deleted", False).execute()
         if not r.data or len(r.data) == 0:
             raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料")
-        _set_applied_only_for_rag_tab_id(supabase, pid, fid)
-        return {"message": "已設為目前套用", "rag_tab_id": fid}
+        _set_for_exam_only_for_rag_tab_id(supabase, pid, fid)
+        return {"message": "已設為供測驗使用", "rag_tab_id": fid}
     except HTTPException:
         raise
     except Exception as e:
