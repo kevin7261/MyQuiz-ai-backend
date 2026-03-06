@@ -130,14 +130,6 @@ class PackRequest(BaseModel):
     system_prompt_instruction: str = ""  # 出題系統指令，寫入 Rag 表 system_prompt_instruction 欄位
 
 
-def _resolve_person_id(form_person_id: str | None, x_person_id: str | None) -> str | None:
-    """優先 Form person_id，若無則 Header X-Person-Id。回傳非空字串或 None。"""
-    for raw in (form_person_id, x_person_id):
-        if raw is not None and raw.strip():
-            return raw.strip()
-    return None
-
-
 @router.get("/for-exam")
 def get_for_exam_rag():
     """
@@ -457,14 +449,11 @@ def build_rag_zip(body: PackRequest):
     return response
 
 
-def _set_for_exam_only_for_rag_tab_id(supabase, pid: str, fid: str, extra_target_fields: dict | None = None) -> None:
-    """將同一 person_id 下該 rag_tab_id 的 Rag 設為 for_exam=true，其餘皆設為 for_exam=false。extra_target_fields 會一併寫入該筆。"""
+def _set_for_exam_only_for_rag_tab_id(supabase, pid: str, fid: str) -> None:
+    """將同一 person_id 下該 rag_tab_id 的 Rag 設為 for_exam=true，其餘皆設為 for_exam=false。"""
     now = now_utc_iso()
     supabase.table("Rag").update({"for_exam": False, "updated_at": now}).eq("person_id", pid).neq("rag_tab_id", fid).execute()
-    payload = {"for_exam": True, "updated_at": now}
-    if extra_target_fields:
-        payload.update(extra_target_fields)
-    supabase.table("Rag").update(payload).eq("rag_tab_id", fid).eq("person_id", pid).execute()
+    supabase.table("Rag").update({"for_exam": True, "updated_at": now}).eq("rag_tab_id", fid).eq("person_id", pid).execute()
 
 
 @router.patch("/for-exam/{rag_tab_id}", status_code=200)
