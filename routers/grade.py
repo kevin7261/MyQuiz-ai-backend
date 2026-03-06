@@ -35,25 +35,23 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 
 
 class GenerateQuizRequest(BaseModel):
-    """POST /rag/generate-quiz 請求 body。llm_api_key 由呼叫端傳入（僅能從 GET /rag/rags 或 /rag/upload-zip 取得），不可從資料庫讀取。"""
+    """POST /rag/generate-quiz 請求 body。"""
 
-    llm_api_key: str = Field(..., description="OpenAI API Key，由前端從 GET /rag/rags 或 /rag/upload-zip 取得後傳入")
-    rag_id: int = Field(..., description="Rag 表主鍵 rag_id；程式依該筆 rag_metadata.outputs 查找 RAG ZIP")
-    quiz_level: int = Field(0, description="難度等級（數字，會寫入 Rag_Quiz 表 quiz_level 並帶入出題 prompt）")
-    course_name: str = Field(..., description="課程名稱，會帶入出題 prompt 中")
+    llm_api_key: str = Field(..., description="OpenAI API Key")
+    rag_id: int = Field(0, description="Rag 表主鍵 rag_id；程式依該筆 rag_metadata.outputs 查找 RAG ZIP")
+    rag_tab_id: int = Field(0, description="選填，Rag 表 rag_tab_id（來源 upload 識別）")
+    quiz_level: int = Field(0, description="難度等級，會寫入 Rag_Quiz 表 quiz_level")
 
 
 class QuizGradeRequest(BaseModel):
-    """POST /rag/quiz-grade 請求 body（與 generate-quiz 一致使用 JSON）。llm_api_key 由呼叫端傳入，不可從資料庫讀取。"""
+    """POST /rag/quiz-grade 請求 body。"""
 
-    llm_api_key: str = Field(..., description="OpenAI API Key，由前端從 GET /rag/rags 或 /rag/upload-zip 取得後傳入")
-    rag_tab_id: str = Field(..., description="upload-zip 回傳的 source rag_tab_id（Rag 表識別）")
-    rag_name: str = Field(..., description="rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 RAG ZIP")
+    llm_api_key: str = Field(..., description="OpenAI API Key")
+    rag_id: str = Field("", description="Rag 表主鍵 rag_id（字串，會轉成數字查詢）")
+    rag_tab_id: str = Field("", description="選填，Rag 表 rag_tab_id（來源識別）")
+    rag_quiz_id: str = Field("", description="選填，寫入 Rag_Answer 表 rag_quiz_id")
     quiz_content: str = Field(..., description="測驗題目內容（與 Rag_Quiz 表 quiz_content 一致）")
-    student_answer: str = Field(..., description="學生回答")
-    qtype: str = Field(..., description="題型，如 short_answer")
-    course_name: str = Field("", description="選填，寫入 Rag_Answer 表 course_name")
-    rag_quiz_id: int = Field(0, description="選填，寫入 Rag_Answer 表 rag_quiz_id；若已知題目對應的 rag_quiz_id 可傳入")
+    answer: str = Field(..., description="學生回答")
 
 
 class RubricItem(BaseModel):
@@ -187,16 +185,14 @@ def _grade_job_background(
     api_key: str,
     quiz_content: str,
     student_answer: str,
-    qtype: str,
     *,
     rag_tab_id: str = "",
-    rag_name: str = "",
     person_id: str = "",
     rag_id: int = 0,
-    course_name: str = "",
     rag_quiz_id: int = 0,
 ) -> None:
     """背景執行評分，結果寫入 _grade_job_results[job_id]，並寫入 public.Rag_Answer 表。"""
+    qtype = "short_answer"
     try:
         result = _run_grade_job(work_dir, api_key, quiz_content, student_answer, qtype)
         result_dict = result.model_dump()
@@ -257,13 +253,15 @@ def _rag_stem_from_rag_id(supabase, rag_id: int) -> tuple[dict, str, str]:
 @router.post("/generate-quiz")
 def generate_quiz_api(body: GenerateQuizRequest):
     """
-    傳入 rag_id（Rag 表主鍵），程式依該筆 rag_metadata.outputs 查找 RAG ZIP 出題。
-    llm_api_key 由請求 body 傳入（僅能從 GET /rag/rags 或 /rag/upload-zip 取得）；system_prompt_instruction 由 Rag 表該 rag_id 取得。
-    出題成功後會自動寫入 public.Rag_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, reference_answer、rag_quiz_id（若寫入成功）等。
+    傳入 llm_api_key、rag_id（Rag 表主鍵）、rag_tab_id（選填）、quiz_level。
+    程式依 rag_id 對應的 rag_metadata.outputs 查找 RAG ZIP 出題；system_prompt_instruction 由 Rag 表取得。
+    出題成功後寫入 public.Rag_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, reference_answer、rag_quiz_id 等。
     """
     api_key = (body.llm_api_key or "").strip()
     if not api_key:
-        raise HTTPException(status_code=400, detail="請傳入 llm_api_key（由 GET /rag/rags 或 /rag/upload-zip 取得）")
+        raise HTTPException(status_code=400, detail="請傳入 llm_api_key")
+    if not body.rag_id:
+        raise HTTPException(status_code=400, detail="請傳入 rag_id")
 
     supabase = get_supabase()
     row, stem, rag_zip_tab_id = _rag_stem_from_rag_id(supabase, body.rag_id)
@@ -281,10 +279,6 @@ def generate_quiz_api(body: GenerateQuizRequest):
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 rag_id={body.rag_id}（rag_tab_id={rag_zip_tab_id}）")
 
-    course_name = (body.course_name or "").strip()
-    if not course_name:
-        raise HTTPException(status_code=400, detail="請傳入 course_name（課程名稱，必填）")
-
     try:
         from utils.quiz_gen import generate_quiz
         result = generate_quiz(
@@ -292,7 +286,6 @@ def generate_quiz_api(body: GenerateQuizRequest):
             api_key=api_key,
             quiz_level=body.quiz_level,
             system_prompt_instruction=system_prompt_instruction,
-            course_name=course_name,
         )
         result["system_prompt_instruction"] = system_prompt_instruction
         result["quiz_level"] = body.quiz_level
@@ -333,42 +326,36 @@ def generate_quiz_api(body: GenerateQuizRequest):
 @router.post("/quiz-grade")
 async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest):
     """
-    傳入 rag_tab_id（upload-zip 的 source rag_tab_id）與 rag_name（如 220222_220301），程式自動組出 rag_tab_id={rag_name}_rag 並查找 RAG ZIP。
-    llm_api_key 由請求 body 傳入（僅能從 GET /rag/rags 或 /rag/upload-zip 取得），不可從資料庫讀取。
-    驗證後立即回傳 202 與 job_id；實際評分在背景執行，完成後寫入 public.Rag_Answer 表。前端請以 GET /rag/quiz-grade-result/{job_id} 輪詢，ready 時 result 含 rag_answer_id。
-    請求 body 為 JSON（與 generate-quiz 一致）。
+    傳入 llm_api_key、rag_id（字串）、rag_tab_id（選填）、rag_quiz_id、quiz_content、answer。
+    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。驗證後回傳 202 與 job_id；背景寫入 public.Rag_Answer。輪詢 GET /rag/quiz-grade-result/{job_id}。
     """
-    rag_tab_id = (body.rag_tab_id or "").strip()
-    if not rag_tab_id:
-        return JSONResponse(status_code=400, content={"error": "請傳入 rag_tab_id"})
-
     api_key = (body.llm_api_key or "").strip()
     if not api_key:
-        return JSONResponse(status_code=400, content={"error": "請傳入 llm_api_key（由 GET /rag/rags 或 /rag/upload-zip 取得）"})
-
-    # Rag_Answer 寫入用欄位由 Rag 表該 rag_tab_id 取得（不讀取 llm_api_key）
-    supabase = get_supabase()
-    resp = supabase.table("Rag").select("person_id, rag_id").eq("rag_tab_id", rag_tab_id).execute()
-    row = (resp.data or [None])[0] if resp.data else None
-    person_id = (row.get("person_id") or "") if isinstance(row, dict) else ""
-    rag_id = int(row.get("rag_id") or 0) if isinstance(row, dict) else 0
-
-    rag_name = (body.rag_name or "").strip()
-    if not rag_name:
-        return JSONResponse(status_code=400, content={"error": "請傳入 rag_name（如 220222_220301）"})
-
-    rag_tab_id = f"{rag_name}_rag"
-    # 更新該筆 Rag（以 rag_tab_id 識別）的 llm_api_key（供 GET /rag/rags 回傳與後續呼叫預填）
+        return JSONResponse(status_code=400, content={"error": "請傳入 llm_api_key"})
+    rag_id_str = (body.rag_id or "").strip()
+    if not rag_id_str:
+        return JSONResponse(status_code=400, content={"error": "請傳入 rag_id"})
     try:
-        supabase.table("Rag").update({"llm_api_key": (api_key or "").strip() or None, "updated_at": _now_utc_iso()}).eq("rag_tab_id", rag_tab_id).execute()
+        rag_id_int = int(rag_id_str)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "rag_id 須為數字字串"})
+
+    supabase = get_supabase()
+    try:
+        row, stem, rag_zip_tab_id = _rag_stem_from_rag_id(supabase, rag_id_int)
+    except HTTPException as e:
+        return JSONResponse(status_code=e.status_code, content={"error": e.detail})
+    source_rag_tab_id = (row.get("rag_tab_id") or "").strip()
+    person_id = (row.get("person_id") or "").strip()
+    rag_id_for_answer = int(row.get("rag_id") or 0)
+
+    try:
+        supabase.table("Rag").update({"llm_api_key": (api_key or "").strip() or None, "updated_at": _now_utc_iso()}).eq("rag_tab_id", rag_zip_tab_id).execute()
     except Exception:
         pass
-    rag_zip_path = get_zip_path(rag_tab_id)
+    rag_zip_path = get_zip_path(rag_zip_tab_id)
     if not rag_zip_path or not rag_zip_path.exists():
-        return JSONResponse(
-            status_code=404,
-            content={"error": f"找不到 RAG ZIP，請確認 rag_tab_id={rag_tab_id}、rag_name={rag_name}（rag_tab_id={rag_tab_id}）"},
-        )
+        return JSONResponse(status_code=404, content={"error": f"找不到 RAG ZIP，請確認 rag_id={rag_id_str}（tab_id={rag_zip_tab_id}）"})
 
     work_dir = Path(tempfile.mkdtemp(prefix="aiquiz_grade_"))
     zip_source_path = work_dir / "ref.zip"
@@ -384,27 +371,25 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
         _cleanup_grade_workspace(work_dir)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+    try:
+        rag_quiz_id_int = int((body.rag_quiz_id or "").strip()) if (body.rag_quiz_id or "").strip() else 0
+    except ValueError:
+        rag_quiz_id_int = 0
     job_id = str(uuid.uuid4())
     _grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
     quiz_content = body.quiz_content or ""
-    student_answer = body.student_answer or ""
-    qtype = body.qtype or ""
-    course_name = body.course_name or ""
-    rag_quiz_id = body.rag_quiz_id or 0
+    answer = body.answer or ""
     background_tasks.add_task(
         _grade_job_background,
         job_id,
         work_dir,
         api_key,
         quiz_content,
-        student_answer,
-        qtype,
-        rag_tab_id=rag_tab_id,
-        rag_name=rag_name,
+        answer,
+        rag_tab_id=source_rag_tab_id,
         person_id=person_id,
-        rag_id=rag_id,
-        course_name=(course_name or "").strip(),
-        rag_quiz_id=rag_quiz_id,
+        rag_id=rag_id_for_answer,
+        rag_quiz_id=rag_quiz_id_int,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
