@@ -164,7 +164,8 @@ def _resolve_person_id(form_person_id: str | None, x_person_id: str | None) -> s
 @router.get("/for-exam")
 def get_for_exam_rag():
     """
-    Get For-Exam Rag：取得 Rag 表中 for_exam=true 的資料，僅回傳 deleted=False，只會有 0 或 1 筆。不需輸入參數。
+    Get For-Exam Rag：取得 Rag 表中 for_exam=true 的資料，僅回傳 deleted=False，只會有 0 或 1 筆。
+    回傳格式與 POST /rag/build-rag-zip 一致，並多帶 rag_id、rag_tab_id、llm_api_key、system_prompt_instruction。
     """
     try:
         supabase = get_supabase()
@@ -177,8 +178,36 @@ def get_for_exam_rag():
         )
         data = resp.data or []
         if len(data) == 0:
-            return {"for_exam_rag": None}
-        return {"for_exam_rag": _to_json_safe(data[0])}
+            return {
+                "source_rag_tab_id": None,
+                "rag_list": None,
+                "outputs": [],
+                "rag_id": None,
+                "rag_tab_id": None,
+                "llm_api_key": None,
+                "system_prompt_instruction": None,
+            }
+        row = data[0]
+        meta = row.get("rag_metadata")
+        extra = {
+            "rag_id": row.get("rag_id"),
+            "rag_tab_id": row.get("rag_tab_id"),
+            "llm_api_key": row.get("llm_api_key"),
+            "system_prompt_instruction": row.get("system_prompt_instruction"),
+        }
+        if isinstance(meta, dict) and "source_rag_tab_id" in meta and "outputs" in meta:
+            return _to_json_safe({
+                "source_rag_tab_id": meta.get("source_rag_tab_id"),
+                "rag_list": meta.get("rag_list"),
+                "outputs": meta.get("outputs", []),
+                **extra,
+            })
+        return _to_json_safe({
+            "source_rag_tab_id": row.get("rag_tab_id"),
+            "rag_list": row.get("rag_list") or "",
+            "outputs": (meta or {}).get("outputs", []) if isinstance(meta, dict) else [],
+            **extra,
+        })
     except Exception as e:
         logging.exception("GET /rag/for-exam 錯誤")
         raise HTTPException(
@@ -233,8 +262,6 @@ def list_rag(
             # 確保每筆都帶 llm_api_key（Rag 表欄位），供前端顯示／預填 API Key
             if "llm_api_key" not in row:
                 row["llm_api_key"] = None
-            # 別名 apikey，與 llm_api_key 同值，方便前端讀取
-            row["apikey"] = row.get("llm_api_key") or ""
         # 轉成可 JSON 序列化（Supabase 的 datetime 等），避免 500
         data = _to_json_safe(data)
         return ListRagResponse(rags=data, count=len(data))

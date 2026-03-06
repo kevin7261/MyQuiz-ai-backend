@@ -38,8 +38,7 @@ class GenerateQuizRequest(BaseModel):
     """POST /rag/generate-quiz 請求 body。llm_api_key 由呼叫端傳入（僅能從 GET /rag/rags 或 /rag/upload-zip 取得），不可從資料庫讀取。"""
 
     llm_api_key: str = Field(..., description="OpenAI API Key，由前端從 GET /rag/rags 或 /rag/upload-zip 取得後傳入")
-    rag_tab_id: str = Field(..., description="upload-zip 回傳的 source rag_tab_id（Rag 表識別）")
-    rag_name: str = Field(..., description="rag_list 某一段的 stem，如 220222_220301；程式會以 {rag_name}_rag 查找 RAG ZIP")
+    rag_id: int = Field(..., description="Rag 表主鍵 rag_id；程式依該筆 rag_metadata.outputs 查找 RAG ZIP")
     quiz_level: int = Field(0, description="難度等級（數字，會寫入 Rag_Quiz 表 quiz_level 並帶入出題 prompt）")
     course_name: str = Field(..., description="課程名稱，會帶入出題 prompt 中")
 
@@ -238,42 +237,49 @@ def _grade_job_background(
         _cleanup_grade_workspace(work_dir)
 
 
+def _rag_stem_from_rag_id(supabase, rag_id: int) -> tuple[dict, str, str]:
+    """由 rag_id 查 Rag 表，回傳 (row, stem, rag_zip_tab_id)。stem 取自 rag_metadata.outputs 第一筆的 rag_tab_id；若無則 raise HTTPException。"""
+    rag_rows = supabase.table("Rag").select("rag_tab_id, system_prompt_instruction, person_id, rag_id, rag_metadata").eq("rag_id", rag_id).eq("deleted", False).execute()
+    if not rag_rows.data or len(rag_rows.data) == 0:
+        raise HTTPException(status_code=404, detail=f"找不到 rag_id={rag_id} 的 Rag 資料")
+    row = rag_rows.data[0]
+    meta = row.get("rag_metadata")
+    outputs = (meta.get("outputs", []) if isinstance(meta, dict) else []) or []
+    if not outputs:
+        raise HTTPException(status_code=400, detail=f"該筆 Rag（rag_id={rag_id}）的 rag_metadata.outputs 為空，請先執行 build-rag-zip")
+    stem = (outputs[0].get("rag_tab_id") or "").strip() if isinstance(outputs[0], dict) else ""
+    if not stem:
+        raise HTTPException(status_code=400, detail=f"該筆 Rag（rag_id={rag_id}）的 outputs 第一筆缺少 rag_tab_id")
+    rag_zip_tab_id = f"{stem}_rag"
+    return row, stem, rag_zip_tab_id
+
+
 @router.post("/generate-quiz")
 def generate_quiz_api(body: GenerateQuizRequest):
     """
-    傳入 rag_tab_id（upload-zip 的 source rag_tab_id）與 rag_name（如 220222_220301），程式自動組出 rag_tab_id={rag_name}_rag 並查找 RAG ZIP。
-    llm_api_key 由請求 body 傳入（僅能從 GET /rag/rags 或 /rag/upload-zip 取得）；system_prompt_instruction 由 Rag 表該 rag_tab_id 取得。
+    傳入 rag_id（Rag 表主鍵），程式依該筆 rag_metadata.outputs 查找 RAG ZIP 出題。
+    llm_api_key 由請求 body 傳入（僅能從 GET /rag/rags 或 /rag/upload-zip 取得）；system_prompt_instruction 由 Rag 表該 rag_id 取得。
     出題成功後會自動寫入 public.Rag_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, reference_answer、rag_quiz_id（若寫入成功）等。
     """
-    source_rag_tab_id = (body.rag_tab_id or "").strip()
-    if not source_rag_tab_id:
-        raise HTTPException(status_code=400, detail="請傳入 rag_tab_id")
-
     api_key = (body.llm_api_key or "").strip()
     if not api_key:
         raise HTTPException(status_code=400, detail="請傳入 llm_api_key（由 GET /rag/rags 或 /rag/upload-zip 取得）")
 
     supabase = get_supabase()
-    rag_rows = supabase.table("Rag").select("system_prompt_instruction, person_id, rag_id").eq("rag_tab_id", source_rag_tab_id).eq("deleted", False).execute()
-    if not rag_rows.data or len(rag_rows.data) == 0:
-        raise HTTPException(status_code=404, detail=f"找不到 rag_tab_id={source_rag_tab_id} 的 Rag 資料")
-    row = rag_rows.data[0]
+    row, stem, rag_zip_tab_id = _rag_stem_from_rag_id(supabase, body.rag_id)
+    source_rag_tab_id = (row.get("rag_tab_id") or "").strip()
     system_prompt_instruction = (row.get("system_prompt_instruction") or "").strip()
     if not system_prompt_instruction:
         raise HTTPException(status_code=400, detail="該筆 Rag 的 system_prompt_instruction 未設定，請在 build-rag-zip 傳入出題系統指令")
 
-    rag_name = (body.rag_name or "").strip()
-    if not rag_name:
-        raise HTTPException(status_code=400, detail="請傳入 rag_name（如 220222_220301）")
-    rag_zip_tab_id = f"{rag_name}_rag"  # RAG ZIP 的識別，用於找檔與更新 llm_api_key
-    # 更新該筆 Rag（以 rag_tab_id 識別）的 llm_api_key（供 GET /rag/rags 回傳與後續呼叫預填）
+    # 更新該筆 RAG ZIP 對應的 Rag 列（以 rag_zip_tab_id 識別）的 llm_api_key
     try:
         supabase.table("Rag").update({"llm_api_key": (api_key or "").strip() or None, "updated_at": _now_utc_iso()}).eq("rag_tab_id", rag_zip_tab_id).execute()
     except Exception:
         pass
     path = get_zip_path(rag_zip_tab_id)
     if not path or not path.exists():
-        raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 rag_tab_id={body.rag_tab_id}、rag_name={rag_name}（rag_tab_id={rag_zip_tab_id}）")
+        raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 rag_id={body.rag_id}（rag_tab_id={rag_zip_tab_id}）")
 
     course_name = (body.course_name or "").strip()
     if not course_name:
@@ -291,9 +297,9 @@ def generate_quiz_api(body: GenerateQuizRequest):
         result["system_prompt_instruction"] = system_prompt_instruction
         result["quiz_level"] = body.quiz_level
         result["rag_output"] = {
-            "rag_tab_id": rag_name,
-            "rag_name": rag_name,
-            "filename": f"{rag_name}.zip",
+            "rag_tab_id": stem,
+            "rag_name": stem,
+            "filename": f"{stem}.zip",
         }
         # 寫入 public.Rag_Quiz 表（須帶入 rag_id、rag_tab_id 為來源 upload 的 rag_tab_id）
         rag_id = int(row.get("rag_id") or 0) if isinstance(row, dict) else 0
