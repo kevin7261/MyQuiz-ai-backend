@@ -79,6 +79,34 @@ def _answers_by_exam_id(exam_ids: list[int]) -> dict[int, list[dict]]:
     return out
 
 
+def _quizzes_by_person_id(person_id: str) -> list[dict]:
+    """依 person_id 查詢 Exam_Quiz 表，回傳該使用者的所有題目。"""
+    pid = (person_id or "").strip()
+    if not pid:
+        return []
+    supabase = get_supabase()
+    resp = supabase.table("Exam_Quiz").select("*").eq("person_id", pid).execute()
+    return resp.data or []
+
+
+def _answers_by_exam_quiz_ids(exam_quiz_ids: list[int]) -> dict[int, list[dict]]:
+    """依 exam_quiz_id 查詢 Exam_Answer 表，回傳 exam_quiz_id -> list of answer。"""
+    if not exam_quiz_ids:
+        return {}
+    supabase = get_supabase()
+    resp = supabase.table("Exam_Answer").select("*").in_("exam_quiz_id", exam_quiz_ids).execute()
+    rows = resp.data or []
+    out: dict[int, list[dict]] = {qid: [] for qid in exam_quiz_ids}
+    for row in rows:
+        qid = row.get("exam_quiz_id")
+        if qid is not None:
+            try:
+                out.setdefault(int(qid), []).append(row)
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
 class ListExamResponse(BaseModel):
     """GET /exam/exams 回應：Exam 表全部資料，每筆另含關聯的 Exam_Quiz（quizzes，每題帶 answers）與頂層 Exam_Answer（answers）。"""
     exams: list[dict]
