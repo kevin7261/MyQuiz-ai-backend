@@ -2,12 +2,12 @@
 分析 API：依 person_id 查詢 Exam_Quiz / Exam_Answer 等分析用資料。
 - GET /analysis/quizzes-by-person/{person_id}：依 person_id 取得該使用者在 Exam_Quiz 的所有資料，每筆帶關聯的 Exam_Answer。
   回傳格式與 GET /rag/rags、GET /exam/exams 的題目答案內容一致（每筆 quiz 含 quiz_content、quiz_hint、reference_answer、quiz_metadata，answers 含 student_answer、answer_grade、answer_feedback_metadata、answer_metadata 等）。
-- POST /analysis/weakness-report：輸入為 quizzes-by-person 的輸出 JSON，彙整各題 answer_feedback_metadata 中的 weaknesses，由 AI 產生學習弱點報告（Markdown）。
+  可選參數 language、llm_api_key：若提供 llm_api_key，會依題目／參考答案／使用者答案／答案分析結果彙整弱點，由 AI 產生「全部弱點分析」報告（Markdown），放在 weakness_report 欄位。
 """
 
 import json
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Path as PathParam
 from openai import OpenAI
@@ -36,22 +36,10 @@ def _to_json_safe(obj: Any) -> Any:
 
 
 class ListQuizzesByPersonResponse(BaseModel):
-    """GET /analysis/quizzes-by-person/{person_id} 回應：格式同 rag/exam 的題目答案，每筆 quiz 帶 answers。"""
+    """GET /analysis/quizzes-by-person/{person_id} 回應：格式同 rag/exam 的題目答案，每筆 quiz 帶 answers；可選帶全部弱點分析。"""
     quizzes: list[dict]
     count: int
-
-
-class WeaknessReportRequest(BaseModel):
-    """POST /analysis/weakness-report 請求：格式同 GET /analysis/quizzes-by-person 的輸出。"""
-    quizzes: list[dict] = Field(..., description="題目與答案列表，每筆含 answers（含 answer_feedback_metadata）")
-    language: Literal["en", "zh"] = Field(default="zh", description="報告語言：en=英文，zh=繁體中文")
-    llm_api_key: str = Field(..., description="LLM API key，用於產生報告")
-
-
-class WeaknessReportResponse(BaseModel):
-    """POST /analysis/weakness-report 回應。"""
-    report: str = Field(..., description="Markdown 格式的學習弱點報告")
-    weaknesses_count: int = Field(..., description="彙整的弱點條數")
+    weakness_report: Optional[str] = Field(default=None, description="依題目／參考答案／使用者答案／答案分析結果彙整後由 AI 產生的 Markdown 弱點報告；未傳 llm_api_key 時為 None")
 
 
 def _collect_weaknesses_from_quizzes(quizzes: list[dict]) -> list[str]:
@@ -77,13 +65,44 @@ def _collect_weaknesses_from_quizzes(quizzes: list[dict]) -> list[str]:
     return all_weaknesses
 
 
+def _generate_weakness_report_md(quizzes: list[dict], lang: Literal["en", "zh"], api_key: str) -> Optional[str]:
+    """依題目／參考答案／使用者答案／答案分析結果彙整弱點，呼叫 LLM 產生 Markdown 報告。無弱點或 API 失敗時回傳 None。"""
+    all_weaknesses = _collect_weaknesses_from_quizzes(quizzes)
+    if not all_weaknesses:
+        return None
+    weakness_text = "\n".join(all_weaknesses[:60])
+    if lang == "en":
+        prompt = f"Analyze the following learning weaknesses from quiz feedback and produce a clear, actionable Markdown report.\n\nWeaknesses:\n{weakness_text}\n\nProduce Markdown report only."
+    else:
+        prompt = f"""你是教學顧問。請根據以下來自測驗回饋的學習弱點，製作一份 Markdown 報告。
+弱點列表：
+{weakness_text}
+
+請製作 Markdown 報告。
+**請務必使用繁體中文 (Traditional Chinese) 撰寫所有報告內容。**
+"""
+    client = OpenAI(api_key=api_key)
+    try:
+        r = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+    except Exception:
+        return None
+    return (r.choices[0].message.content or "").strip() or None
+
+
 @router.get("/quizzes-by-person/{person_id}", response_model=ListQuizzesByPersonResponse)
 def list_quizzes_by_person(
     person_id: str = PathParam(..., description="要查詢的 person_id"),
+    language: Literal["en", "zh"] = "zh",
+    llm_api_key: Optional[str] = None,
 ):
     """
     依 person_id 取得該使用者在 Exam_Quiz 的所有資料，每筆 quiz 帶關聯的 Exam_Answer（answers）。
     回傳題目／答案的 JSON 結構與 GET /rag/rags、GET /exam/exams 一致（quiz_content、quiz_hint、reference_answer、quiz_metadata；answers 含 student_answer、answer_grade、answer_feedback_metadata、answer_metadata 等）。
+    若提供 llm_api_key，會依題目／參考答案／使用者答案／答案分析結果彙整弱點並由 AI 產生全部弱點分析報告，放在 weakness_report。
     """
     try:
         quizzes = _quizzes_by_person_id(person_id)
@@ -103,46 +122,9 @@ def list_quizzes_by_person(
             quiz["answers"] = answers_by_quiz.get(qid_int, []) if qid_int is not None else []
         # 與 rag、exam 一致：轉成可 JSON 序列化（datetime 等轉成 ISO 字串）
         data = _to_json_safe(quizzes)
-        return ListQuizzesByPersonResponse(quizzes=data, count=len(data))
+        weakness_report: Optional[str] = None
+        if (llm_api_key or "").strip():
+            weakness_report = _generate_weakness_report_md(data, language, (llm_api_key or "").strip())
+        return ListQuizzesByPersonResponse(quizzes=data, count=len(data), weakness_report=weakness_report)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/weakness-report", response_model=WeaknessReportResponse)
-def generate_weakness_report(body: WeaknessReportRequest):
-    """
-    依 quizzes-by-person 的輸出 JSON，彙整各題答案的 feedback 弱點，由 AI 產生學習弱點報告（Markdown）。
-    輸入格式同 GET /analysis/quizzes-by-person/{person_id} 的回應（quizzes 含題目、答案、分數、分析結果；hint 不使用）。
-    """
-    all_weaknesses = _collect_weaknesses_from_quizzes(body.quizzes)
-    if not all_weaknesses:
-        raise HTTPException(
-            status_code=422,
-            detail="No sufficient data or no weaknesses recorded in answer_feedback_metadata.",
-        )
-    weakness_text = "\n".join(all_weaknesses[:60])
-    lang = body.language
-    if lang == "en":
-        prompt = f"Analyze the following learning weaknesses from quiz feedback and produce a clear, actionable Markdown report.\n\nWeaknesses:\n{weakness_text}\n\nProduce Markdown report only."
-    else:
-        prompt = f"""你是教學顧問。請根據以下來自測驗回饋的學習弱點，製作一份 Markdown 報告。
-弱點列表：
-{weakness_text}
-
-請製作 Markdown 報告。
-**請務必使用繁體中文 (Traditional Chinese) 撰寫所有報告內容。**
-"""
-    api_key = (body.llm_api_key or "").strip()
-    if not api_key:
-        raise HTTPException(status_code=400, detail="請傳入 llm_api_key")
-    client = OpenAI(api_key=api_key)
-    try:
-        r = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"LLM request failed: {e!s}")
-    report = (r.choices[0].message.content or "").strip()
-    return WeaknessReportResponse(report=report, weaknesses_count=len(all_weaknesses))
