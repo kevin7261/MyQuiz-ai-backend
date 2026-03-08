@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from utils.datetime_utils import now_utc_iso
 from utils.json_utils import to_json_safe
+from utils.llm_api_key_utils import get_llm_api_key_for_person
 from utils.zip_utils import (
     get_second_level_folders_from_zip_file,
     build_folder_map,
@@ -120,11 +121,10 @@ class CreateRagRequest(BaseModel):
 
 
 class PackRequest(BaseModel):
-    """指定先前上傳的 ZIP（rag_tab_id）與要打包的資料夾規則。欄位順序與 Rag 表一致：rag_tab_id, person_id, rag_list；其後為 Rag 表 chunk_size, chunk_overlap, system_prompt_instruction；llm_api_key 為 Embedding 用（必填）。"""
+    """指定先前上傳的 ZIP（rag_tab_id）與要打包的資料夾規則。欄位順序與 Rag 表一致：rag_tab_id, person_id, rag_list；其後為 Rag 表 chunk_size, chunk_overlap, system_prompt_instruction。LLM API Key 依 person_id 從 /system-settings/llm-api-key 取得。"""
     rag_tab_id: str
     person_id: str  # 與 upload-zip 一致，上傳 ZIP 所在路徑的 person_id
     rag_list: str  # 寫入 Rag 表 rag_list 欄位；例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
-    llm_api_key: str  # 用於 Embedding，必填（一律做成 RAG ZIP）
     chunk_size: int = 1000  # 寫入 Rag 表 chunk_size 欄位
     chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
     system_prompt_instruction: str = ""  # 出題系統指令，寫入 Rag 表 system_prompt_instruction 欄位
@@ -186,13 +186,11 @@ def get_for_exam_rag():
 
 
 @router.get("/rags", response_model=ListRagResponse)
-def list_rag(
-    x_llm_api_key: str | None = Header(None, alias="X-LLM-Api-Key", description="LLM API Key（可選）"),
-):
+def list_rag():
     """
-    列出 Rag 表內容，僅回傳 deleted=False 的資料；每筆 Rag 含表上所有欄位（含 for_exam、llm_api_key），並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
+    列出 Rag 表內容，僅回傳 deleted=False 的資料；每筆 Rag 含表上所有欄位（含 for_exam），並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
     關聯方式：quizzes 下每筆 quiz 帶 answers（依 rag_quiz_id 關聯）；頂層 answers 為該 rag 下全部答案的扁平列表。
-    LLM API Key 可選，由 Header X-LLM-Api-Key 傳入。
+    LLM API Key 請由 GET /system-settings/llm-api-key 取得。
     """
     try:
         data = _rag_table_select(RAG_SELECT_ALL, exclude_deleted=True)
@@ -228,9 +226,6 @@ def list_rag(
                 quiz["answers"] = answers_by_rag_quiz_id.get(qid_int, []) if qid_int is not None else []
             row["quizzes"] = row_quizzes
             row["answers"] = answers_by_rag.get(rid_int, []) if rid_int is not None else []
-            # 確保每筆都帶 llm_api_key（Rag 表欄位），供前端顯示／預填 API Key
-            if "llm_api_key" not in row:
-                row["llm_api_key"] = None
         # 轉成可 JSON 序列化（Supabase 的 datetime 等），避免 500
         data = to_json_safe(data)
         return ListRagResponse(rags=data, count=len(data))
@@ -282,12 +277,11 @@ async def upload_zip(
     file: UploadFile = File(...),
     rag_tab_id: str = Form(..., description="對應 create-rag 建立的 rag_tab_id（Rag 表 rag_tab_id），ZIP 會存於此路徑"),
     person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 create-rag 一致"),
-    llm_api_key: str | None = Form(None, description="選填，目前未寫入 Rag 表；generate-quiz/quiz-grade 由後端依 person_id 自 User 表取得 llm_api_key"),
 ):
     """
     Upload Zip：只做上傳並寫入資料庫。需先以 create-rag 建立該 rag_tab_id 的 Rag 資料。
     傳入 rag_tab_id（create-rag 的 rag_tab_id）、ZIP 檔案與 person_id（Form 必填）。
-    llm_api_key 不寫入 Rag 表；出題/評分時由後端依 person_id 自 User 表取得。
+    出題/評分時由後端依 person_id 從 /system-settings/llm-api-key 取得 LLM API Key。
     會更新該筆 Rag 的 file_metadata（filename、second_folders 等）。
     回傳 file_metadata。
     """
@@ -380,9 +374,12 @@ def build_rag_zip(body: PackRequest):
     if not packed:
         raise HTTPException(status_code=400, detail="rag_list 為空或格式錯誤，例：220222+220301")
 
-    api_key = (body.llm_api_key or "").strip()
+    api_key = get_llm_api_key_for_person(pid)
     if not api_key:
-        raise HTTPException(status_code=400, detail="請傳入 llm_api_key")
+        raise HTTPException(
+            status_code=400,
+            detail="請先於系統設定（/system-settings/llm-api-key）填寫 LLM API Key",
+        )
 
     outputs = []
     for zip_bytes, filename in packed:

@@ -17,7 +17,7 @@ FastAPI 後端：使用者登入（Supabase）、ZIP RAG、出題、評分。
    uvicorn main:app --reload
    ```
 
-LLM API key 由前端在請求中傳入，不需寫入 `.env`。
+LLM API key 由使用者於系統設定（`GET/PUT /system-settings/llm-api-key`，依 Header `X-Person-Id` 識別）填寫，不需在 API 請求中傳入，也不需寫入 `.env`。
 
 ## Render 部署
 

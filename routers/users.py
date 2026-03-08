@@ -9,17 +9,16 @@ from utils.supabase_client import get_supabase
 
 router = APIRouter(prefix="/user", tags=["user"])
 
-# 與 DB 表一致（User 表）：user_id, person_id, name, user_type, llm_api_key, user_metadata, updated_at, created_at；不含 password
-USER_PUBLIC_COLUMNS = "user_id, person_id, name, user_type, llm_api_key, user_metadata, updated_at, created_at"
+# 與 DB 表一致（User 表）：user_id, person_id, name, user_type, user_metadata, updated_at, created_at；不含 password。LLM API Key 另存於 LLM_API_Key 表。
+USER_PUBLIC_COLUMNS = "user_id, person_id, name, user_type, user_metadata, updated_at, created_at"
 
 
 class UserListItem(BaseModel):
-    """單筆使用者（不含 password）。"""
+    """單筆使用者（不含 password）。LLM API Key 由 /system-settings/llm-api-key 取得。"""
     user_id: int
     person_id: Optional[str] = None
     name: Optional[str] = None
     user_type: Optional[int] = None
-    llm_api_key: Optional[str] = None
     user_metadata: Optional[Any] = None
     updated_at: Optional[str] = None
     created_at: Optional[str] = None
@@ -43,10 +42,9 @@ class LoginResponse(BaseModel):
 
 
 class UpdateProfileRequest(BaseModel):
-    """PATCH /user/profile 請求：person_id 可放 body 或 Header X-Person-Id；name、llm_api_key 擇一或皆可修改。"""
+    """PATCH /user/profile 請求：person_id 可放 body 或 Header X-Person-Id；name 可修改。LLM API Key 請使用 PUT /system-settings/llm-api-key。"""
     person_id: Optional[str] = None
     name: Optional[str] = None
-    llm_api_key: Optional[str] = None
 
 
 @router.get("/users", response_model=ListUsersResponse)
@@ -89,16 +87,16 @@ def update_profile(
     x_person_id: Optional[str] = Header(None, alias="X-Person-Id", description="person_id，可取代 body 中的 person_id"),
 ):
     """
-    修改個資：以 person_id 識別使用者（body 或 Header X-Person-Id），可更新 name、llm_api_key（擇一或兩者皆傳）。
-    回傳更新後的使用者資訊（不含 password）。
+    修改個資：以 person_id 識別使用者（body 或 Header X-Person-Id），可更新 name。
+    LLM API Key 請使用 PUT /system-settings/llm-api-key。回傳更新後的使用者資訊（不含 password）。
     """
     person_id = (body.person_id or x_person_id or "").strip()
     if not person_id:
         raise HTTPException(status_code=400, detail="請傳入 person_id（body 或 Header X-Person-Id）")
-    if body.name is None and body.llm_api_key is None:
-        raise HTTPException(status_code=400, detail="請至少傳入 name 或 llm_api_key 其中一項以進行修改")
+    if body.name is None:
+        raise HTTPException(status_code=400, detail="請傳入 name 以進行修改")
 
-    out_keys = ("user_id", "person_id", "name", "user_type", "llm_api_key", "user_metadata", "updated_at", "created_at")
+    out_keys = ("user_id", "person_id", "name", "user_type", "user_metadata", "updated_at", "created_at")
     try:
         supabase = get_supabase()
         resp = (
@@ -115,8 +113,6 @@ def update_profile(
         updates = {}
         if body.name is not None:
             updates["name"] = (body.name or "").strip() or None
-        if body.llm_api_key is not None:
-            updates["llm_api_key"] = (body.llm_api_key or "").strip() or None
         if not updates:
             out = {k: row.get(k) for k in out_keys}
             return LoginResponse(user=out)
@@ -151,8 +147,6 @@ def update_profile(
                 updates = {}
                 if body.name is not None:
                     updates["name"] = (body.name or "").strip() or None
-                if body.llm_api_key is not None:
-                    updates["llm_api_key"] = (body.llm_api_key or "").strip() or None
                 if not updates:
                     out = {k: row.get(k) for k in out_keys}
                     return LoginResponse(user=out)
@@ -182,7 +176,7 @@ def login(body: LoginRequest):
     person_id = (body.person_id or "").strip()
     pwd = (body.password or "").strip()
     cols = f"{USER_PUBLIC_COLUMNS}, password"
-    out_keys = ("user_id", "person_id", "name", "user_type", "llm_api_key", "user_metadata", "updated_at", "created_at")
+    out_keys = ("user_id", "person_id", "name", "user_type", "user_metadata", "updated_at", "created_at")
     try:
         supabase = get_supabase()
         resp = (
