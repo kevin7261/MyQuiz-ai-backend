@@ -16,6 +16,7 @@ from routers.quiz import router as quiz_router
 from routers.exam import router as exam_router
 from routers.analysis import router as analysis_router
 from routers.users import router as users_router
+from routers.system_settings import router as system_settings_router
 
 app = FastAPI()
 
@@ -43,6 +44,7 @@ app.include_router(quiz_router)
 app.include_router(exam_router)
 app.include_router(analysis_router)
 app.include_router(users_router)
+app.include_router(system_settings_router)
 
 
 @app.get("/")

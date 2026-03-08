@@ -1,4 +1,4 @@
-"""使用者相關 API：列出 User 表等。"""
+"""使用者相關 API：列出 User 表、登入、個人資料等。"""
 
 from typing import Any, Optional
 
