@@ -1,6 +1,6 @@
 """
 分析 API：依 person_id 查詢 Exam_Quiz / Exam_Answer 等分析用資料。
-- GET /analysis/quizzes-by-person/{person_id}：依 person_id 取得該使用者在 Exam_Quiz 的所有資料，每筆帶關聯的 Exam_Answer。
+- GET /analysis/quizzes-by-person/{person_id}：依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**（抓不到 answer 的 quiz 不回傳）。每筆帶關聯的 Exam_Answer。
   回傳格式與 GET /rag/rags、GET /exam/exams 的題目答案內容一致（每筆 quiz 含 quiz_content、quiz_hint、reference_answer、quiz_metadata，answers 含 student_answer、answer_grade、answer_feedback_metadata、answer_metadata 等）。
   可選參數 language。LLM API Key 依 person_id 從 /system-settings/llm-api-key 取得；若有設定則會依題目／參考答案／使用者答案／答案分析結果彙整弱點，由 AI 產生「全部弱點分析」報告（Markdown），放在 weakness_report 欄位。
 """
@@ -61,9 +61,10 @@ def _generate_weakness_report_md(quizzes: list[dict], lang: Literal["en", "zh"],
         prompt = f"""你是教學顧問。請根據以下來自測驗回饋的學習弱點，製作一份 Markdown 報告。
 弱點列表：
 {weakness_text}
+                【重要限制】
+                1. **請務必使用繁體中文 (Traditional Chinese) 撰寫所有評語、優點、弱點與行動建議。**
+                輸出 JSON】{{ "簡介": [],  "學習弱點分析": [],  "建議": [],  "結論": [],  }}
 
-請製作 Markdown 報告。
-**請務必使用繁體中文 (Traditional Chinese) 撰寫所有報告內容。**
 """
     client = OpenAI(api_key=api_key)
     try:
@@ -83,7 +84,7 @@ def list_quizzes_by_person(
     language: Literal["en", "zh"] = "zh",
 ):
     """
-    依 person_id 取得該使用者在 Exam_Quiz 的所有資料，每筆 quiz 帶關聯的 Exam_Answer（answers）。
+    依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**（抓不到 answer 的 quiz 不回傳）；每筆 quiz 帶關聯的 Exam_Answer（answers）。
     回傳題目／答案的 JSON 結構與 GET /rag/rags、GET /exam/exams 一致（quiz_content、quiz_hint、reference_answer、quiz_metadata；answers 含 student_answer、answer_grade、answer_feedback_metadata、answer_metadata 等）。
     LLM API Key 依 person_id 從 /system-settings/llm-api-key 取得；若有設定則會依題目／參考答案／使用者答案／答案分析結果彙整弱點並由 AI 產生全部弱點分析報告，放在 weakness_report。
     """
@@ -103,8 +104,10 @@ def list_quizzes_by_person(
             qid = quiz.get("exam_quiz_id")
             qid_int = int(qid) if qid is not None else None
             quiz["answers"] = answers_by_quiz.get(qid_int, []) if qid_int is not None else []
+        # 只回傳在 Exam_Answer 有對應答案的 quiz；沒有 answer 的 quiz 不列入
+        quizzes_with_answers = [q for q in quizzes if (q.get("answers") or [])]
         # 與 rag、exam 一致：轉成可 JSON 序列化（datetime 等轉成 ISO 字串）
-        data = to_json_safe(quizzes)
+        data = to_json_safe(quizzes_with_answers)
         weakness_report: Optional[str] = None
         api_key = get_llm_api_key_for_person(person_id)
         if api_key:
