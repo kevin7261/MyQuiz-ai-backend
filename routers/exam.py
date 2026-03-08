@@ -96,6 +96,13 @@ def _quizzes_by_person_id(person_id: str) -> list[dict]:
     return resp.data or []
 
 
+def _all_exam_quizzes() -> list[dict]:
+    """查詢 Exam_Quiz 表全部筆數，回傳所有題目（供 course analysis 使用）。"""
+    supabase = get_supabase()
+    resp = supabase.table("Exam_Quiz").select("*").execute()
+    return resp.data or []
+
+
 def _answers_by_exam_quiz_ids(exam_quiz_ids: list[int]) -> dict[int, list[dict]]:
     """依 exam_quiz_id 查詢 Exam_Answer 表，回傳 exam_quiz_id -> list of answer。"""
     if not exam_quiz_ids:

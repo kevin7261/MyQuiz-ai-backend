@@ -15,6 +15,7 @@ from routers.grade import router as grade_router
 from routers.quiz import router as quiz_router
 from routers.exam import router as exam_router
 from routers.person_analysis import router as person_analysis_router
+from routers.course_analysis import router as course_analysis_router
 from routers.users import router as users_router
 from routers.system_settings import router as system_settings_router
 
@@ -43,6 +44,7 @@ app.include_router(grade_router)
 app.include_router(quiz_router)
 app.include_router(exam_router)
 app.include_router(person_analysis_router)
+app.include_router(course_analysis_router)
 app.include_router(users_router)
 app.include_router(system_settings_router)
 

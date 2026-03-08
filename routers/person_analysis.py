@@ -1,6 +1,6 @@
 """
 個人分析 API：依 person_id 查詢 Exam_Quiz / Exam_Answer 等分析用資料。
-- GET /person-analysis/quizzes-by-person/{person_id}：依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**（抓不到 answer 的 quiz 不回傳）。
+- GET /person-analysis/quizzes/{person_id}：依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**（抓不到 answer 的 quiz 不回傳）。
   回傳格式與 GET /rag/rags、GET /exam/exams 完全一致：exams 陣列，每筆 Exam 含表欄位及 quizzes（每題帶一筆 answer）、頂層 answers；題目／答案欄位同（quiz_content、quiz_hint、reference_answer、quiz_metadata；answers 含 student_answer、answer_grade、answer_feedback_metadata、answer_metadata 等）。另可帶 weakness_report（AI 產生的 Markdown 弱點報告）。
   LLM API Key 由系統設定（/system-settings/llm-api-key）取得；若有設定則會依題目／參考答案／使用者答案／答案分析結果彙整弱點，由 AI 產生「全部弱點分析」報告（Markdown），放在 weakness_report 欄位。
 """
@@ -20,14 +20,14 @@ router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
 
 
 class ListQuizzesByPersonResponse(BaseModel):
-    """GET /person-analysis/quizzes-by-person/{person_id} 回應：格式與 GET /rag/rags、GET /exam/exams 一致（exams 陣列，每筆含 quizzes、answers）；可選帶 weakness_report。"""
+    """GET /person-analysis/quizzes/{person_id} 回應：格式與 GET /rag/rags、GET /exam/exams 一致（exams 陣列，每筆含 quizzes、answers）；可選帶 weakness_report。"""
     exams: list[dict]
     count: int
     weakness_report: Optional[str] = Field(default=None, description="依題目／參考答案／使用者答案／答案分析結果彙整後由 AI 產生的 Markdown 弱點報告；系統未設定 LLM API Key 時為 None")
 
 
 def _collect_weaknesses_from_quizzes(quizzes: list[dict]) -> list[str]:
-    """從 quizzes-by-person 格式的 quizzes 中，收集所有 answer_feedback_metadata 的 weaknesses。"""
+    """從 person-analysis 回傳的 quizzes 中，收集所有 answer_feedback_metadata 的 weaknesses。"""
     all_weaknesses: list[str] = []
     for quiz in quizzes or []:
         answers = quiz.get("answers") or []
@@ -75,7 +75,7 @@ def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> Optional[
     return (r.choices[0].message.content or "").strip() or None
 
 
-@router.get("/quizzes-by-person/{person_id}", response_model=ListQuizzesByPersonResponse)
+@router.get("/quizzes/{person_id}", response_model=ListQuizzesByPersonResponse)
 def list_quizzes_by_person(
     person_id: str = PathParam(..., description="要查詢的 person_id"),
 ):
