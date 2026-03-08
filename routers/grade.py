@@ -10,7 +10,7 @@ import tempfile
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse, Response
@@ -24,6 +24,7 @@ from openai import OpenAI
 from utils.datetime_utils import now_utc_iso
 from utils.llm_api_key_utils import get_llm_api_key_for_person
 from utils.rag import process_zip_to_docs
+from utils.rag_common import get_rag_stem_from_rag_id
 from utils.storage import get_zip_path
 from utils.supabase_client import get_supabase
 
@@ -173,75 +174,80 @@ def _run_grade_job(
     )
 
 
-def _grade_job_background(
+def _run_grade_job_background(
     job_id: str,
     work_dir: Path,
     api_key: str,
     quiz_content: str,
     student_answer: str,
-    *,
-    rag_tab_id: str = "",
-    person_id: str = "",
-    rag_id: int = 0,
-    rag_quiz_id: int = 0,
+    results_store: dict[str, dict[str, Any]],
+    insert_answer_fn: Callable[[dict, str], tuple[str, int] | None],
 ) -> None:
-    """背景執行評分，結果寫入 _grade_job_results[job_id]，並寫入 public.Rag_Answer 表。"""
-    qtype = "short_answer"
+    """
+    通用背景評分：執行評分、可選寫入 DB、結果存 results_store。
+    insert_answer_fn(result_dict, student_answer) 寫入 DB 並回傳 (id_key, id_val) 或 None。
+    """
     try:
-        result = _run_grade_job(work_dir, api_key, quiz_content, student_answer, qtype)
+        result = _run_grade_job(work_dir, api_key, quiz_content, student_answer, "short_answer")
         result_dict = result.model_dump()
-        rag_answer_id = None
-        try:
-            supabase = get_supabase()
-            # 完整批改結果以 JSON 字串存入 answer_feedback_metadata，便於前端解析顯示
-            answer_feedback_json = json.dumps(result_dict, ensure_ascii=False)
-            answer_row = {
-                "rag_id": rag_id,
-                "rag_tab_id": rag_tab_id or "",
-                "rag_quiz_id": rag_quiz_id,
-                "person_id": person_id or "",
-                "student_answer": student_answer or "",
-                "answer_grade": result.score,
-                "answer_feedback_metadata": answer_feedback_json,
-                "answer_metadata": result_dict,
-            }
-            ins = supabase.table("Rag_Answer").insert(answer_row).execute()
-            if ins.data and len(ins.data) > 0:
-                rag_answer_id = ins.data[0].get("rag_answer_id")
-        except Exception:
-            pass  # 不因寫入 Rag_Answer 失敗而影響輪詢結果
-        if rag_answer_id is not None:
-            result_dict["rag_answer_id"] = rag_answer_id
-        _grade_job_results[job_id] = {
-            "status": "ready",
-            "result": result_dict,
-            "error": None,
-        }
+        inserted = insert_answer_fn(result_dict, student_answer)
+        if inserted:
+            result_dict[inserted[0]] = inserted[1]
+        results_store[job_id] = {"status": "ready", "result": result_dict, "error": None}
     except Exception as e:
-        _grade_job_results[job_id] = {
-            "status": "error",
-            "result": None,
-            "error": str(e),
-        }
+        results_store[job_id] = {"status": "error", "result": None, "error": str(e)}
     finally:
         _cleanup_grade_workspace(work_dir)
 
 
-def _rag_stem_from_rag_id(supabase, rag_id: int) -> tuple[dict, str, str]:
-    """由 rag_id 查 Rag 表，回傳 (row, stem, rag_zip_tab_id)。stem 取自 rag_metadata.outputs 第一筆的 rag_tab_id；若無則 raise HTTPException。"""
-    rag_rows = supabase.table("Rag").select("rag_tab_id, system_prompt_instruction, person_id, rag_id, rag_metadata").eq("rag_id", rag_id).eq("deleted", False).execute()
-    if not rag_rows.data or len(rag_rows.data) == 0:
-        raise HTTPException(status_code=404, detail=f"找不到 rag_id={rag_id} 的 Rag 資料")
-    row = rag_rows.data[0]
-    meta = row.get("rag_metadata")
-    outputs = (meta.get("outputs", []) if isinstance(meta, dict) else []) or []
-    if not outputs:
-        raise HTTPException(status_code=400, detail=f"該筆 Rag（rag_id={rag_id}）的 rag_metadata.outputs 為空，請先執行 build-rag-zip")
-    stem = (outputs[0].get("rag_tab_id") or "").strip() if isinstance(outputs[0], dict) else ""
-    if not stem:
-        raise HTTPException(status_code=400, detail=f"該筆 Rag（rag_id={rag_id}）的 outputs 第一筆缺少 rag_tab_id")
-    rag_zip_tab_id = f"{stem}_rag"
-    return row, stem, rag_zip_tab_id
+def _insert_rag_answer(result_dict: dict, student_answer: str, *, rag_id: int, rag_tab_id: str, person_id: str, rag_quiz_id: int) -> tuple[str, int] | None:
+    """寫入 Rag_Answer 表，回傳 ("rag_answer_id", id) 或 None。"""
+    try:
+        supabase = get_supabase()
+        answer_feedback_json = json.dumps(result_dict, ensure_ascii=False)
+        answer_row = {
+            "rag_id": rag_id,
+            "rag_tab_id": rag_tab_id or "",
+            "rag_quiz_id": rag_quiz_id,
+            "person_id": person_id or "",
+            "student_answer": student_answer or "",
+            "answer_grade": result_dict.get("score", 0),
+            "answer_feedback_metadata": answer_feedback_json,
+            "answer_metadata": result_dict,
+        }
+        ins = supabase.table("Rag_Answer").insert(answer_row).execute()
+        if ins.data and len(ins.data) > 0:
+            rid = ins.data[0].get("rag_answer_id")
+            if rid is not None:
+                return ("rag_answer_id", int(rid))
+    except Exception:
+        pass
+    return None
+
+
+def _insert_exam_answer(result_dict: dict, student_answer: str, *, exam_id: int, exam_tab_id: str, person_id: str, exam_quiz_id: int) -> tuple[str, int] | None:
+    """寫入 Exam_Answer 表，回傳 ("exam_answer_id", id) 或 None。"""
+    try:
+        supabase = get_supabase()
+        answer_feedback_json = json.dumps(result_dict, ensure_ascii=False)
+        answer_row = {
+            "exam_id": exam_id,
+            "exam_tab_id": exam_tab_id or "",
+            "exam_quiz_id": exam_quiz_id,
+            "person_id": person_id or "",
+            "student_answer": student_answer or "",
+            "answer_grade": result_dict.get("score", 0),
+            "answer_feedback_metadata": answer_feedback_json,
+            "answer_metadata": result_dict,
+        }
+        ins = supabase.table("Exam_Answer").insert(answer_row).execute()
+        if ins.data and len(ins.data) > 0:
+            rid = ins.data[0].get("exam_answer_id")
+            if rid is not None:
+                return ("exam_answer_id", int(rid))
+    except Exception:
+        pass
+    return None
 
 
 @router.post("/generate-quiz")
@@ -256,7 +262,7 @@ def generate_quiz_api(body: GenerateQuizRequest):
         raise HTTPException(status_code=400, detail="請傳入 rag_id")
 
     supabase = get_supabase()
-    row, stem, rag_zip_tab_id = _rag_stem_from_rag_id(supabase, body.rag_id)
+    row, stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, body.rag_id, include_row=True)
     person_id = (row.get("person_id") or "").strip()
     if not person_id:
         raise HTTPException(
@@ -339,7 +345,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
 
     supabase = get_supabase()
     try:
-        row, stem, rag_zip_tab_id = _rag_stem_from_rag_id(supabase, rag_id_int)
+        row, stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, rag_id_int, include_row=True)
     except HTTPException as e:
         return JSONResponse(status_code=e.status_code, content={"error": e.detail})
     source_rag_tab_id = (row.get("rag_tab_id") or "").strip()
@@ -382,19 +388,16 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
         rag_quiz_id_int = 0
     job_id = str(uuid.uuid4())
     _grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
-    quiz_content = body.quiz_content or ""
-    answer = body.answer or ""
+    insert_fn = lambda rd, sa: _insert_rag_answer(rd, sa, rag_id=rag_id_for_answer, rag_tab_id=source_rag_tab_id, person_id=person_id, rag_quiz_id=rag_quiz_id_int)
     background_tasks.add_task(
-        _grade_job_background,
+        _run_grade_job_background,
         job_id,
         work_dir,
         api_key,
-        quiz_content,
-        answer,
-        rag_tab_id=source_rag_tab_id,
-        person_id=person_id,
-        rag_id=rag_id_for_answer,
-        rag_quiz_id=rag_quiz_id_int,
+        body.quiz_content or "",
+        body.answer or "",
+        _grade_job_results,
+        insert_fn,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id})
 

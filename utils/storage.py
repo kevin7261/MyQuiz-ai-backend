@@ -10,7 +10,6 @@ ZIP 依類型存於 storage/{person_id}/{tab_id}/ 之下：
 import json
 import os
 import shutil
-import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -37,6 +36,14 @@ def _storage_base() -> Path:
     path = Path(base)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _resolve_person_id(person_id: str | None) -> str:
+    """將 person_id 轉為安全的目錄名，無效時回傳 UPLOAD_DEFAULT_PERSON。"""
+    pid = (person_id or "").strip() or UPLOAD_DEFAULT_PERSON
+    if "/" in pid or "\\" in pid or pid in ("", ".", ".."):
+        return UPLOAD_DEFAULT_PERSON
+    return pid
 
 
 def _folder_dir(folder: str) -> Path:
@@ -97,18 +104,14 @@ def save_zip(
             tab_id = generate_tab_id(person_id)
 
     if folder == FOLDER_UPLOAD:
-        pid = (person_id or "").strip() or UPLOAD_DEFAULT_PERSON
-        if "/" in pid or "\\" in pid or pid in ("", ".", ".."):
-            pid = UPLOAD_DEFAULT_PERSON
+        pid = _resolve_person_id(person_id)
         target_dir = _storage_base() / pid / tab_id / FOLDER_UPLOAD
         target_dir.mkdir(parents=True, exist_ok=True)
         # 上傳檔用原始檔名存檔，僅取 basename 避免路徑注入
         stored_name = (Path(original_filename).name if original_filename else "").strip() or f"{tab_id}.zip"
         path = target_dir / stored_name
     else:
-        pid = (person_id or "").strip() or UPLOAD_DEFAULT_PERSON
-        if "/" in pid or "\\" in pid or pid in ("", ".", ".."):
-            pid = UPLOAD_DEFAULT_PERSON
+        pid = _resolve_person_id(person_id)
         target_dir = _storage_base() / pid / parent_tab_id / folder
         target_dir.mkdir(parents=True, exist_ok=True)
         path = target_dir / f"{tab_id}.zip"
@@ -120,27 +123,11 @@ def save_zip(
     }
     if folder == FOLDER_UPLOAD:
         meta[tab_id]["stored_filename"] = path.name
-    if folder == FOLDER_UPLOAD:
-        pid = (person_id or "").strip() or UPLOAD_DEFAULT_PERSON
-        if "/" in pid or "\\" in pid or pid in ("", ".", ".."):
-            pid = UPLOAD_DEFAULT_PERSON
-        meta[tab_id]["person_id"] = pid
-    else:
-        meta[tab_id]["person_id"] = pid
+    meta[tab_id]["person_id"] = pid
+    if folder != FOLDER_UPLOAD:
         meta[tab_id]["parent_tab_id"] = parent_tab_id
     _save_metadata(meta)
     return tab_id
-
-
-def _get_folder_for_tab_id(tab_id: str) -> str | None:
-    """從 metadata 取得該 tab_id 所屬子目錄；舊資料僅有 filename 字串時視為 upload。"""
-    meta = _load_metadata()
-    entry = meta.get(tab_id)
-    if entry is None:
-        return None
-    if isinstance(entry, dict):
-        return entry.get("folder", FOLDER_UPLOAD)
-    return FOLDER_UPLOAD
 
 
 def get_zip_path(tab_id: str) -> Path | None:
@@ -180,9 +167,7 @@ def get_zip_path(tab_id: str) -> Path | None:
         else:
             # repack/rag：storage/{person_id}/{parent_tab_id}/repack|rag/{tab_id}.zip
             if person_id and parent_tab_id:
-                pid = person_id.strip() or UPLOAD_DEFAULT_PERSON
-                if "/" in pid or "\\" in pid or pid in ("", ".", ".."):
-                    pid = UPLOAD_DEFAULT_PERSON
+                pid = _resolve_person_id(person_id)
                 path = _storage_base() / pid / parent_tab_id / folder / f"{tab_id}.zip"
             else:
                 # 舊版：storage/repack/、storage/rag/
@@ -207,9 +192,7 @@ def get_zip_path_by_person(person_id: str, tab_id: str) -> Path | None:
     """
     if not tab_id or "/" in tab_id or "\\" in tab_id:
         return None
-    pid = (person_id or "").strip() or UPLOAD_DEFAULT_PERSON
-    if "/" in pid or "\\" in pid or pid in ("", ".", ".."):
-        pid = UPLOAD_DEFAULT_PERSON
+    pid = _resolve_person_id(person_id)
     target_dir = _storage_base() / pid / tab_id / FOLDER_UPLOAD
     # 先依 metadata 找實際檔名
     meta = _load_metadata()
@@ -233,10 +216,7 @@ def get_tab_folder_path(person_id: str, tab_id: str) -> Path:
     """
     if not tab_id or "/" in tab_id or "\\" in tab_id:
         raise ValueError("tab_id 不可包含路徑字元且不可為空")
-    pid = (person_id or "").strip() or UPLOAD_DEFAULT_PERSON
-    if "/" in pid or "\\" in pid or pid in ("", ".", ".."):
-        pid = UPLOAD_DEFAULT_PERSON
-    return _storage_base() / pid / tab_id.strip()
+    return _storage_base() / _resolve_person_id(person_id) / tab_id.strip()
 
 
 def delete_tab_folder(person_id: str, tab_id: str) -> bool:

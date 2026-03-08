@@ -16,15 +16,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
 
-
-def _fix_encoding(name: str) -> str:
-    try:
-        return name.encode("cp437").decode("utf-8")
-    except Exception:
-        try:
-            return name.encode("cp437").decode("big5")
-        except Exception:
-            return name
+from utils.zip_utils import fix_encoding
 
 
 def process_zip_to_docs(zip_path: Path, extract_dir: Path) -> list[Document]:
@@ -40,7 +32,7 @@ def process_zip_to_docs(zip_path: Path, extract_dir: Path) -> list[Document]:
         for raw_name in z.namelist():
             if raw_name.endswith("/"):
                 continue
-            decoded = _fix_encoding(raw_name)
+            decoded = fix_encoding(raw_name)
             if "__MACOSX" in decoded or ".DS_Store" in decoded:
                 continue
             # 解壓到與 decoded 相同的相對路徑

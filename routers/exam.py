@@ -21,10 +21,11 @@ from pydantic import BaseModel, Field
 
 from utils.datetime_utils import now_utc_iso
 from utils.llm_api_key_utils import get_llm_api_key
+from utils.rag_common import get_rag_stem_from_rag_id
 from utils.storage import generate_tab_id, get_zip_path
 from utils.supabase_client import get_supabase
 
-from routers.grade import _run_grade_job, _cleanup_grade_workspace
+from routers.grade import _run_grade_job_background, _insert_exam_answer, _cleanup_grade_workspace
 
 router = APIRouter(prefix="/exam", tags=["exam"])
 
@@ -209,59 +210,6 @@ class ExamQuizGradeRequest(BaseModel):
 _exam_grade_job_results: dict[str, dict[str, Any]] = {}
 
 
-def _exam_grade_job_background(
-    job_id: str,
-    work_dir: Path,
-    api_key: str,
-    quiz_content: str,
-    student_answer: str,
-    *,
-    exam_id: int = 0,
-    exam_tab_id: str = "",
-    person_id: str = "",
-    exam_quiz_id: int = 0,
-) -> None:
-    """背景執行評分，結果寫入 _exam_grade_job_results[job_id]，並寫入 public.Exam_Answer 表。"""
-    qtype = "short_answer"
-    try:
-        result = _run_grade_job(work_dir, api_key, quiz_content, student_answer, qtype)
-        result_dict = result.model_dump()
-        answer_id_val = None
-        try:
-            supabase = get_supabase()
-            answer_feedback_json = json.dumps(result_dict, ensure_ascii=False)
-            answer_row = {
-                "exam_id": exam_id,
-                "exam_tab_id": exam_tab_id or "",
-                "exam_quiz_id": exam_quiz_id,
-                "person_id": person_id or "",
-                "student_answer": student_answer or "",
-                "answer_grade": result.score,
-                "answer_feedback_metadata": answer_feedback_json,
-                "answer_metadata": result_dict,
-            }
-            ins = supabase.table("Exam_Answer").insert(answer_row).execute()
-            if ins.data and len(ins.data) > 0:
-                answer_id_val = ins.data[0].get("exam_answer_id")
-        except Exception:
-            pass
-        if answer_id_val is not None:
-            result_dict["exam_answer_id"] = answer_id_val
-        _exam_grade_job_results[job_id] = {
-            "status": "ready",
-            "result": result_dict,
-            "error": None,
-        }
-    except Exception as e:
-        _exam_grade_job_results[job_id] = {
-            "status": "error",
-            "result": None,
-            "error": str(e),
-        }
-    finally:
-        _cleanup_grade_workspace(work_dir)
-
-
 @router.post("/create-exam")
 def create_exam(body: CreateExamRequest):
     """
@@ -325,21 +273,6 @@ def delete_exam(
     }
 
 
-def _exam_rag_stem_from_rag_id(supabase, rag_id: int) -> tuple[str, str]:
-    """由 rag_id 查 Rag 表，回傳 (stem, rag_zip_tab_id)。stem 取自 rag_metadata.outputs 第一筆的 rag_tab_id。"""
-    rag_rows = supabase.table("Rag").select("rag_metadata").eq("rag_id", rag_id).eq("deleted", False).execute()
-    if not rag_rows.data or len(rag_rows.data) == 0:
-        raise HTTPException(status_code=404, detail=f"找不到 rag_id={rag_id} 的 Rag 資料")
-    meta = rag_rows.data[0].get("rag_metadata")
-    outputs = (meta.get("outputs", []) if isinstance(meta, dict) else []) or []
-    if not outputs:
-        raise HTTPException(status_code=400, detail=f"該筆 Rag（rag_id={rag_id}）的 rag_metadata.outputs 為空，請先執行 build-rag-zip")
-    stem = (outputs[0].get("rag_tab_id") or "").strip() if isinstance(outputs[0], dict) else ""
-    if not stem:
-        raise HTTPException(status_code=400, detail=f"該筆 Rag（rag_id={rag_id}）的 outputs 第一筆缺少 rag_tab_id")
-    return stem, f"{stem}_rag"
-
-
 @router.post("/generate-quiz")
 def exam_generate_quiz(body: ExamGenerateQuizRequest):
     """
@@ -382,7 +315,7 @@ def exam_generate_quiz(body: ExamGenerateQuizRequest):
     if not system_prompt_instruction:
         raise HTTPException(status_code=400, detail="該筆 for_exam Rag 的 system_prompt_instruction 未設定，請在 build-rag-zip 傳入")
 
-    stem, rag_zip_tab_id = _exam_rag_stem_from_rag_id(supabase, rag_id)
+    stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, rag_id)
     path = get_zip_path(rag_zip_tab_id)
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 rag_id={rag_id}（tab_id={rag_zip_tab_id}）")
@@ -467,14 +400,11 @@ async def exam_grade_submission(background_tasks: BackgroundTasks, body: ExamQui
     rag_rows = supabase.table("Rag").select("rag_id, rag_metadata").eq("for_exam", True).eq("deleted", False).execute()
     if not rag_rows.data or len(rag_rows.data) == 0:
         return JSONResponse(status_code=404, content={"error": "找不到 for_exam Rag，請先設定供測驗使用的 RAG（for_exam=true）"})
-    meta = rag_rows.data[0].get("rag_metadata")
-    outputs = (meta.get("outputs", []) if isinstance(meta, dict) else []) or []
-    if not outputs:
-        return JSONResponse(status_code=400, content={"error": "該筆 for_exam Rag 的 rag_metadata.outputs 為空"})
-    stem = (outputs[0].get("rag_tab_id") or "").strip() if isinstance(outputs[0], dict) else ""
-    if not stem:
-        return JSONResponse(status_code=400, content={"error": "該筆 for_exam Rag 的 outputs 第一筆缺少 rag_tab_id"})
-    rag_zip_tab_id = f"{stem}_rag"
+    try:
+        rag_id = int(rag_rows.data[0].get("rag_id") or 0)
+        stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, rag_id)
+    except HTTPException as e:
+        return JSONResponse(status_code=e.status_code, content={"error": e.detail})
     rag_zip_path = get_zip_path(rag_zip_tab_id)
     if not rag_zip_path or not rag_zip_path.exists():
         return JSONResponse(status_code=404, content={"error": f"找不到 RAG ZIP（tab_id={rag_zip_tab_id}）"})
@@ -496,19 +426,16 @@ async def exam_grade_submission(background_tasks: BackgroundTasks, body: ExamQui
         exam_quiz_id_int = 0
     job_id = str(uuid.uuid4())
     _exam_grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
-    quiz_content = body.quiz_content or ""
-    answer = body.answer or ""
+    insert_fn = lambda rd, sa: _insert_exam_answer(rd, sa, exam_id=exam_id, exam_tab_id=exam_tab_id, person_id=person_id, exam_quiz_id=exam_quiz_id_int)
     background_tasks.add_task(
-        _exam_grade_job_background,
+        _run_grade_job_background,
         job_id,
         work_dir,
         api_key,
-        quiz_content,
-        answer,
-        exam_id=exam_id,
-        exam_tab_id=exam_tab_id,
-        person_id=person_id,
-        exam_quiz_id=exam_quiz_id_int,
+        body.quiz_content or "",
+        body.answer or "",
+        _exam_grade_job_results,
+        insert_fn,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
