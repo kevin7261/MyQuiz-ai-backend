@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from utils.datetime_utils import now_utc_iso
-from utils.llm_api_key_utils import get_llm_api_key_for_person
+from utils.llm_api_key_utils import get_llm_api_key
 from utils.storage import generate_tab_id, get_zip_path
 from utils.supabase_client import get_supabase
 
@@ -170,7 +170,7 @@ class CreateExamRequest(BaseModel):
 
 
 class ExamGenerateQuizRequest(BaseModel):
-    """POST /exam/generate-quiz 請求 body。欄位順序與 Exam_Quiz 表一致：exam_id, exam_tab_id, quiz_level。LLM API Key 由 Exam 的 person_id 依 /system-settings/llm-api-key 取得。"""
+    """POST /exam/generate-quiz 請求 body。欄位順序與 Exam_Quiz 表一致：exam_id, exam_tab_id, quiz_level。LLM API Key 由系統設定（/system-settings/llm-api-key）取得，表僅一筆。"""
 
     exam_id: int = Field(0, description="Exam 表主鍵 exam_id")
     exam_tab_id: str | int = Field("", description="create-exam 回傳的 exam_tab_id（Exam 表識別）；與 exam_id 二擇一，可傳字串或 0")
@@ -178,7 +178,7 @@ class ExamGenerateQuizRequest(BaseModel):
 
 
 class ExamQuizGradeRequest(BaseModel):
-    """POST /exam/quiz-grade 請求 body。欄位順序與 Exam_Answer 表一致：exam_id, exam_tab_id, exam_quiz_id, quiz_content, answer。LLM API Key 由 Exam 的 person_id 依 /system-settings/llm-api-key 取得。"""
+    """POST /exam/quiz-grade 請求 body。欄位順序與 Exam_Answer 表一致：exam_id, exam_tab_id, exam_quiz_id, quiz_content, answer。LLM API Key 由系統設定（/system-settings/llm-api-key）取得，表僅一筆。"""
 
     exam_id: str = Field("", description="Exam 表主鍵 exam_id（字串）")
     exam_tab_id: str = Field("", description="create-exam 回傳的 exam_tab_id；與 exam_id 二擇一")
@@ -325,8 +325,8 @@ def _exam_rag_stem_from_rag_id(supabase, rag_id: int) -> tuple[str, str]:
 @router.post("/generate-quiz")
 def exam_generate_quiz(body: ExamGenerateQuizRequest):
     """
-    傳入 exam_id 或 exam_tab_id（二擇一）。LLM API Key 依 Exam 的 person_id 從 /system-settings/llm-api-key 取得；請先於系統設定填寫。
-    程式依該 Exam 的 person_id 取得 for_exam=true 的 Rag，依其 rag_metadata.outputs 查找 RAG ZIP 出題。
+    傳入 exam_id 或 exam_tab_id（二擇一）。LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
+    程式取得 for_exam=true 的 Rag（僅一筆，與 person_id 無關），依其 rag_metadata.outputs 查找 RAG ZIP 出題。
     出題成功後寫入 public.Exam_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, reference_answer、exam_quiz_id 等。
     """
     supabase = get_supabase()
@@ -348,17 +348,17 @@ def exam_generate_quiz(body: ExamGenerateQuizRequest):
     person_id = (row.get("person_id") or "").strip()
     if not person_id:
         raise HTTPException(status_code=400, detail="該 Exam 的 person_id 為空")
-    api_key = get_llm_api_key_for_person(person_id)
+    api_key = get_llm_api_key()
     if not api_key:
         raise HTTPException(
             status_code=400,
             detail="請先於系統設定（/system-settings/llm-api-key）填寫 LLM API Key",
         )
 
-    # 取得該使用者的 for_exam Rag
-    rag_rows = supabase.table("Rag").select("rag_id, system_prompt_instruction").eq("person_id", person_id).eq("for_exam", True).eq("deleted", False).execute()
+    # 取得 for_exam=true 的 Rag（僅一筆，與 person_id 無關）
+    rag_rows = supabase.table("Rag").select("rag_id, system_prompt_instruction").eq("for_exam", True).eq("deleted", False).execute()
     if not rag_rows.data or len(rag_rows.data) == 0:
-        raise HTTPException(status_code=404, detail="找不到該使用者的 for_exam Rag，請先設定供測驗使用的 RAG")
+        raise HTTPException(status_code=404, detail="找不到 for_exam Rag，請先設定供測驗使用的 RAG（for_exam=true）")
     rag_id = int(rag_rows.data[0].get("rag_id") or 0)
     system_prompt_instruction = (rag_rows.data[0].get("system_prompt_instruction") or "").strip()
     if not system_prompt_instruction:
@@ -414,8 +414,8 @@ def exam_generate_quiz(body: ExamGenerateQuizRequest):
 async def exam_grade_submission(background_tasks: BackgroundTasks, body: ExamQuizGradeRequest):
     """
     傳入 exam_id 或 exam_tab_id、exam_quiz_id、quiz_content、answer。
-    LLM API Key 依 Exam 的 person_id 從 /system-settings/llm-api-key 取得；請先於系統設定填寫。
-    程式依 Exam 取得 person_id，再依該使用者的 for_exam Rag 查找 RAG ZIP 評分。回傳 202 與 job_id；背景寫入 public.Exam_Answer。輪詢 GET /exam/quiz-grade-result/{job_id}。
+    LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
+    程式取得 for_exam=true 的 Rag（僅一筆，與 person_id 無關）查找 RAG ZIP 評分。回傳 202 與 job_id；背景寫入 public.Exam_Answer。輪詢 GET /exam/quiz-grade-result/{job_id}。
     """
     exam_id_str = (body.exam_id or "").strip()
     exam_tab_id = (body.exam_tab_id or "").strip()
@@ -437,7 +437,7 @@ async def exam_grade_submission(background_tasks: BackgroundTasks, body: ExamQui
     person_id = (row.get("person_id") or "").strip()
     exam_id = int(row.get("exam_id") or 0)
     exam_tab_id = (row.get("exam_tab_id") or "").strip()
-    api_key = get_llm_api_key_for_person(person_id)
+    api_key = get_llm_api_key()
     if not api_key:
         return JSONResponse(
             status_code=400,
@@ -446,9 +446,9 @@ async def exam_grade_submission(background_tasks: BackgroundTasks, body: ExamQui
             },
         )
 
-    rag_rows = supabase.table("Rag").select("rag_id, rag_metadata").eq("person_id", person_id).eq("for_exam", True).eq("deleted", False).execute()
+    rag_rows = supabase.table("Rag").select("rag_id, rag_metadata").eq("for_exam", True).eq("deleted", False).execute()
     if not rag_rows.data or len(rag_rows.data) == 0:
-        return JSONResponse(status_code=404, content={"error": "找不到該使用者的 for_exam Rag"})
+        return JSONResponse(status_code=404, content={"error": "找不到 for_exam Rag，請先設定供測驗使用的 RAG（for_exam=true）"})
     meta = rag_rows.data[0].get("rag_metadata")
     outputs = (meta.get("outputs", []) if isinstance(meta, dict) else []) or []
     if not outputs:

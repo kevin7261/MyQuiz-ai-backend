@@ -14,7 +14,7 @@ USER_PUBLIC_COLUMNS = "user_id, person_id, name, user_type, user_metadata, updat
 
 
 class UserListItem(BaseModel):
-    """單筆使用者（不含 password）。LLM API Key 由 /system-settings/llm-api-key 取得。"""
+    """單筆使用者（不含 password）。LLM API Key 由 /system-settings/llm-api-key 取得，表僅一筆。"""
     user_id: int
     person_id: Optional[str] = None
     name: Optional[str] = None

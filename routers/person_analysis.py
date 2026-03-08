@@ -2,7 +2,7 @@
 個人分析 API：依 person_id 查詢 Exam_Quiz / Exam_Answer 等分析用資料。
 - GET /person-analysis/quizzes-by-person/{person_id}：依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**（抓不到 answer 的 quiz 不回傳）。每筆帶關聯的 Exam_Answer。
   回傳格式與 GET /rag/rags、GET /exam/exams 的題目答案內容一致（每筆 quiz 含 quiz_content、quiz_hint、reference_answer、quiz_metadata，answers 含 student_answer、answer_grade、answer_feedback_metadata、answer_metadata 等）。
-  LLM API Key 依 person_id 從 /system-settings/llm-api-key 取得；若有設定則會依題目／參考答案／使用者答案／答案分析結果彙整弱點，由 AI 產生「全部弱點分析」報告（Markdown），放在 weakness_report 欄位。
+  LLM API Key 由系統設定（/system-settings/llm-api-key）取得；若有設定則會依題目／參考答案／使用者答案／答案分析結果彙整弱點，由 AI 產生「全部弱點分析」報告（Markdown），放在 weakness_report 欄位。
 """
 
 import json
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from routers.exam import _answers_by_exam_quiz_ids, _quizzes_by_person_id
 from utils.json_utils import to_json_safe
-from utils.llm_api_key_utils import get_llm_api_key_for_person
+from utils.llm_api_key_utils import get_llm_api_key
 
 router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
 
@@ -23,7 +23,7 @@ class ListQuizzesByPersonResponse(BaseModel):
     """GET /person-analysis/quizzes-by-person/{person_id} 回應：格式同 rag/exam 的題目答案，每筆 quiz 帶 answers；可選帶全部弱點分析。"""
     quizzes: list[dict]
     count: int
-    weakness_report: Optional[str] = Field(default=None, description="依題目／參考答案／使用者答案／答案分析結果彙整後由 AI 產生的 Markdown 弱點報告；該 person_id 未設定 LLM API Key 時為 None")
+    weakness_report: Optional[str] = Field(default=None, description="依題目／參考答案／使用者答案／答案分析結果彙整後由 AI 產生的 Markdown 弱點報告；系統未設定 LLM API Key 時為 None")
 
 
 def _collect_weaknesses_from_quizzes(quizzes: list[dict]) -> list[str]:
@@ -82,7 +82,7 @@ def list_quizzes_by_person(
     """
     依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**（抓不到 answer 的 quiz 不回傳）；每筆 quiz 帶關聯的 Exam_Answer（answers）。
     回傳題目／答案的 JSON 結構與 GET /rag/rags、GET /exam/exams 一致（quiz_content、quiz_hint、reference_answer、quiz_metadata；answers 含 student_answer、answer_grade、answer_feedback_metadata、answer_metadata 等）。
-    LLM API Key 依 person_id 從 /system-settings/llm-api-key 取得；若有設定則會依題目／參考答案／使用者答案／答案分析結果彙整弱點並由 AI 產生全部弱點分析報告，放在 weakness_report。
+    LLM API Key 由系統設定（/system-settings/llm-api-key）取得；若有設定則會依題目／參考答案／使用者答案／答案分析結果彙整弱點並由 AI 產生全部弱點分析報告，放在 weakness_report。
     """
     try:
         quizzes = _quizzes_by_person_id(person_id)
@@ -105,7 +105,7 @@ def list_quizzes_by_person(
         # 與 rag、exam 一致：轉成可 JSON 序列化（datetime 等轉成 ISO 字串）
         data = to_json_safe(quizzes_with_answers)
         weakness_report: Optional[str] = None
-        api_key = get_llm_api_key_for_person(person_id)
+        api_key = get_llm_api_key()
         if api_key:
             weakness_report = _generate_weakness_report_md(data, api_key)
         return ListQuizzesByPersonResponse(quizzes=data, count=len(data), weakness_report=weakness_report)

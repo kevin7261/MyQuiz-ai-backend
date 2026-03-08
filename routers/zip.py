@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from utils.datetime_utils import now_utc_iso
 from utils.json_utils import to_json_safe
-from utils.llm_api_key_utils import get_llm_api_key_for_person
+from utils.llm_api_key_utils import get_llm_api_key
 from utils.zip_utils import (
     get_second_level_folders_from_zip_file,
     build_folder_map,
@@ -61,7 +61,7 @@ def _rag_default_row(
         row["person_id"] = person_id
     if rag_name is not None:
         row["rag_name"] = rag_name
-    # llm_api_key 不寫入 Rag 表（該表無此欄位）；由 User 表依 person_id 取得
+    # llm_api_key 不寫入 Rag 表（該表無此欄位）；由系統設定 /system-settings/llm-api-key 取得
     if system_prompt_instruction is not None:
         row["system_prompt_instruction"] = system_prompt_instruction
     return row
@@ -121,7 +121,7 @@ class CreateRagRequest(BaseModel):
 
 
 class PackRequest(BaseModel):
-    """指定先前上傳的 ZIP（rag_tab_id）與要打包的資料夾規則。欄位順序與 Rag 表一致：rag_tab_id, person_id, rag_list；其後為 Rag 表 chunk_size, chunk_overlap, system_prompt_instruction。LLM API Key 依 person_id 從 /system-settings/llm-api-key 取得。"""
+    """指定先前上傳的 ZIP（rag_tab_id）與要打包的資料夾規則。欄位順序與 Rag 表一致：rag_tab_id, person_id, rag_list；其後為 Rag 表 chunk_size, chunk_overlap, system_prompt_instruction。LLM API Key 由系統設定（/system-settings/llm-api-key）取得，表僅一筆。"""
     rag_tab_id: str
     person_id: str  # 與 upload-zip 一致，上傳 ZIP 所在路徑的 person_id
     rag_list: str  # 寫入 Rag 表 rag_list 欄位；例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
@@ -281,7 +281,7 @@ async def upload_zip(
     """
     Upload Zip：只做上傳並寫入資料庫。需先以 create-rag 建立該 rag_tab_id 的 Rag 資料。
     傳入 rag_tab_id（create-rag 的 rag_tab_id）、ZIP 檔案與 person_id（Form 必填）。
-    出題/評分時由後端依 person_id 從 /system-settings/llm-api-key 取得 LLM API Key。
+    出題/評分時由後端從系統設定（/system-settings/llm-api-key）取得 LLM API Key。
     會更新該筆 Rag 的 file_metadata（filename、second_folders 等）。
     回傳 file_metadata。
     """
@@ -340,7 +340,7 @@ async def upload_zip(
         "file_metadata": file_metadata,
         "updated_at": now_utc_iso(),
     }
-    # llm_api_key 不寫入 Rag 表（該表無此欄位）；由 User 表依 person_id 取得
+    # llm_api_key 不寫入 Rag 表（該表無此欄位）；由系統設定 /system-settings/llm-api-key 取得
     try:
         supabase.table("Rag").update(update_payload).eq("rag_tab_id", fid).eq("person_id", resolved_person_id).execute()
     except Exception as e:
@@ -354,7 +354,7 @@ def build_rag_zip(body: PackRequest):
     依先前上傳的 ZIP（rag_tab_id）與 rag_list 字串，抽出指定 6 位數資料夾重新壓成 ZIP 並存到後端。
     ZIP 檔位置為 {person_id}/{rag_tab_id}/upload（與 upload-zip 一致），body 需傳入 person_id。
     rag_list 寫入 Rag 表；格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
-    一律做成 RAG（FAISS）ZIP，需傳入 llm_api_key。回傳內容完整寫入 Rag 表 rag_metadata，並 update chunk_size、chunk_overlap。
+    一律做成 RAG（FAISS）ZIP；LLM API Key 由系統設定（/system-settings/llm-api-key）取得。回傳內容完整寫入 Rag 表 rag_metadata，並 update chunk_size、chunk_overlap。
     """
     pid = (body.person_id or "").strip()
     if not pid:
@@ -374,7 +374,7 @@ def build_rag_zip(body: PackRequest):
     if not packed:
         raise HTTPException(status_code=400, detail="rag_list 為空或格式錯誤，例：220222+220301")
 
-    api_key = get_llm_api_key_for_person(pid)
+    api_key = get_llm_api_key()
     if not api_key:
         raise HTTPException(
             status_code=400,
@@ -439,7 +439,7 @@ def build_rag_zip(body: PackRequest):
             "system_prompt_instruction": body.system_prompt_instruction or "",
             "updated_at": now_utc_iso(),
         }
-        # llm_api_key 不寫入 Rag 表（該表無此欄位）；generate-quiz/quiz-grade 由 User 表依 person_id 取得
+        # llm_api_key 不寫入 Rag 表（該表無此欄位）；generate-quiz/quiz-grade 由系統設定取得
         supabase.table("Rag").update(update_payload).eq("rag_tab_id", body.rag_tab_id).execute()
     except Exception:
         pass
@@ -453,27 +453,40 @@ def _set_for_exam_only_for_rag_tab_id(supabase, pid: str, fid: str) -> None:
     supabase.table("Rag").update({"for_exam": True, "updated_at": now}).eq("rag_tab_id", fid).eq("person_id", pid).execute()
 
 
+def _set_for_exam_by_rag_tab_id_only(supabase, fid: str, rag_id: int) -> None:
+    """僅依 rag_tab_id：全表僅該 rag_id 為 for_exam=true，其餘皆 for_exam=false（與 person_id 無關）。"""
+    now = now_utc_iso()
+    supabase.table("Rag").update({"for_exam": False, "updated_at": now}).execute()
+    supabase.table("Rag").update({"for_exam": True, "updated_at": now}).eq("rag_id", rag_id).execute()
+
+
 @router.patch("/for-exam/{rag_tab_id}", status_code=200)
 def set_rag_for_exam(
     rag_tab_id: str = PathParam(..., description="要設為供測驗使用的 Rag 的 rag_tab_id"),
-    x_person_id: str | None = Header(None, alias="X-Person-Id"),
+    x_person_id: str | None = Header(None, alias="X-Person-Id", description="選填；未傳則僅依 rag_tab_id 設定，全表僅一筆 for_exam=true"),
 ):
     """
-    PATCH /rag/for-exam/{rag_tab_id}，person_id 請帶 Header X-Person-Id。
-    將該 rag_tab_id 的 Rag 設為 for_exam=true，同 person_id 下其餘 Rag 皆設為 for_exam=false。
+    PATCH /rag/for-exam/{rag_tab_id}。將該 rag_tab_id 的 Rag 設為 for_exam=true。
+    若有帶 Header X-Person-Id：同 person_id 下其餘 Rag 設為 for_exam=false。
+    若未帶 X-Person-Id：全表其餘 Rag 皆設為 for_exam=false（僅此一筆 for_exam=true）。
     """
-    pid = (x_person_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="請傳入 Header X-Person-Id（person_id）")
     fid = (rag_tab_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
         raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
+    pid = (x_person_id or "").strip()
     try:
         supabase = get_supabase()
-        r = supabase.table("Rag").select("rag_id").eq("rag_tab_id", fid).eq("person_id", pid).eq("deleted", False).execute()
-        if not r.data or len(r.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料")
-        _set_for_exam_only_for_rag_tab_id(supabase, pid, fid)
+        if pid:
+            r = supabase.table("Rag").select("rag_id").eq("rag_tab_id", fid).eq("person_id", pid).eq("deleted", False).execute()
+            if not r.data or len(r.data) == 0:
+                raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料")
+            _set_for_exam_only_for_rag_tab_id(supabase, pid, fid)
+        else:
+            r = supabase.table("Rag").select("rag_id").eq("rag_tab_id", fid).eq("deleted", False).execute()
+            if not r.data or len(r.data) == 0:
+                raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料")
+            rid = int(r.data[0].get("rag_id") or 0)
+            _set_for_exam_by_rag_tab_id_only(supabase, fid, rid)
         return {"message": "已設為供測驗使用", "rag_tab_id": fid}
     except HTTPException:
         raise

@@ -22,7 +22,7 @@ from langchain_community.vectorstores import FAISS
 from openai import OpenAI
 
 from utils.datetime_utils import now_utc_iso
-from utils.llm_api_key_utils import get_llm_api_key_for_person
+from utils.llm_api_key_utils import get_llm_api_key
 from utils.rag import process_zip_to_docs
 from utils.storage import get_zip_path
 from utils.supabase_client import get_supabase
@@ -31,7 +31,7 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 
 
 class GenerateQuizRequest(BaseModel):
-    """POST /rag/generate-quiz 請求 body。欄位順序與 Rag_Quiz 表一致：rag_id, rag_tab_id, quiz_level。LLM API Key 由 Rag 的 person_id 依 /system-settings/llm-api-key 取得。"""
+    """POST /rag/generate-quiz 請求 body。欄位順序與 Rag_Quiz 表一致：rag_id, rag_tab_id, quiz_level。LLM API Key 由系統設定（/system-settings/llm-api-key）取得，表僅一筆。"""
 
     rag_id: int = Field(0, description="Rag 表主鍵 rag_id；程式依該筆 rag_metadata.outputs 查找 RAG ZIP")
     rag_tab_id: int = Field(0, description="選填，Rag 表 rag_tab_id（來源 upload 識別）")
@@ -39,7 +39,7 @@ class GenerateQuizRequest(BaseModel):
 
 
 class QuizGradeRequest(BaseModel):
-    """POST /rag/quiz-grade 請求 body。欄位順序與 Rag_Answer 表一致：rag_id, rag_tab_id, rag_quiz_id, quiz_content, answer。LLM API Key 由 Rag 的 person_id 依 /system-settings/llm-api-key 取得。"""
+    """POST /rag/quiz-grade 請求 body。欄位順序與 Rag_Answer 表一致：rag_id, rag_tab_id, rag_quiz_id, quiz_content, answer。LLM API Key 由系統設定（/system-settings/llm-api-key）取得，表僅一筆。"""
 
     rag_id: str = Field("", description="Rag 表主鍵 rag_id（字串，會轉成數字查詢）")
     rag_tab_id: str = Field("", description="選填，Rag 表 rag_tab_id（來源識別）")
@@ -248,7 +248,7 @@ def _rag_stem_from_rag_id(supabase, rag_id: int) -> tuple[dict, str, str]:
 def generate_quiz_api(body: GenerateQuizRequest):
     """
     傳入 rag_id（Rag 表主鍵）、rag_tab_id（選填）、quiz_level。
-    LLM API Key 依 Rag 的 person_id 從 /system-settings/llm-api-key 取得；請先於系統設定填寫。
+    LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
     程式依 rag_id 對應的 rag_metadata.outputs 查找 RAG ZIP 出題；system_prompt_instruction 由 Rag 表取得。
     出題成功後寫入 public.Rag_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, reference_answer、rag_quiz_id 等。
     """
@@ -258,7 +258,7 @@ def generate_quiz_api(body: GenerateQuizRequest):
     supabase = get_supabase()
     row, stem, rag_zip_tab_id = _rag_stem_from_rag_id(supabase, body.rag_id)
     person_id = (row.get("person_id") or "").strip()
-    api_key = get_llm_api_key_for_person(person_id)
+    api_key = get_llm_api_key()
     if not api_key:
         raise HTTPException(
             status_code=400,
@@ -321,7 +321,7 @@ def generate_quiz_api(body: GenerateQuizRequest):
 async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest):
     """
     傳入 rag_id（字串）、rag_tab_id（選填）、rag_quiz_id、quiz_content、answer。
-    LLM API Key 依 Rag 的 person_id 從 /system-settings/llm-api-key 取得；請先於系統設定填寫。
+    LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
     程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。驗證後回傳 202 與 job_id；背景寫入 public.Rag_Answer。輪詢 GET /rag/quiz-grade-result/{job_id}。
     """
     rag_id_str = (body.rag_id or "").strip()
@@ -340,7 +340,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     source_rag_tab_id = (row.get("rag_tab_id") or "").strip()
     person_id = (row.get("person_id") or "").strip()
     rag_id_for_answer = int(row.get("rag_id") or 0)
-    api_key = get_llm_api_key_for_person(person_id)
+    api_key = get_llm_api_key()
     if not api_key:
         return JSONResponse(
             status_code=400,
