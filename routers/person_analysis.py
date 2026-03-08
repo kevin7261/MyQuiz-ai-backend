@@ -1,12 +1,12 @@
 """
-分析 API：依 person_id 查詢 Exam_Quiz / Exam_Answer 等分析用資料。
-- GET /analysis/quizzes-by-person/{person_id}：依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**（抓不到 answer 的 quiz 不回傳）。每筆帶關聯的 Exam_Answer。
+個人分析 API：依 person_id 查詢 Exam_Quiz / Exam_Answer 等分析用資料。
+- GET /person-analysis/quizzes-by-person/{person_id}：依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**（抓不到 answer 的 quiz 不回傳）。每筆帶關聯的 Exam_Answer。
   回傳格式與 GET /rag/rags、GET /exam/exams 的題目答案內容一致（每筆 quiz 含 quiz_content、quiz_hint、reference_answer、quiz_metadata，answers 含 student_answer、answer_grade、answer_feedback_metadata、answer_metadata 等）。
-  可選參數 language。LLM API Key 依 person_id 從 /system-settings/llm-api-key 取得；若有設定則會依題目／參考答案／使用者答案／答案分析結果彙整弱點，由 AI 產生「全部弱點分析」報告（Markdown），放在 weakness_report 欄位。
+  LLM API Key 依 person_id 從 /system-settings/llm-api-key 取得；若有設定則會依題目／參考答案／使用者答案／答案分析結果彙整弱點，由 AI 產生「全部弱點分析」報告（Markdown），放在 weakness_report 欄位。
 """
 
 import json
-from typing import Any, Literal, Optional
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Path as PathParam
 from openai import OpenAI
@@ -16,11 +16,11 @@ from routers.exam import _answers_by_exam_quiz_ids, _quizzes_by_person_id
 from utils.json_utils import to_json_safe
 from utils.llm_api_key_utils import get_llm_api_key_for_person
 
-router = APIRouter(prefix="/analysis", tags=["analysis"])
+router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
 
 
 class ListQuizzesByPersonResponse(BaseModel):
-    """GET /analysis/quizzes-by-person/{person_id} 回應：格式同 rag/exam 的題目答案，每筆 quiz 帶 answers；可選帶全部弱點分析。"""
+    """GET /person-analysis/quizzes-by-person/{person_id} 回應：格式同 rag/exam 的題目答案，每筆 quiz 帶 answers；可選帶全部弱點分析。"""
     quizzes: list[dict]
     count: int
     weakness_report: Optional[str] = Field(default=None, description="依題目／參考答案／使用者答案／答案分析結果彙整後由 AI 產生的 Markdown 弱點報告；該 person_id 未設定 LLM API Key 時為 None")
@@ -49,16 +49,13 @@ def _collect_weaknesses_from_quizzes(quizzes: list[dict]) -> list[str]:
     return all_weaknesses
 
 
-def _generate_weakness_report_md(quizzes: list[dict], lang: Literal["en", "zh"], api_key: str) -> Optional[str]:
+def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> Optional[str]:
     """依題目／參考答案／使用者答案／答案分析結果彙整弱點，呼叫 LLM 產生 Markdown 報告。無弱點或 API 失敗時回傳 None。"""
     all_weaknesses = _collect_weaknesses_from_quizzes(quizzes)
     if not all_weaknesses:
         return None
     weakness_text = "\n".join(all_weaknesses[:60])
-    if lang == "en":
-        prompt = f"Analyze the following learning weaknesses from quiz feedback and produce a clear, actionable Markdown report.\n\nWeaknesses:\n{weakness_text}\n\nProduce Markdown report only."
-    else:
-        prompt = f"""你是教學顧問。請根據以下來自測驗回饋的學習弱點，製作一份 Markdown 報告。
+    prompt = f"""你是教學顧問。請根據以下來自測驗回饋的學習弱點，製作一份 Markdown 報告。
 弱點列表：
 {weakness_text}
                 【重要限制】
@@ -81,7 +78,6 @@ def _generate_weakness_report_md(quizzes: list[dict], lang: Literal["en", "zh"],
 @router.get("/quizzes-by-person/{person_id}", response_model=ListQuizzesByPersonResponse)
 def list_quizzes_by_person(
     person_id: str = PathParam(..., description="要查詢的 person_id"),
-    language: Literal["en", "zh"] = "zh",
 ):
     """
     依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**（抓不到 answer 的 quiz 不回傳）；每筆 quiz 帶關聯的 Exam_Answer（answers）。
@@ -111,7 +107,7 @@ def list_quizzes_by_person(
         weakness_report: Optional[str] = None
         api_key = get_llm_api_key_for_person(person_id)
         if api_key:
-            weakness_report = _generate_weakness_report_md(data, language, api_key)
+            weakness_report = _generate_weakness_report_md(data, api_key)
         return ListQuizzesByPersonResponse(quizzes=data, count=len(data), weakness_report=weakness_report)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
