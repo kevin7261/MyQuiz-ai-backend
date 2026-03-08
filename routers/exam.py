@@ -41,6 +41,15 @@ def _exams_table_select(exclude_deleted: bool = True) -> list[dict]:
     return resp.data or []
 
 
+def _exams_by_ids(exam_ids: list[int]) -> list[dict]:
+    """依 exam_id 查詢 Exam 表，回傳對應的 Exam 列（僅 deleted=False）。"""
+    if not exam_ids:
+        return []
+    supabase = get_supabase()
+    resp = supabase.table("Exam").select("*").in_("exam_id", exam_ids).eq("deleted", False).execute()
+    return resp.data or []
+
+
 def _quizzes_by_exam_id(exam_ids: list[int]) -> dict[int, list[dict]]:
     """依 exam_id 查詢 Exam_Quiz 表，回傳 exam_id -> list of quiz。"""
     if not exam_ids:
@@ -106,7 +115,7 @@ def _answers_by_exam_quiz_ids(exam_quiz_ids: list[int]) -> dict[int, list[dict]]
 
 
 class ListExamResponse(BaseModel):
-    """GET /exam/exams 回應：Exam 表全部資料，每筆另含關聯的 Exam_Quiz（quizzes，每題帶 answers）與頂層 Exam_Answer（answers）。"""
+    """GET /exam/exams 回應：Exam 表全部資料，每筆另含關聯的 Exam_Quiz（quizzes，每題帶一筆 answer）與頂層 Exam_Answer（answers）。"""
     exams: list[dict]
     count: int
 
@@ -116,7 +125,7 @@ def list_exams(
     person_id: Optional[str] = Query(None, description="選填，篩選 person_id；未傳則回傳全部"),
 ):
     """
-    列出 Exam 表內容，僅回傳 deleted=False 的資料；每筆 Exam 含表上所有欄位，並帶關聯的 Exam_Quiz（quizzes，每題帶 answers）與頂層 answers。
+    列出 Exam 表內容，僅回傳 deleted=False 的資料；每筆 Exam 含表上所有欄位，並帶關聯的 Exam_Quiz（quizzes，每題帶一筆 answer）與頂層 answers。
     格式同 GET /rag/rags。
     """
     try:
@@ -153,7 +162,9 @@ def list_exams(
             for quiz in row_quizzes:
                 qid = quiz.get("exam_quiz_id")
                 qid_int = int(qid) if qid is not None else None
-                quiz["answers"] = answers_by_quiz_id.get(qid_int, []) if qid_int is not None else []
+                # 每題 quiz 只帶一筆 answer（取第一筆）
+                raw_answers = (answers_by_quiz_id.get(qid_int, []) or []) if qid_int is not None else []
+                quiz["answers"] = raw_answers[:1]
             row["quizzes"] = row_quizzes
             row["answers"] = answers_by_exam.get(eid_int, []) if eid_int is not None else []
         return ListExamResponse(exams=data, count=len(data))
@@ -384,24 +395,24 @@ def exam_generate_quiz(body: ExamGenerateQuizRequest):
             "filename": f"{stem}.zip",
         }
 
+        file_name = f"{stem}.zip"
         quiz_row: dict[str, Any] = {
             "exam_id": exam_id,
             "exam_tab_id": exam_tab_id,
             "person_id": person_id,
             "rag_id": rag_id,
+            "rag_name": stem,
+            "file_name": file_name,
             "quiz_level": body.quiz_level,
             "quiz_content": result.get("quiz_content") or "",
             "quiz_hint": result.get("quiz_hint") or "",
             "reference_answer": result.get("reference_answer") or "",
         }
         quiz_row["quiz_metadata"] = result
-        try:
-            quiz_resp = supabase.table("Exam_Quiz").insert(quiz_row).execute()
-            if quiz_resp.data and len(quiz_resp.data) > 0:
-                result["exam_quiz_id"] = quiz_resp.data[0].get("exam_quiz_id")
-                supabase.table("Exam_Quiz").update({"quiz_metadata": result}).eq("exam_quiz_id", result["exam_quiz_id"]).eq("exam_tab_id", exam_tab_id).execute()
-        except Exception:
-            pass
+        quiz_resp = supabase.table("Exam_Quiz").insert(quiz_row).execute()
+        if quiz_resp.data and len(quiz_resp.data) > 0:
+            result["exam_quiz_id"] = quiz_resp.data[0].get("exam_quiz_id")
+            supabase.table("Exam_Quiz").update({"quiz_metadata": result}).eq("exam_quiz_id", result["exam_quiz_id"]).eq("exam_tab_id", exam_tab_id).execute()
         body_bytes = json.dumps(result, ensure_ascii=False).encode("utf-8")
         return Response(content=body_bytes, media_type="application/json; charset=utf-8")
     except ValueError as e:
