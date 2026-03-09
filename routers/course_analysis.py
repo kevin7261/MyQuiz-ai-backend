@@ -1,21 +1,28 @@
 """
-課程分析 API：回傳 Exam_Quiz 資料表全部內容，格式與 GET /person-analysis/quizzes/{person_id} 一致。
+課程分析 API 模組。
+回傳 Exam_Quiz 資料表全部內容，格式與 GET /person-analysis/quizzes/{person_id} 一致。
 - GET /course-analysis/quizzes：回傳格式同 List Quizzes By Person：exams 陣列，每筆 Exam 含表欄位及 quizzes（每題帶 answers）、頂層 answers；count、weakness_report（課程分析固定為 null）。
 """
 
+# 引入 Optional 型別
 from typing import Optional
 
+# 引入 FastAPI 的 APIRouter、HTTPException
 from fastapi import APIRouter, HTTPException
+# 引入 Pydantic 的 BaseModel、Field
 from pydantic import BaseModel, Field
 
+# 從 exam 模組引入共用查詢函數
 from routers.exam import _all_exam_quizzes, _answers_by_exam_quiz_ids, _exams_by_ids
+# 引入 to_json_safe 將 datetime 等轉成可 JSON 序列化
 from utils.json_utils import to_json_safe
 
+# 建立路由，前綴 /course-analysis
 router = APIRouter(prefix="/course-analysis", tags=["course analysis"])
 
 
 class ListQuizzesResponse(BaseModel):
-    """GET /course-analysis/quizzes 回應：格式與 GET /person-analysis/quizzes/{person_id} 一致。"""
+    """GET /course-analysis/quizzes 回應。格式與 GET /person-analysis/quizzes/{person_id} 一致。"""
     exams: list[dict]
     count: int
     weakness_report: Optional[str] = Field(default=None, description="課程分析不產出，固定為 null")
@@ -24,51 +31,12 @@ class ListQuizzesResponse(BaseModel):
 @router.get("/quizzes", response_model=ListQuizzesResponse)
 def list_exam_quizzes():
     """
-    回傳 Exam_Quiz 全部內容，格式與 List Quizzes By Person 相同：exams 陣列，每筆含 quizzes、answers；每題 quiz 帶關聯的 answers（Exam_Answer）。
-    回應範例：
-    {
-      "exams": [
-        {
-          "exam_id": 1,
-          "exam_tab_id": "abc-123",
-          "person_id": "user-1",
-          "exam_name": "第一次測驗",
-          "deleted": false,
-          "created_at": "2025-03-01T00:00:00",
-          "quizzes": [
-            {
-              "exam_quiz_id": 10,
-              "exam_id": 1,
-              "exam_tab_id": "abc-123",
-              "person_id": "user-1",
-              "quiz_content": "題目內容...",
-              "quiz_hint": "提示",
-              "reference_answer": "參考答案",
-              "quiz_metadata": {},
-              "quiz_level": 1,
-              "answers": [
-                {
-                  "exam_answer_id": 100,
-                  "exam_quiz_id": 10,
-                  "exam_id": 1,
-                  "student_answer": "學生答案",
-                  "answer_grade": 85,
-                  "answer_feedback_metadata": {},
-                  "answer_metadata": {}
-                }
-              ]
-            }
-          ],
-          "answers": [
-            { "exam_answer_id": 100, "exam_quiz_id": 10, "exam_id": 1, "student_answer": "...", ... }
-          ]
-        }
-      ],
-      "count": 1,
-      "weakness_report": null
-    }
+    回傳 Exam_Quiz 全部內容，格式與 List Quizzes By Person 相同。
+    exams 陣列，每筆含 quizzes、answers；每題 quiz 帶關聯的 answers（Exam_Answer）。
+    weakness_report 固定為 null。
     """
     try:
+        # 查詢 Exam_Quiz 全部筆數
         quizzes = _all_exam_quizzes()
         quiz_ids: list[int] = []
         for row in quizzes:
@@ -79,6 +47,7 @@ def list_exam_quizzes():
                 except (TypeError, ValueError):
                     pass
         quiz_ids = list(dict.fromkeys(quiz_ids))
+        # 依 exam_quiz_id 查詢 answers
         answers_by_quiz = _answers_by_exam_quiz_ids(quiz_ids)
         for quiz in quizzes:
             qid = quiz.get("exam_quiz_id")

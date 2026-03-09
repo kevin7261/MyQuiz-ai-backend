@@ -1,15 +1,25 @@
-"""系統設定相關 API：LLM API Key 等。"""
+"""
+系統設定相關 API 模組。
+提供 LLM API Key 的 GET/PUT，供 Exam、course analysis 等使用。
+"""
 
+# 引入 Optional 型別
 from typing import Optional
 
+# 引入 FastAPI 與 HTTPException
 from fastapi import APIRouter, HTTPException
+# 引入 Pydantic 的 BaseModel、Field
 from pydantic import BaseModel, Field
 
+# 引入 UTC 時間工具
 from utils.datetime_utils import now_utc_iso
+# 引入 Supabase 客戶端
 from utils.supabase_client import get_supabase
 
+# 建立路由，前綴為 /system-settings，標籤為 system-settings
 router = APIRouter(prefix="/system-settings", tags=["system-settings"])
 
+# LLM_API_Key 表查詢欄位
 LLM_API_KEY_COLUMNS = "llm_api_key_id, llm_api_key, updated_at, created_at"
 
 
@@ -29,7 +39,8 @@ class PutLlmApiKeyRequest(BaseModel):
 @router.get("/llm-api-key", response_model=LlmApiKeyResponse)
 def get_llm_api_key():
     """
-    取得系統唯一的 LLM API Key。資料表僅一筆，直接取用，不需傳 person_id。
+    取得系統唯一的 LLM API Key。
+    資料表僅一筆，直接取用，不需傳 person_id。
     若尚無資料，回傳 llm_api_key_id 等皆為 null。
     """
     try:
@@ -59,7 +70,8 @@ def get_llm_api_key():
 @router.put("/llm-api-key", response_model=LlmApiKeyResponse)
 def put_llm_api_key(body: PutLlmApiKeyRequest):
     """
-    寫入或更新系統唯一的 LLM API Key。表僅一筆：已有則更新，否則新增。llm_api_key 可傳空字串表示清除。
+    寫入或更新系統唯一的 LLM API Key。
+    表僅一筆：已有則更新，否則新增。llm_api_key 可傳空字串表示清除。
     """
     key_value = (body.llm_api_key or "").strip() or None
     now = now_utc_iso()

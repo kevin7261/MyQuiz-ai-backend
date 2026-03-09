@@ -1,24 +1,48 @@
-"""ZIP 相關 API 路由。"""
+"""
+ZIP 與 RAG 相關 API 模組。
+提供：
+- GET /rag/for-exam：取得 for_exam=true 的 Rag
+- GET /rag/rags：列出 Rag 表（含 quizzes、answers）
+- POST /rag/create-rag：建立一筆 Rag
+- POST /rag/upload-zip：上傳 ZIP
+- POST /rag/build-rag-zip：依 rag_list 打包並建 RAG
+- PATCH /rag/for-exam/{rag_tab_id}：設為供測驗使用
+- POST /rag/delete/{rag_tab_id}：軟刪除並刪除儲存
+"""
 
+# 引入 io 用於 BytesIO 等
 import io
+# 引入 logging 用於記錄錯誤
 import logging
+# 引入 json（本模組未直接使用，保留供擴充）
 import json
+# 引入 uuid 用於產生 repack tab_id
 import uuid
+# 引入 zipfile 用於讀取 ZIP
 import zipfile
+# 引入 Path 用於路徑操作
 from pathlib import Path
+# 引入 Any 型別
 from typing import Any
 
+# 引入 FastAPI 的 APIRouter、HTTPException、UploadFile、File、Form、Header、PathParam
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header, Path as PathParam
+# 引入 Pydantic 的 BaseModel、Field
 from pydantic import BaseModel, Field
 
+# 引入 UTC 時間工具
 from utils.datetime_utils import now_utc_iso
+# 引入 to_json_safe 轉換 datetime 等
 from utils.json_utils import to_json_safe
+# 依 person_id 取得 LLM API Key
 from utils.llm_api_key_utils import get_llm_api_key_for_person
+# ZIP 工具：第二層資料夾、folder_map、repack
 from utils.zip_utils import (
     get_second_level_folders_from_zip_file,
     build_folder_map,
     repack_tasks_to_zips,
 )
+# 儲存工具
 from utils.storage import (
     save_zip,
     get_zip_path,
@@ -28,8 +52,10 @@ from utils.storage import (
     FOLDER_REPACK,
     FOLDER_RAG,
 )
+# Supabase 客戶端
 from utils.supabase_client import get_supabase
 
+# 建立路由，前綴 /rag
 router = APIRouter(prefix="/rag", tags=["rag"])
 
 # Rag 表列出全部資料時選取欄位（用 * 回傳全部欄位）
@@ -45,7 +71,10 @@ def _rag_default_row(
     system_prompt_instruction: str | None = None,
     file_metadata: Any = None,
 ) -> dict[str, Any]:
-    """Rag 表一筆新增時的預設欄位，供 create_rag、upload_zip 使用。"""
+    """
+    Rag 表一筆新增時的預設欄位，供 create_rag 使用。
+    llm_api_key 不寫入 Rag 表（該表無此欄位）；依 person_id 從 User 表取得。
+    """
     row: dict[str, Any] = {
         "rag_tab_id": rag_tab_id,
         "file_metadata": file_metadata,

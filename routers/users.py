@@ -1,12 +1,23 @@
-"""使用者相關 API：列出 User 表、登入、個人資料等。"""
+"""
+使用者相關 API 模組。
+提供：
+- GET /user/users：列出 User 表（不含 password）
+- POST /user/login：以 person_id + password 登入
+- PATCH /user/profile：更新個人資料（name、user_type、llm_api_key）
+"""
 
+# 引入 Any、Optional 型別
 from typing import Any, Optional
 
+# 引入 FastAPI 的 APIRouter、Header、HTTPException
 from fastapi import APIRouter, Header, HTTPException
+# 引入 Pydantic 的 BaseModel
 from pydantic import BaseModel
 
+# Supabase 客戶端
 from utils.supabase_client import get_supabase
 
+# 建立路由，前綴 /user
 router = APIRouter(prefix="/user", tags=["user"])
 
 # 與 DB 表一致（User 表）：user_id, person_id, name, user_type, llm_api_key, user_metadata, updated_at, created_at；不含 password。

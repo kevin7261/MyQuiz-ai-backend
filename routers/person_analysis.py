@@ -1,29 +1,39 @@
 """
-個人分析 API：依 person_id 查詢 Exam_Quiz / Exam_Answer 等分析用資料。
-- GET /person-analysis/quizzes/{person_id}：依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**（抓不到 answer 的 quiz 不回傳）。
-  回傳格式與 GET /rag/rags、GET /exam/exams 完全一致：exams 陣列，每筆 Exam 含表欄位及 quizzes（每題帶一筆 answer）、頂層 answers；題目／答案欄位同（quiz_content、quiz_hint、reference_answer、quiz_metadata；answers 含 student_answer、answer_grade、answer_feedback_metadata、answer_metadata 等）。另可帶 weakness_report（AI 產生的 Markdown 弱點報告）。
-  LLM API Key 由系統設定（/system-settings/llm-api-key）取得；若有設定則會依題目／參考答案／使用者答案／答案分析結果彙整弱點，由 AI 產生「全部弱點分析」報告（Markdown），放在 weakness_report 欄位。
+個人分析 API 模組。
+依 person_id 查詢 Exam_Quiz / Exam_Answer 等分析用資料。
+- GET /person-analysis/quizzes/{person_id}：依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**。
+  回傳格式與 GET /rag/rags、GET /exam/exams 完全一致；另可帶 weakness_report（AI 產生的 Markdown 弱點報告）。
+  LLM API Key 由系統設定取得；若有設定則會依題目／參考答案／使用者答案彙整弱點，由 AI 產生報告。
 """
 
+# 引入 json 用於解析 answer_feedback_metadata
 import json
+# 引入 Optional 型別
 from typing import Optional
 
+# 引入 FastAPI 的 APIRouter、HTTPException、PathParam
 from fastapi import APIRouter, HTTPException, Path as PathParam
+# 引入 OpenAI 客戶端
 from openai import OpenAI
+# 引入 Pydantic 的 BaseModel、Field
 from pydantic import BaseModel, Field
 
+# 從 exam 模組引入共用查詢函數
 from routers.exam import _answers_by_exam_quiz_ids, _exams_by_ids, _quizzes_by_person_id
+# 引入 to_json_safe
 from utils.json_utils import to_json_safe
+# 引入系統 LLM API Key
 from utils.llm_api_key_utils import get_llm_api_key
 
+# 建立路由
 router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
 
 
 class ListQuizzesByPersonResponse(BaseModel):
-    """GET /person-analysis/quizzes/{person_id} 回應：格式與 GET /rag/rags、GET /exam/exams 一致（exams 陣列，每筆含 quizzes、answers）；可選帶 weakness_report。"""
+    """GET /person-analysis/quizzes/{person_id} 回應。格式與 GET /rag/rags、GET /exam/exams 一致；可選帶 weakness_report。"""
     exams: list[dict]
     count: int
-    weakness_report: Optional[str] = Field(default=None, description="依題目／參考答案／使用者答案／答案分析結果彙整後由 AI 產生的 Markdown 弱點報告；系統未設定 LLM API Key 時為 None")
+    weakness_report: Optional[str] = Field(default=None, description="依題目／參考答案／使用者答案彙整後由 AI 產生的 Markdown 弱點報告；系統未設定 LLM API Key 時為 None")
 
 
 def _collect_weaknesses_from_quizzes(quizzes: list[dict]) -> list[str]:
@@ -50,7 +60,7 @@ def _collect_weaknesses_from_quizzes(quizzes: list[dict]) -> list[str]:
 
 
 def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> Optional[str]:
-    """依題目／參考答案／使用者答案／答案分析結果彙整弱點，呼叫 LLM 產生 Markdown 報告。無弱點或 API 失敗時回傳 None。"""
+    """依題目／參考答案／使用者答案彙整弱點，呼叫 LLM 產生 Markdown 報告。無弱點或 API 失敗時回傳 None。"""
     all_weaknesses = _collect_weaknesses_from_quizzes(quizzes)
     if not all_weaknesses:
         return None
@@ -80,8 +90,8 @@ def list_quizzes_by_person(
     person_id: str = PathParam(..., description="要查詢的 person_id"),
 ):
     """
-    依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**（抓不到 answer 的 quiz 不回傳）。
-    回傳格式與 GET /rag/rags、GET /exam/exams 完全一致：exams 陣列，每筆含 Exam 表欄位及 quizzes（每題帶一筆 answer）、頂層 answers；題目／答案欄位同。另帶 weakness_report（系統有設定 LLM API Key 時由 AI 產生 Markdown 弱點報告）。
+    依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**。
+    回傳格式與 GET /rag/rags、GET /exam/exams 完全一致；另帶 weakness_report（系統有設定 LLM API Key 時由 AI 產生）。
     """
     try:
         quizzes = _quizzes_by_person_id(person_id)
@@ -98,12 +108,10 @@ def list_quizzes_by_person(
         for quiz in quizzes:
             qid = quiz.get("exam_quiz_id")
             qid_int = int(qid) if qid is not None else None
-            # 每題 quiz 只帶一筆 answer（取第一筆）
             raw_answers = (answers_by_quiz.get(qid_int, []) or []) if qid_int is not None else []
             quiz["answers"] = raw_answers[:1]
-        # 只回傳在 Exam_Answer 有對應答案的 quiz；沒有 answer 的 quiz 不列入
+        # 只回傳在 Exam_Answer 有對應答案的 quiz
         quizzes_with_answers = [q for q in quizzes if (q.get("answers") or [])]
-        # 依 exam_id 分組，格式與 GET /exam/exams、GET /rag/rags 一致（exams 陣列，每筆含 quizzes、answers）
         exam_ids: list[int] = []
         for q in quizzes_with_answers:
             eid = q.get("exam_id")
@@ -130,7 +138,6 @@ def list_quizzes_by_person(
             row["answers"] = []
             for q in row_quizzes:
                 row["answers"].extend(q.get("answers") or [])
-        # 與 rag、exam 一致：轉成可 JSON 序列化（datetime 等轉成 ISO 字串）
         data = to_json_safe(exam_rows)
         weakness_report: Optional[str] = None
         api_key = get_llm_api_key()

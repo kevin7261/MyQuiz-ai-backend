@@ -1,39 +1,56 @@
 """
-Exam API：對應 public.Exam / Exam_Quiz / Exam_Answer 表。
+Exam API 模組。對應 public.Exam / Exam_Quiz / Exam_Answer 表。
 - GET /exam/exams：列出 Exam 表（格式同 GET /rag/rags），每筆含 quizzes（每題帶 answers）與頂層 answers。
 - POST /exam/create-exam：建立一筆 Exam 資料。
-- POST /exam/generate-quiz：依 exam_tab_id 與 rag_id 查找 RAG ZIP 出題，寫入 Exam_Quiz（exam_id, exam_tab_id）。
+- POST /exam/generate-quiz：依 exam_tab_id 與 rag_id 查找 RAG ZIP 出題，寫入 Exam_Quiz。
 - POST /exam/quiz-grade：非同步評分，寫入 Exam_Answer；輪詢 GET /exam/quiz-grade-result/{job_id}。
 - POST /exam/delete/{exam_tab_id}：軟刪除該筆 Exam（deleted=true）。
 """
 
+# 引入 json 用於序列化回傳
 import json
+# 引入 shutil 用於複製檔案
 import shutil
+# 引入 tempfile 用於暫存目錄
 import tempfile
+# 引入 uuid 用於產生 job_id
 import uuid
+# 引入 zipfile 用於驗證 ZIP
 import zipfile
+# 引入 Path 用於路徑
 from pathlib import Path
+# 引入 Any、Optional 型別
 from typing import Any, Optional
 
+# 引入 FastAPI 相關
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Path as PathParam, Query
+# 引入 JSONResponse、Response
 from fastapi.responses import JSONResponse, Response
+# 引入 Pydantic 的 BaseModel、Field
 from pydantic import BaseModel, Field
 
+# UTC 時間
 from utils.datetime_utils import now_utc_iso
+# 系統 LLM API Key（Exam 使用系統設定，非個人）
 from utils.llm_api_key_utils import get_llm_api_key
+# 由 rag_id 取得 stem、rag_zip_tab_id
 from utils.rag_common import get_rag_stem_from_rag_id
+# 儲存：generate_tab_id、get_zip_path
 from utils.storage import generate_tab_id, get_zip_path
+# Supabase 客戶端
 from utils.supabase_client import get_supabase
 
+# 從 grade 模組引入共用評分邏輯
 from routers.grade import _run_grade_job_background, _insert_exam_answer, _cleanup_grade_workspace
 
+# 建立路由，前綴 /exam
 router = APIRouter(prefix="/exam", tags=["exam"])
 
 
 # --- GET /exam/exams（格式同 /rag/rags）---
 
 def _exams_table_select(exclude_deleted: bool = True) -> list[dict]:
-    """查詢 Exam 表，exclude_deleted=True 時僅回傳 deleted=False。"""
+    """查詢 Exam 表全部列。exclude_deleted=True 時僅回傳 deleted=False。"""
     supabase = get_supabase()
     q = supabase.table("Exam").select("*")
     if exclude_deleted:
