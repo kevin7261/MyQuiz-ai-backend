@@ -14,8 +14,6 @@ ZIP 與 RAG 相關 API 模組。
 import io
 # 引入 logging 用於記錄錯誤
 import logging
-# 引入 json（本模組未直接使用，保留供擴充）
-import json
 # 引入 uuid 用於產生 repack tab_id
 import uuid
 # 引入 zipfile 用於讀取 ZIP
@@ -484,7 +482,7 @@ def _set_for_exam_only_for_rag_tab_id(supabase, pid: str, fid: str) -> None:
     supabase.table("Rag").update({"for_exam": True, "updated_at": now}).eq("rag_tab_id", fid).eq("person_id", pid).execute()
 
 
-def _set_for_exam_by_rag_tab_id_only(supabase, fid: str, rag_id: int) -> None:
+def _set_for_exam_by_rag_tab_id_only(supabase, rag_id: int) -> None:
     """僅依 rag_tab_id：全表僅該 rag_id 為 for_exam=true，其餘皆 for_exam=false（與 person_id 無關）。"""
     now = now_utc_iso()
     supabase.table("Rag").update({"for_exam": False, "updated_at": now}).execute()
@@ -517,7 +515,7 @@ def set_rag_for_exam(
             if not r.data or len(r.data) == 0:
                 raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料")
             rid = int(r.data[0].get("rag_id") or 0)
-            _set_for_exam_by_rag_tab_id_only(supabase, fid, rid)
+            _set_for_exam_by_rag_tab_id_only(supabase, rid)
         return {"message": "已設為供測驗使用", "rag_tab_id": fid}
     except HTTPException:
         raise
