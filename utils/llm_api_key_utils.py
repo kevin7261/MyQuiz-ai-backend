@@ -1,6 +1,6 @@
 """
 LLM API Key 工具模組。
-從 User 表依 person_id 取得個人 LLM API Key；或從 LLM_API_Key 表取得系統唯一 Key（Exam、course analysis 等使用）。
+從 User 表依 person_id 取得個人 LLM API Key；或從 System_Setting 表 key=llm_api_key 取得系統唯一 Key（Exam、course analysis 等使用）。
 """
 
 # 引入 Optional 型別，表示可為 None
@@ -9,31 +9,29 @@ from typing import Optional
 # 引入 Supabase 客戶端取得函數
 from utils.supabase_client import get_supabase
 
+# System_Setting 表：key = 'llm_api_key' 存系統 LLM API Key
+SYSTEM_SETTING_LLM_KEY = "llm_api_key"
+
 
 def get_llm_api_key() -> Optional[str]:
     """
-    從 LLM_API_Key 表取得系統唯一的 LLM API Key。
-    表僅一筆，不需 person_id；若尚無資料或 key 為空，回傳 None。
+    從 System_Setting 表取得系統唯一的 LLM API Key（key = 'llm_api_key' 的 value）。
+    不需 person_id；若尚無資料或 value 為空，回傳 None。
     """
     try:
-        # 取得 Supabase 客戶端
         supabase = get_supabase()
-        # 查詢 LLM_API_Key 表，取最新一筆的 llm_api_key 欄位
         resp = (
-            supabase.table("LLM_API_Key")
-            .select("llm_api_key")
-            .order("llm_api_key_id", desc=True)
+            supabase.table("System_Setting")
+            .select("value")
+            .eq("key", SYSTEM_SETTING_LLM_KEY)
             .limit(1)
             .execute()
         )
-        # 若查無資料，回傳 None
         if not resp.data or len(resp.data) == 0:
             return None
-        # 取得 llm_api_key 並去除空白，若為空則回傳 None
-        key = (resp.data[0].get("llm_api_key") or "").strip()
+        key = (resp.data[0].get("value") or "").strip()
         return key if key else None
     except Exception:
-        # 發生任何錯誤時回傳 None
         return None
 
 
