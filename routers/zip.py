@@ -380,7 +380,7 @@ async def upload_zip(
 @router.post("/build-rag-zip")
 def build_rag_zip(body: PackRequest):
     """
-    依先前上傳的 ZIP（rag_tab_id）與 rag_list 字串，抽出指定 6 位數資料夾重新壓成 ZIP 並存到後端。
+    依先前上傳的 ZIP（rag_tab_id）與 rag_list 字串，抽出指定資料夾名稱（路徑上任一層目錄名皆可，含 6 位數週次）重新壓成 ZIP 並存到後端。
     ZIP 檔位置為 {person_id}/{rag_tab_id}/upload（與 upload-zip 一致），body 需傳入 person_id。
     rag_list 寫入 Rag 表；格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
     一律做成 RAG（FAISS）ZIP；LLM API Key 依 person_id 從 User 表取得。回傳內容完整寫入 Rag 表 rag_metadata，並 update chunk_size、chunk_overlap。

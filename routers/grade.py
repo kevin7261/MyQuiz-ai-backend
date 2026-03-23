@@ -189,7 +189,7 @@ def _run_grade_job(
         )
     # 否則為一般講義 ZIP，需先處理文件再建向量庫
     else:
-        # 從 ZIP 載入支援的 .pdf、.txt 為 Document 列表
+        # 從 ZIP 載入講義（與 utils.rag.process_zip_to_docs 支援的副檔名一致）
         all_documents = process_zip_to_docs(zip_source_path, extract_folder)
         # 若無任何文件，拋出 ValueError
         if not all_documents:

@@ -22,18 +22,69 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 # FAISS 向量庫
 from langchain_community.vectorstores import FAISS
-# PDF、TXT 載入器
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
+# 文件載入器
+from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader
 # Document 型別
 from langchain_core.documents import Document
 
 # 引入 zip_utils 的 fix_encoding，用於修正檔名亂碼
 from utils.zip_utils import fix_encoding
 
+# ZIP 解壓後會嘗試載入的副檔名（小寫）；.doc / .ppt 依賴 unstructured，環境缺少套件或系統工具時可能略過
+_SUPPORTED_DOC_EXTS: frozenset[str] = frozenset(
+    {".pdf", ".doc", ".docx", ".ppt", ".pptx"}
+)
+
+
+def _documents_from_pptx(path: Path) -> list[Document]:
+    from pptx import Presentation
+
+    prs = Presentation(str(path))
+    chunks: list[str] = []
+    for idx, slide in enumerate(prs.slides):
+        lines: list[str] = []
+        for shape in slide.shapes:
+            if not hasattr(shape, "text"):
+                continue
+            t = (shape.text or "").strip()
+            if t:
+                lines.append(t)
+        if lines:
+            chunks.append(f"Slide {idx + 1}\n" + "\n".join(lines))
+    text = "\n\n".join(chunks).strip()
+    if not text:
+        return []
+    return [Document(page_content=text, metadata={"source": str(path)})]
+
+
+def _load_docs_from_file(path: Path) -> list[Document]:
+    ext = path.suffix.lower()
+    if ext not in _SUPPORTED_DOC_EXTS:
+        return []
+    try:
+        if ext == ".pdf":
+            return PyPDFLoader(str(path)).load()
+        if ext == ".docx":
+            return Docx2txtLoader(str(path)).load()
+        if ext == ".doc":
+            from langchain_community.document_loaders import UnstructuredWordDocumentLoader
+
+            return UnstructuredWordDocumentLoader(str(path)).load()
+        if ext == ".pptx":
+            return _documents_from_pptx(path)
+        if ext == ".ppt":
+            from langchain_community.document_loaders import UnstructuredPowerPointLoader
+
+            return UnstructuredPowerPointLoader(str(path)).load()
+    except Exception:
+        return []
+    return []
+
 
 def process_zip_to_docs(zip_path: Path, extract_dir: Path) -> list[Document]:
     """
-    解壓 ZIP 到 extract_dir，載入支援的檔案（.pdf, .txt）為 Document 列表。
+    解壓 ZIP 到 extract_dir，載入支援的檔案為 Document 列表。
+    副檔名：.pdf, .doc, .docx, .ppt, .pptx（不分大小寫）。
     過濾 __MACOSX、.DS_Store，並修正編碼。
     """
     all_docs: list[Document] = []  # 存放所有 Document
@@ -55,15 +106,10 @@ def process_zip_to_docs(zip_path: Path, extract_dir: Path) -> list[Document]:
             safe_path.parent.mkdir(parents=True, exist_ok=True)  # 確保父目錄存在
             safe_path.write_bytes(z.read(raw_name))  # 寫入檔案內容
 
-    # 遍歷 .pdf 與 .txt，用對應 Loader 載入
-    for ext, loader_class in [(".pdf", PyPDFLoader), (".txt", TextLoader)]:
-        for path in extract_dir.rglob(f"*{ext}"):  # 遞迴尋找該副檔名
-            try:
-                loader = loader_class(str(path))
-                docs = loader.load()
-                all_docs.extend(docs)
-            except Exception:
-                continue
+    for path in extract_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        all_docs.extend(_load_docs_from_file(path))
 
     return all_docs
 
@@ -120,7 +166,9 @@ def make_rag_zip_from_zip_path(
     try:
         all_docs = process_zip_to_docs(zip_path, tmp_extract)
         if not all_docs:
-            raise ValueError("ZIP 內無支援的文件（需 .pdf 或 .txt）")
+            raise ValueError(
+                "ZIP 內無可讀文件（支援：.pdf .doc .docx .ppt .pptx）"
+            )
         return build_faiss_zip_from_docs(
             all_docs, api_key, chunk_size=chunk_size, chunk_overlap=chunk_overlap
         )

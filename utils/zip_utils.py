@@ -51,35 +51,42 @@ def get_second_level_folders_from_zip_file(zip_file) -> list[str]:
     return sorted(list(second_folders))
 
 
+def _folder_map_append(
+    folder_map: dict[str, list[tuple[str, str]]],
+    seg: str,
+    raw_name: str,
+    decoded_name: str,
+) -> None:
+    """同一 seg 底下以 raw_name 去重，避免路徑重複片段造成重複寫入。"""
+    if not seg or seg in (".", "..") or seg.startswith("._") or seg == "__MACOSX":
+        return
+    lst = folder_map.setdefault(seg, [])
+    if any(r == raw_name for r, _ in lst):
+        return
+    lst.append((raw_name, decoded_name))
+
+
 def build_folder_map(zip_file) -> dict[str, list[tuple[str, str]]]:
     """
-    建立「6 位數資料夾名稱 → 該資料夾內檔案 (raw_name, decoded_name)」的對照表。
+    建立「路徑上任意資料夾名稱 → 該層之下檔案 (raw_name, decoded_name)」的對照表。
+    對每個檔案，將其路徑上每一層目錄名稱都註冊為 key（與舊版「僅 6 位數」相容：220222 仍可用）。
     過濾 __MACOSX、.DS_Store，僅列檔案（不列目錄結尾）。
     """
-    # 初始化對照表
     folder_map: dict[str, list[tuple[str, str]]] = {}
-    # 遍歷 ZIP 內所有檔名
     for raw_name in zip_file.namelist():
-        # 跳過目錄（以 / 結尾）
         if raw_name.endswith("/"):
             continue
-        # 修正編碼取得 decoded_name
         decoded_name = fix_encoding(raw_name)
-        # 跳過 macOS 隱藏檔
         if "__MACOSX" in decoded_name or ".DS_Store" in decoded_name:
             continue
-        # 分割路徑
         parts = decoded_name.split("/")
-        # 找出路徑中第一個 6 位數字（如 220222）
-        for part in parts:
-            if part.isdigit() and len(part) == 6:
-                target = part
-                # 若該資料夾尚未在 map 中，建立空列表
-                if target not in folder_map:
-                    folder_map[target] = []
-                # 加入 (raw_name, decoded_name)
-                folder_map[target].append((raw_name, decoded_name))
-                break
+        if len(parts) < 2:
+            continue
+        for i in range(len(parts) - 1):
+            seg = parts[i]
+            if seg == ".DS_Store":
+                continue
+            _folder_map_append(folder_map, seg, raw_name, decoded_name)
     return folder_map
 
 
@@ -90,8 +97,9 @@ def repack_tasks_to_zips(
 ) -> list[tuple[bytes, str]]:
     """
     依 tasks 字串從 source zip 抽出指定資料夾，重新壓成多個 ZIP。
-    格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。例："220222+220301" 或 "220222,220301+220302"
-    回傳 [(zip_bytes, filename), ...]，路徑只保留目標資料夾之後（如 220222/Class/file.pdf）。
+    格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
+    例："220222+220301"、"10_ERGMs"、"社會網絡分析,10_ERGMs"
+    回傳 [(zip_bytes, filename), ...]，路徑只保留目標資料夾名稱該段之後（如 10_ERGMs/10_ERGMs.pdf）。
     """
     # 以逗號分割 tasks，去除空白
     tasks = [t.strip() for t in tasks_str.split(",") if t.strip()]
