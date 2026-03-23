@@ -27,7 +27,7 @@ from openai import OpenAI
 
 # 預設出題系統指令（與 API 傳入的 system_prompt_instruction 一併使用，放在其上方）
 SYSTEM_INSTRUCTION_PREDEFINE = """
-            1. **請務必使用繁體中文 (Traditional Chinese) 出題。**
+            1. **請務必使用繁體中文 (Traditional Chinese) 出題與撰寫提示及參考答案。**
             2. 在 'quiz_content' (測驗) 中：只說明**任務目標**。嚴禁直接列出步驟 1, 2, 3。請保留思考空間給學生。
             3. 在 'quiz_hint' (提示) 中：才列出詳細的解題步驟。
         """
