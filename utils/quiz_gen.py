@@ -25,28 +25,12 @@ from langchain_community.vectorstores import FAISS
 from openai import OpenAI
 
 
-# 常見 GIS / 資料檔副檔名，用於提供給 AI 的檔案列表
-GIS_EXTENSIONS = {".shp", ".tif", ".tiff", ".gpkg", ".csv", ".rds", ".geojson", ".json"}
-
 # 預設出題系統指令（與 API 傳入的 system_prompt_instruction 一併使用，放在其上方）
 SYSTEM_INSTRUCTION_PREDEFINE = """
             1. **請務必使用繁體中文 (Traditional Chinese) 出題。**
             2. 在 'quiz_content' (測驗) 中：只說明**任務目標**。嚴禁直接列出步驟 1, 2, 3。請保留思考空間給學生。
             3. 在 'quiz_hint' (提示) 中：才列出詳細的解題步驟。
         """
-
-
-def get_gis_filenames(extract_folder: Path) -> list[str]:
-    """掃描解壓縮目錄，回傳 GIS/資料相關檔名列表（供 AI 出題時選擇）。"""
-    names: list[str] = []
-    extract_folder = Path(extract_folder)
-    if not extract_folder.exists():
-        return names
-    for root, _dirs, files in os.walk(extract_folder):
-        for f in files:
-            if Path(f).suffix.lower() in GIS_EXTENSIONS:  # 副檔名符合 GIS 類型
-                names.append(f)
-    return sorted(set(names))  # 去重並排序
 
 
 def generate_quiz(
@@ -91,10 +75,6 @@ def generate_quiz(
         vectorstore = FAISS.load_local(  # 載入 FAISS 向量庫
             db_folder, embeddings, allow_dangerous_deserialization=True
         )
-
-        # 取得 GIS 檔名列表供 AI 參考
-        file_names = get_gis_filenames(extract_folder)
-        file_names_str = ", ".join(file_names) if file_names else "None"
 
         # 檢索查詢：空間分析 + 難度 + 重點概念與操作步驟
         query = f"空間分析 {quiz_level} 重點概念與操作步驟"

@@ -65,14 +65,10 @@ def _rag_default_row(
     *,
     person_id: str | None = None,
     rag_name: str | None = None,
-    llm_api_key: str | None = None,
     system_prompt_instruction: str | None = None,
     file_metadata: Any = None,
 ) -> dict[str, Any]:
-    """
-    Rag 表一筆新增時的預設欄位，供 create_rag 使用。
-    llm_api_key 不寫入 Rag 表（該表無此欄位）；依 person_id 從 User 表取得。
-    """
+    """Rag 表一筆新增時的預設欄位，供 create_rag 使用。"""
     row: dict[str, Any] = {
         "rag_tab_id": rag_tab_id,
         "file_metadata": file_metadata,
@@ -88,7 +84,6 @@ def _rag_default_row(
         row["person_id"] = person_id
     if rag_name is not None:
         row["rag_name"] = rag_name
-    # llm_api_key 不寫入 Rag 表（該表無此欄位）；依 person_id 從 User 表取得
     if system_prompt_instruction is not None:
         row["system_prompt_instruction"] = system_prompt_instruction
     return row
@@ -425,8 +420,7 @@ def build_rag_zip(body: PackRequest):
             tab_id=repack_tab_id,
         )
         item = {
-            "rag_tab_id": tab_id,
-            "rag_name": tab_id,
+            "unit_name": tab_id,
             "filename": filename,
         }
         try:

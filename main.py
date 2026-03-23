@@ -18,8 +18,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers.zip import router as zip_router
 # 評分相關路由（含 generate-quiz、quiz-grade、quiz-grade-result）
 from routers.grade import router as grade_router
-# Quiz 相關路由（目前為空殼）
-from routers.quiz import router as quiz_router
 # Exam 測驗相關路由（exams、create-exam、generate-quiz、quiz-grade 等）
 from routers.exam import router as exam_router
 # 個人分析路由（依 person_id 查詢測驗與弱點報告）
@@ -60,8 +58,6 @@ app.add_middleware(
 app.include_router(zip_router)
 # 評分相關 API
 app.include_router(grade_router)
-# Quiz 相關 API
-app.include_router(quiz_router)
 # Exam 測驗 API
 app.include_router(exam_router)
 # 個人分析 API

@@ -4,6 +4,8 @@ RAG 相關共用邏輯模組。
 """
 
 # 引入 FastAPI 的 HTTPException，用於拋出 404、400 等錯誤
+from pathlib import Path
+
 from fastapi import HTTPException
 
 
@@ -24,16 +26,21 @@ def get_rag_stem_from_rag_id(supabase, rag_id: int, include_row: bool = False):
     row = rag_rows.data[0]
     # 取得 rag_metadata（可能為 dict 或 None）
     meta = row.get("rag_metadata")
-    # 從 rag_metadata.outputs 取得 outputs 陣列，若無則為空列表
+    # 從 rag_metadata.outputs 取得 outputs 陣列；stem 來自 rag_tab_id（舊）/ unit_name / rag_name（舊）/ filename
     outputs = (meta.get("outputs", []) if isinstance(meta, dict) else []) or []
     # 若 outputs 為空，表示尚未執行 build-rag-zip，拋出 400
     if not outputs:
         raise HTTPException(status_code=400, detail=f"該筆 Rag（rag_id={rag_id}）的 rag_metadata.outputs 為空，請先執行 build-rag-zip")
-    # 從 outputs 第一筆取得 rag_tab_id 作為 stem，並去除前後空白
-    stem = (outputs[0].get("rag_tab_id") or "").strip() if isinstance(outputs[0], dict) else ""
-    # 若 stem 為空，拋出 400
+    # repack stem：新資料為 unit_name + filename；更舊可能為 rag_tab_id 或 rag_name
+    first = outputs[0] if isinstance(outputs[0], dict) else {}
+    stem = (first.get("rag_tab_id") or first.get("unit_name") or first.get("rag_name") or "").strip()
+    if not stem and first.get("filename"):
+        stem = Path(str(first["filename"])).stem.strip()
     if not stem:
-        raise HTTPException(status_code=400, detail=f"該筆 Rag（rag_id={rag_id}）的 outputs 第一筆缺少 rag_tab_id")
+        raise HTTPException(
+            status_code=400,
+            detail=f"該筆 Rag（rag_id={rag_id}）的 outputs 第一筆缺少可辨識的 repack stem（unit_name 或 filename）",
+        )
     # RAG ZIP 的 tab_id 為 stem 加 _rag 後綴
     rag_zip_tab_id = f"{stem}_rag"
     # 依據 include_row 回傳不同結構

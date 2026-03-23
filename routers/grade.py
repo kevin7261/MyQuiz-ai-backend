@@ -1,6 +1,6 @@
 """
 評分 API 模組。
-傳入 rag_tab_id、rag_name，程式依 {rag_name}_rag 查找 RAG ZIP，以 RAG 檢索講義後由 GPT-4o 評分。
+依 rag_id 自 rag_metadata.outputs 取得 repack stem，再以 {stem}_rag 載入 RAG ZIP 檢索講義後由 GPT-4o 評分。
 非同步：POST 回傳 202 + job_id，背景執行評分；前端以 GET /rag/quiz-grade-result/{job_id} 輪詢結果。
 """
 
@@ -37,8 +37,6 @@ from langchain_community.vectorstores import FAISS
 # OpenAI 客戶端
 from openai import OpenAI
 
-# UTC 時間工具（本模組未直接使用，保留供擴充）
-from utils.datetime_utils import now_utc_iso
 # 依 person_id 從 User 表取得 LLM API Key
 from utils.llm_api_key_utils import get_llm_api_key_for_person
 # 從 ZIP 載入文件為 Document 列表
@@ -57,7 +55,7 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 class GenerateQuizRequest(BaseModel):
     """
     POST /rag/generate-quiz 請求 body。
-    欄位順序與 Rag_Quiz 表一致：rag_id, rag_tab_id, quiz_level。
+    欄位順序與 Rag_Quiz 表一致：rag_id, rag_tab_id, quiz_level（出題成功另寫入 unit_name 等）。
     LLM API Key 依 Rag 的 person_id 從 User 表取得。
     """
 
@@ -139,12 +137,8 @@ def _run_grade_job(
     api_key: str,
     quiz_content: str,
     student_answer: str,
-    qtype: str,
 ) -> GradingResult:
-    """
-    在給定的 work_dir（已含 ref.zip）執行 RAG + GPT 評分，回傳 GradingResult。
-    qtype 預留供未來擴充題型（目前皆為 short_answer）。
-    """
+    """在給定的 work_dir（已含 ref.zip）執行 RAG + GPT 評分，回傳 GradingResult。"""
     # 工作目錄中的 ZIP 路徑
     zip_source_path = work_dir / "ref.zip"
     # 解壓目錄路徑
@@ -274,7 +268,7 @@ def _run_grade_job_background(
     """
     try:
         # 呼叫 _run_grade_job 執行評分
-        result = _run_grade_job(work_dir, api_key, quiz_content, student_answer, "short_answer")
+        result = _run_grade_job(work_dir, api_key, quiz_content, student_answer)
         # 將 Pydantic 模型轉為 dict
         result_dict = result.model_dump()
         # 呼叫 insert_answer_fn 寫入 DB，回傳 (id_key, id_val) 或 None
@@ -416,11 +410,12 @@ def generate_quiz_api(body: GenerateQuizRequest):
         result["system_prompt_instruction"] = system_prompt_instruction
         # 將 quiz_level 加入 result
         result["quiz_level"] = body.quiz_level
+        file_name = f"{stem}.zip"
         # 加入 rag_output 供前端參考
         result["rag_output"] = {
-            "rag_tab_id": stem,  # RAG tab 識別
-            "rag_name": stem,  # RAG 名稱
-            "filename": f"{stem}.zip",  # 檔名
+            "rag_tab_id": stem,  # repack stem（與 rag_metadata.outputs[].unit_name 同義）
+            "unit_name": stem,
+            "filename": file_name,
         }
         # 取得 rag_id 用於寫入 Rag_Quiz
         rag_id = int(row.get("rag_id") or 0) if isinstance(row, dict) else 0
@@ -429,6 +424,8 @@ def generate_quiz_api(body: GenerateQuizRequest):
             "rag_id": rag_id,  # Rag 主鍵
             "rag_tab_id": source_rag_tab_id,  # 來源 upload 的 rag_tab_id
             "person_id": row.get("person_id") or "",  # 使用者識別
+            "unit_name": stem,  # Rag_Quiz：repack 單元名（與 outputs[].unit_name 一致）
+            "file_name": file_name,  # 對應 RAG 向量庫 ZIP 檔名（與 Exam_Quiz 一致）
             "quiz_level": body.quiz_level,  # 難度等級
             "quiz_content": result.get("quiz_content") or "",  # 題目內容
             "quiz_hint": result.get("quiz_hint") or "",  # 提示

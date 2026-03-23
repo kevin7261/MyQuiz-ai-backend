@@ -206,7 +206,7 @@ class CreateExamRequest(BaseModel):
 
 
 class ExamGenerateQuizRequest(BaseModel):
-    """POST /exam/generate-quiz 請求 body。欄位順序與 Exam_Quiz 表一致：exam_id, exam_tab_id, quiz_level。LLM API Key 由系統設定（/system-settings/llm-api-key）取得，表僅一筆。"""
+    """POST /exam/generate-quiz 請求 body。欄位順序與 Exam_Quiz 表一致：exam_id, exam_tab_id, quiz_level（出題成功另寫入 unit_name 等）。LLM API Key 由系統設定（/system-settings/llm-api-key）取得，表僅一筆。"""
 
     exam_id: int = Field(0, description="Exam 表主鍵 exam_id")
     exam_tab_id: str | int = Field("", description="create-exam 回傳的 exam_tab_id（Exam 表識別）；與 exam_id 二擇一，可傳字串或 0")
@@ -348,7 +348,8 @@ def exam_generate_quiz(body: ExamGenerateQuizRequest):
         result["system_prompt_instruction"] = system_prompt_instruction
         result["quiz_level"] = body.quiz_level
         result["rag_output"] = {
-            "rag_name": stem,
+            "rag_tab_id": stem,
+            "unit_name": stem,
             "filename": f"{stem}.zip",
         }
 
@@ -358,7 +359,7 @@ def exam_generate_quiz(body: ExamGenerateQuizRequest):
             "exam_tab_id": exam_tab_id,
             "person_id": person_id,
             "rag_id": rag_id,
-            "rag_name": stem,
+            "unit_name": stem,
             "file_name": file_name,
             "quiz_level": body.quiz_level,
             "quiz_content": result.get("quiz_content") or "",
