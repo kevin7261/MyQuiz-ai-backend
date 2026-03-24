@@ -1,7 +1,7 @@
 """
 Exam API 模組。對應 public.Exam / Exam_Quiz / Exam_Answer 表。
-- GET /exam/exams：列出 Exam 表（格式同 GET /rag/rags），每筆含 quizzes（每題帶 answers）與頂層 answers。
-- POST /exam/create-exam：建立一筆 Exam 資料。
+- GET /exam/exams：列出 Exam 表（格式同 GET /rag/rags），query `local` 篩選 Exam.local，未傳時依連線是否本機判定；每筆含 quizzes（每題帶 answers）與頂層 answers。
+- POST /exam/create-exam：建立一筆 Exam 資料（可傳 local，用法同 POST /rag/create-rag）。
 - POST /exam/generate-quiz：依 exam_tab_id 與 rag_id 查找 RAG ZIP 出題，寫入 Exam_Quiz。
 - POST /exam/quiz-grade：非同步評分，寫入 Exam_Answer；輪詢 GET /exam/quiz-grade-result/{job_id}。
 - POST /exam/delete/{exam_tab_id}：軟刪除該筆 Exam（deleted=true）。
@@ -31,12 +31,14 @@ from pydantic import BaseModel, Field
 
 # UTC 時間
 from utils.datetime_utils import now_utc_iso
+# 轉成可 JSON 序列化（與 GET /rag/rags 一致）
+from utils.json_utils import to_json_safe
 # 系統 LLM API Key（Exam 使用系統設定，非個人）
 from utils.llm_api_key_utils import get_llm_api_key
 # 由 rag_id 取得 stem、rag_zip_tab_id
 from utils.rag_common import get_rag_stem_from_rag_id
-# 供測驗 RAG：System_Setting rag_id
-from utils.rag_exam_setting import fetch_exam_rag_id_from_settings
+# 供測驗 RAG：System_Setting rag_id、本機判定（與 Rag.local 篩選一致）
+from utils.rag_exam_setting import fetch_exam_rag_id_from_settings, is_localhost_request
 # 儲存：generate_tab_id、get_zip_path
 from utils.storage import generate_tab_id, get_zip_path
 # Supabase 客戶端
@@ -51,12 +53,18 @@ router = APIRouter(prefix="/exam", tags=["exam"])
 
 # --- GET /exam/exams（格式同 /rag/rags）---
 
-def _exams_table_select(exclude_deleted: bool = True) -> list[dict]:
-    """查詢 Exam 表全部列。exclude_deleted=True 時僅回傳 deleted=False。"""
+def _exams_table_select(
+    exclude_deleted: bool = True,
+    *,
+    local_match: bool | None = None,
+) -> list[dict]:
+    """查詢 Exam 表全部列。exclude_deleted=True 時僅回傳 deleted=False。local_match 若指定則僅回傳 Exam.local 與其相符的列。"""
     supabase = get_supabase()
     q = supabase.table("Exam").select("*")
     if exclude_deleted:
         q = q.eq("deleted", False)
+    if local_match is not None:
+        q = q.eq("local", local_match)
     resp = q.execute()
     return resp.data or []
 
@@ -149,14 +157,21 @@ class ListExamResponse(BaseModel):
 
 @router.get("/exams", response_model=ListExamResponse)
 def list_exams(
+    request: Request,
     person_id: Optional[str] = Query(None, description="選填，篩選 person_id；未傳則回傳全部"),
+    local: bool | None = Query(
+        None,
+        description="僅回傳 Exam.local 與此值相同的列。未傳時：連線來源為 127.0.0.1、localhost、::1 視為 true，否則 false（與 GET /rag/rags 一致）",
+    ),
 ):
     """
-    列出 Exam 表內容，僅回傳 deleted=False 的資料；每筆 Exam 含表上所有欄位，並帶關聯的 Exam_Quiz（quizzes，每題帶一筆 answer）與頂層 answers。
+    列出 Exam 表內容，僅回傳 deleted=False 的資料，且 Exam.local 須與 query `local` 相符（未傳 `local` 時依連線是否本機自動判定）。
+    每筆 Exam 含表上所有欄位，並帶關聯的 Exam_Quiz（quizzes，每題帶一筆 answer）與頂層 answers。
     格式同 GET /rag/rags。
     """
     try:
-        data = _exams_table_select(exclude_deleted=True)
+        local_filter = local if local is not None else is_localhost_request(request)
+        data = _exams_table_select(exclude_deleted=True, local_match=local_filter)
         if person_id is not None and str(person_id).strip():
             pid = str(person_id).strip()
             data = [r for r in data if (r.get("person_id") or "").strip() == pid]
@@ -194,17 +209,19 @@ def list_exams(
                 quiz["answers"] = raw_answers[:1]
             row["quizzes"] = row_quizzes
             row["answers"] = answers_by_exam.get(eid_int, []) if eid_int is not None else []
+        data = to_json_safe(data)
         return ListExamResponse(exams=data, count=len(data))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 class CreateExamRequest(BaseModel):
-    """POST /exam/create-exam 請求 body。欄位順序與 Exam 表一致：exam_tab_id, person_id, exam_name。"""
+    """POST /exam/create-exam 請求 body。欄位順序與 Exam 表一致：exam_tab_id, person_id, exam_name, local（用法同 POST /rag/create-rag）。"""
 
     exam_tab_id: str | None = Field(None, description="選填；未傳則由後端產生（格式同 tab_id）")
     person_id: str = Field("", description="選填，寫入 Exam 表 person_id")
     exam_name: str = Field("", description="測驗名稱，寫入 Exam 表 exam_name")
+    local: bool = Field(False, description="是否為本機 Exam，寫入 Exam 表 local 欄位")
 
 
 class ExamGenerateQuizRequest(BaseModel):
@@ -232,8 +249,8 @@ _exam_grade_job_results: dict[str, dict[str, Any]] = {}
 @router.post("/create-exam")
 def create_exam(body: CreateExamRequest):
     """
-    建立一筆 Exam 資料。exam_tab_id 可選，未傳則由後端產生。
-    回傳 exam_id、exam_tab_id、person_id、exam_name、created_at。
+    建立一筆 Exam 資料。exam_tab_id 可選，未傳則由後端產生；local 選填，預設 false（與 create-rag 一致）。
+    回傳 exam_id、exam_tab_id、person_id、exam_name、local、created_at。
     """
     fid = (body.exam_tab_id or "").strip()
     if not fid:
@@ -249,6 +266,7 @@ def create_exam(body: CreateExamRequest):
         "exam_tab_id": fid,
         "person_id": person_id,
         "exam_name": exam_name,
+        "local": body.local,
         "deleted": False,
     }
     ins = supabase.table("Exam").insert(insert_row).execute()
@@ -261,6 +279,7 @@ def create_exam(body: CreateExamRequest):
         "exam_tab_id": row.get("exam_tab_id", fid),
         "person_id": row.get("person_id", person_id),
         "exam_name": row.get("exam_name", exam_name),
+        "local": row.get("local", body.local),
         "created_at": row.get("created_at"),
     }
 
