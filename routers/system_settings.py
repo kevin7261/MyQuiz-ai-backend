@@ -4,6 +4,8 @@
 - GET /system-settings/llm-api-key：取得預設 LLM API Key（key=llm_api_key），直接取值，無參數。
 - PUT /system-settings/course-name：寫入 course_name（key=course_name，value=body.course_name）。
 - PUT /system-settings/llm-api-key：寫入預設 LLM API Key（key=llm_api_key）。
+- GET/PUT /system-settings/rag-for-exam-localhost：key=rag_localhost，value=rag_id（已有則覆蓋）。
+- GET/PUT /system-settings/rag-for-exam-deploy：key=rag_deploy，value=rag_id（已有則覆蓋）。
 """
 
 # 引入 Optional 型別
@@ -18,6 +20,8 @@ from pydantic import BaseModel, Field
 from utils.datetime_utils import now_utc_iso
 # 引入 Supabase 客戶端
 from utils.supabase_client import get_supabase
+# 供測驗 RAG：System_Setting 固定 key
+from utils.rag_exam_setting import RAG_EXAM_SETTING_KEY_DEPLOY, RAG_EXAM_SETTING_KEY_LOCALHOST
 
 # 建立路由，前綴為 /system-settings，標籤為 system-settings
 router = APIRouter(prefix="/system-settings", tags=["system-settings"])
@@ -52,6 +56,20 @@ class PutCourseNameRequest(BaseModel):
 class PutLlmApiKeyRequest(BaseModel):
     """PUT /system-settings/llm-api-key 的 body：僅傳 llm_api_key。"""
     llm_api_key: str = Field(..., description="LLM API Key，可為空字串表示清除")
+
+
+class PutRagForExamRequest(BaseModel):
+    """PUT rag-for-exam-localhost / rag-for-exam-deploy：Rag 表主鍵 rag_id，寫入 System_Setting.value（字串）。"""
+    rag_id: int = Field(..., description="Rag 表 rag_id，存為 System_Setting.value（字串）")
+
+
+class RagForExamSettingResponse(BaseModel):
+    """GET/PUT rag-for-exam-localhost、rag-for-exam-deploy 回應。"""
+    key: str
+    rag_id: Optional[int] = None
+    system_setting_id: Optional[int] = None
+    updated_at: Optional[str] = None
+    created_at: Optional[str] = None
 
 
 @router.get("/course-name", response_model=CourseNameResponse)
@@ -195,3 +213,104 @@ def put_llm_api_key(body: PutLlmApiKeyRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _get_rag_for_exam_setting_row(supabase, key: str) -> RagForExamSettingResponse:
+    resp = (
+        supabase.table("System_Setting")
+        .select(SYSTEM_SETTING_COLUMNS)
+        .eq("key", key)
+        .limit(1)
+        .execute()
+    )
+    if not resp.data or len(resp.data) == 0:
+        return RagForExamSettingResponse(key=key, rag_id=None)
+    row = resp.data[0]
+    raw = (row.get("value") or "").strip()
+    rid: Optional[int] = None
+    if raw:
+        try:
+            rid = int(raw)
+        except ValueError:
+            rid = None
+    return RagForExamSettingResponse(
+        key=key,
+        rag_id=rid,
+        system_setting_id=row.get("system_setting_id"),
+        updated_at=row.get("updated_at"),
+        created_at=row.get("created_at"),
+    )
+
+
+def _put_rag_for_exam_for_key(key: str, body: PutRagForExamRequest) -> RagForExamSettingResponse:
+    if body.rag_id <= 0:
+        raise HTTPException(status_code=400, detail="無效的 rag_id")
+    value_to_save = str(body.rag_id)
+    try:
+        supabase = get_supabase()
+        chk = (
+            supabase.table("Rag")
+            .select("rag_id")
+            .eq("rag_id", body.rag_id)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+        if not chk.data or len(chk.data) == 0:
+            raise HTTPException(status_code=404, detail="找不到該 rag_id 的 Rag 資料")
+        row = _upsert_setting_and_get_row(supabase, key, value_to_save)
+        if not row:
+            return RagForExamSettingResponse(key=key, rag_id=body.rag_id)
+        return RagForExamSettingResponse(
+            key=key,
+            rag_id=body.rag_id,
+            system_setting_id=row.get("system_setting_id"),
+            updated_at=row.get("updated_at"),
+            created_at=row.get("created_at"),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/rag-for-exam-localhost", response_model=RagForExamSettingResponse)
+def get_rag_for_exam_localhost():
+    """讀取 key=rag_localhost 的供測驗 RAG rag_id（value 轉 int）。無資料則 rag_id 為 null。"""
+    try:
+        supabase = get_supabase()
+        return _get_rag_for_exam_setting_row(supabase, RAG_EXAM_SETTING_KEY_LOCALHOST)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/rag-for-exam-deploy", response_model=RagForExamSettingResponse)
+def get_rag_for_exam_deploy():
+    """讀取 key=rag_deploy 的供測驗 RAG rag_id（value 轉 int）。無資料則 rag_id 為 null。"""
+    try:
+        supabase = get_supabase()
+        return _get_rag_for_exam_setting_row(supabase, RAG_EXAM_SETTING_KEY_DEPLOY)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/rag-for-exam-localhost", response_model=RagForExamSettingResponse)
+def put_rag_for_exam_localhost(body: PutRagForExamRequest):
+    """
+    寫入供測驗 RAG（System_Setting key=rag_localhost，value=str(rag_id)）。
+    該 key 已存在則更新，否則新增。需存在 rag_id 且 Rag.deleted=false。
+    """
+    return _put_rag_for_exam_for_key(RAG_EXAM_SETTING_KEY_LOCALHOST, body)
+
+
+@router.put("/rag-for-exam-deploy", response_model=RagForExamSettingResponse)
+def put_rag_for_exam_deploy(body: PutRagForExamRequest):
+    """
+    寫入供測驗 RAG（System_Setting key=rag_deploy，value=str(rag_id)）。
+    該 key 已存在則更新，否則新增。需存在 rag_id 且 Rag.deleted=false。
+    """
+    return _put_rag_for_exam_for_key(RAG_EXAM_SETTING_KEY_DEPLOY, body)

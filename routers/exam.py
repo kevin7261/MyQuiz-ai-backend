@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 # 引入 FastAPI 相關
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Path as PathParam, Query
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Path as PathParam, Query, Request
 # 引入 JSONResponse、Response
 from fastapi.responses import JSONResponse, Response
 # 引入 Pydantic 的 BaseModel、Field
@@ -35,6 +35,8 @@ from utils.datetime_utils import now_utc_iso
 from utils.llm_api_key_utils import get_llm_api_key
 # 由 rag_id 取得 stem、rag_zip_tab_id
 from utils.rag_common import get_rag_stem_from_rag_id
+# 供測驗 RAG：System_Setting rag_id
+from utils.rag_exam_setting import fetch_exam_rag_id_from_settings
 # 儲存：generate_tab_id、get_zip_path
 from utils.storage import generate_tab_id, get_zip_path
 # Supabase 客戶端
@@ -291,10 +293,10 @@ def delete_exam(
 
 
 @router.post("/generate-quiz")
-def exam_generate_quiz(body: ExamGenerateQuizRequest):
+def exam_generate_quiz(request: Request, body: ExamGenerateQuizRequest):
     """
     傳入 exam_id 或 exam_tab_id（二擇一）。LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
-    程式取得 for_exam=true 的 Rag（僅一筆，與 person_id 無關），依其 rag_metadata.outputs 查找 RAG ZIP 出題。
+    依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id，取得對應 Rag，依 rag_metadata.outputs 查找 RAG ZIP 出題。
     出題成功後寫入 public.Exam_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, reference_answer、exam_quiz_id 等。
     """
     supabase = get_supabase()
@@ -323,14 +325,26 @@ def exam_generate_quiz(body: ExamGenerateQuizRequest):
             detail="請先於系統設定（/system-settings/llm-api-key）填寫 LLM API Key",
         )
 
-    # 取得 for_exam=true 的 Rag（僅一筆，與 person_id 無關）
-    rag_rows = supabase.table("Rag").select("rag_id, system_prompt_instruction").eq("for_exam", True).eq("deleted", False).execute()
+    _, rag_id_from_setting = fetch_exam_rag_id_from_settings(supabase, request)
+    if rag_id_from_setting is None or rag_id_from_setting <= 0:
+        raise HTTPException(
+            status_code=404,
+            detail="尚未設定供測驗用 RAG rag_id，請以 PUT /system-settings/rag-for-exam-localhost 或 rag-for-exam-deploy 寫入",
+        )
+    rag_rows = (
+        supabase.table("Rag")
+        .select("rag_id, system_prompt_instruction")
+        .eq("rag_id", rag_id_from_setting)
+        .eq("deleted", False)
+        .limit(1)
+        .execute()
+    )
     if not rag_rows.data or len(rag_rows.data) == 0:
-        raise HTTPException(status_code=404, detail="找不到 for_exam Rag，請先設定供測驗使用的 RAG（for_exam=true）")
+        raise HTTPException(status_code=404, detail=f"找不到 rag_id={rag_id_from_setting} 的 Rag 資料，或已刪除")
     rag_id = int(rag_rows.data[0].get("rag_id") or 0)
     system_prompt_instruction = (rag_rows.data[0].get("system_prompt_instruction") or "").strip()
     if not system_prompt_instruction:
-        raise HTTPException(status_code=400, detail="該筆 for_exam Rag 的 system_prompt_instruction 未設定，請在 build-rag-zip 傳入")
+        raise HTTPException(status_code=400, detail="該筆供測驗 Rag 的 system_prompt_instruction 未設定，請在 build-rag-zip 傳入")
 
     stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, rag_id)
     path = get_zip_path(rag_zip_tab_id)
@@ -380,11 +394,11 @@ def exam_generate_quiz(body: ExamGenerateQuizRequest):
 
 
 @router.post("/quiz-grade")
-async def exam_grade_submission(background_tasks: BackgroundTasks, body: ExamQuizGradeRequest):
+async def exam_grade_submission(request: Request, background_tasks: BackgroundTasks, body: ExamQuizGradeRequest):
     """
     傳入 exam_id 或 exam_tab_id、exam_quiz_id、quiz_content、answer。
     LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
-    程式取得 for_exam=true 的 Rag（僅一筆，與 person_id 無關）查找 RAG ZIP 評分。回傳 202 與 job_id；背景寫入 public.Exam_Answer。輪詢 GET /exam/quiz-grade-result/{job_id}。
+    依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id，查找 RAG ZIP 評分。回傳 202 與 job_id；背景寫入 public.Exam_Answer。輪詢 GET /exam/quiz-grade-result/{job_id}。
     """
     exam_id_str = (body.exam_id or "").strip()
     exam_tab_id = (body.exam_tab_id or "").strip()
@@ -415,9 +429,27 @@ async def exam_grade_submission(background_tasks: BackgroundTasks, body: ExamQui
             },
         )
 
-    rag_rows = supabase.table("Rag").select("rag_id, rag_metadata").eq("for_exam", True).eq("deleted", False).execute()
+    _, rag_id_from_setting = fetch_exam_rag_id_from_settings(supabase, request)
+    if rag_id_from_setting is None or rag_id_from_setting <= 0:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "尚未設定供測驗用 RAG rag_id，請以 PUT /system-settings/rag-for-exam-localhost 或 rag-for-exam-deploy 寫入",
+            },
+        )
+    rag_rows = (
+        supabase.table("Rag")
+        .select("rag_id, rag_metadata")
+        .eq("rag_id", rag_id_from_setting)
+        .eq("deleted", False)
+        .limit(1)
+        .execute()
+    )
     if not rag_rows.data or len(rag_rows.data) == 0:
-        return JSONResponse(status_code=404, content={"error": "找不到 for_exam Rag，請先設定供測驗使用的 RAG（for_exam=true）"})
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"找不到 rag_id={rag_id_from_setting} 的 Rag 資料，或已刪除"},
+        )
     try:
         rag_id = int(rag_rows.data[0].get("rag_id") or 0)
         stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, rag_id)

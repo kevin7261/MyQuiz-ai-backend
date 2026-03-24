@@ -1,12 +1,11 @@
 """
 ZIP 與 RAG 相關 API 模組。
 提供：
-- GET /rag/for-exam：取得 for_exam=true 的 Rag
+- GET /rag/for-exam：依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id，回傳對應 Rag
 - GET /rag/rags：列出 Rag 表（含 quizzes、answers）；query `local` 篩選 Rag.local，未傳時依連線是否本機判定
 - POST /rag/create-rag：建立一筆 Rag（可傳 local）
 - POST /rag/upload-zip：上傳 ZIP
 - POST /rag/build-rag-zip：依 rag_list 打包並建 RAG
-- PATCH /rag/for-exam/{rag_tab_id}：設為供測驗使用
 - POST /rag/delete/{rag_tab_id}：軟刪除並刪除儲存
 """
 
@@ -52,6 +51,8 @@ from utils.storage import (
 )
 # Supabase 客戶端
 from utils.supabase_client import get_supabase
+# 供測驗 RAG：System_Setting rag_id、本機判定
+from utils.rag_exam_setting import fetch_exam_rag_id_from_settings, is_localhost_request
 
 # 建立路由，前綴 /rag
 router = APIRouter(prefix="/rag", tags=["rag"])
@@ -77,7 +78,6 @@ def _rag_default_row(
         "rag_metadata": None,
         "chunk_size": 1000,
         "chunk_overlap": 200,
-        "for_exam": False,
         "local": local,
         "deleted": False,
         "updated_at": now_utc_iso(),
@@ -89,20 +89,6 @@ def _rag_default_row(
     if system_prompt_instruction is not None:
         row["system_prompt_instruction"] = system_prompt_instruction
     return row
-
-
-def _client_requests_local_rag(request: Request) -> bool:
-    """依連線來源是否本機回傳對應的 Rag.local 篩選值。優先 X-Forwarded-For 第一跳，否則 request.client.host。"""
-    host = ""
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        host = xff.split(",")[0].strip()
-    elif request.client:
-        host = (request.client.host or "").strip()
-    host = host.lower()
-    if host.startswith("::ffff:"):
-        host = host[7:]
-    return host in ("127.0.0.1", "localhost", "::1")
 
 
 def _rag_table_select(
@@ -153,7 +139,7 @@ def _answers_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
 
 
 class ListRagResponse(BaseModel):
-    """GET /rag/rags 回應：Rag 表全部資料（含 for_exam、llm_api_key 等欄位），每筆另含關聯的 Rag_Quiz（quizzes，每題帶一筆 answer）、以及頂層 Rag_Answer（answers）。"""
+    """GET /rag/rags 回應：Rag 表全部欄位，每筆另含關聯的 Rag_Quiz（quizzes，每題帶一筆 answer）、以及頂層 Rag_Answer（answers）。"""
     rags: list[dict]
     count: int
 
@@ -177,18 +163,30 @@ class PackRequest(BaseModel):
 
 
 @router.get("/for-exam")
-def get_for_exam_rag():
+def get_for_exam_rag(request: Request):
     """
-    Get For-Exam Rag：取得 Rag 表中 for_exam=true 的資料，僅回傳 deleted=False，只會有 0 或 1 筆。
+    依連線讀取 System_Setting（本機：rag_localhost，否則 rag_deploy）的 value 作為 rag_id，取得該筆 Rag（deleted=false）。
     回傳格式與 POST /rag/build-rag-zip 一致，並多帶 rag_id、rag_tab_id、llm_api_key、system_prompt_instruction。
     """
     try:
         supabase = get_supabase()
+        _, rag_id = fetch_exam_rag_id_from_settings(supabase, request)
+        if rag_id is None or rag_id <= 0:
+            return {
+                "source_rag_tab_id": None,
+                "rag_list": None,
+                "outputs": [],
+                "rag_id": None,
+                "rag_tab_id": None,
+                "llm_api_key": None,
+                "system_prompt_instruction": None,
+            }
         resp = (
             supabase.table("Rag")
             .select(RAG_SELECT_ALL)
-            .eq("for_exam", True)
+            .eq("rag_id", rag_id)
             .eq("deleted", False)
+            .limit(1)
             .execute()
         )
         data = resp.data or []
@@ -227,7 +225,7 @@ def get_for_exam_rag():
         logging.exception("GET /rag/for-exam 錯誤")
         raise HTTPException(
             status_code=500,
-            detail=f"取得 for_exam Rag 失敗: {e!s}",
+            detail=f"取得供測驗 RAG 失敗: {e!s}",
         )
 
 
@@ -241,12 +239,12 @@ def list_rag(
 ):
     """
     列出 Rag 表內容，僅回傳 deleted=False 的資料，且 Rag.local 須與 query `local` 相符（未傳 `local` 時依連線是否本機自動判定）。
-    每筆 Rag 含表上所有欄位（含 for_exam），並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
+    每筆 Rag 含表上所有欄位，並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
     關聯方式：quizzes 下每筆 quiz 帶 answers（依 rag_quiz_id 關聯，每題僅一筆）；頂層 answers 為該 rag 下全部答案的扁平列表。
     LLM API Key 依 person_id 從 User 表取得。
     """
     try:
-        local_filter = local if local is not None else _client_requests_local_rag(request)
+        local_filter = local if local is not None else is_localhost_request(request)
         data = _rag_table_select(RAG_SELECT_ALL, exclude_deleted=True, local_match=local_filter)
         rag_ids = []
         for row in data:
@@ -508,54 +506,6 @@ def build_rag_zip(body: PackRequest):
     except Exception:
         pass
     return response
-
-
-def _set_for_exam_only_for_rag_tab_id(supabase, pid: str, fid: str) -> None:
-    """將同一 person_id 下該 rag_tab_id 的 Rag 設為 for_exam=true，其餘皆設為 for_exam=false。"""
-    now = now_utc_iso()
-    supabase.table("Rag").update({"for_exam": False, "updated_at": now}).eq("person_id", pid).neq("rag_tab_id", fid).execute()
-    supabase.table("Rag").update({"for_exam": True, "updated_at": now}).eq("rag_tab_id", fid).eq("person_id", pid).execute()
-
-
-def _set_for_exam_by_rag_tab_id_only(supabase, rag_id: int) -> None:
-    """僅依 rag_tab_id：全表僅該 rag_id 為 for_exam=true，其餘皆 for_exam=false（與 person_id 無關）。"""
-    now = now_utc_iso()
-    supabase.table("Rag").update({"for_exam": False, "updated_at": now}).execute()
-    supabase.table("Rag").update({"for_exam": True, "updated_at": now}).eq("rag_id", rag_id).execute()
-
-
-@router.patch("/for-exam/{rag_tab_id}", status_code=200)
-def set_rag_for_exam(
-    rag_tab_id: str = PathParam(..., description="要設為供測驗使用的 Rag 的 rag_tab_id"),
-    x_person_id: str | None = Header(None, alias="X-Person-Id", description="選填；未傳則僅依 rag_tab_id 設定，全表僅一筆 for_exam=true"),
-):
-    """
-    PATCH /rag/for-exam/{rag_tab_id}。將該 rag_tab_id 的 Rag 設為 for_exam=true。
-    若有帶 Header X-Person-Id：同 person_id 下其餘 Rag 設為 for_exam=false。
-    若未帶 X-Person-Id：全表其餘 Rag 皆設為 for_exam=false（僅此一筆 for_exam=true）。
-    """
-    fid = (rag_tab_id or "").strip()
-    if not fid or "/" in fid or "\\" in fid:
-        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
-    pid = (x_person_id or "").strip()
-    try:
-        supabase = get_supabase()
-        if pid:
-            r = supabase.table("Rag").select("rag_id").eq("rag_tab_id", fid).eq("person_id", pid).eq("deleted", False).execute()
-            if not r.data or len(r.data) == 0:
-                raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料")
-            _set_for_exam_only_for_rag_tab_id(supabase, pid, fid)
-        else:
-            r = supabase.table("Rag").select("rag_id").eq("rag_tab_id", fid).eq("deleted", False).execute()
-            if not r.data or len(r.data) == 0:
-                raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料")
-            rid = int(r.data[0].get("rag_id") or 0)
-            _set_for_exam_by_rag_tab_id_only(supabase, rid)
-        return {"message": "已設為供測驗使用", "rag_tab_id": fid}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 def _do_delete_rag_file(pid: str, fid: str):
