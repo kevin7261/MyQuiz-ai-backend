@@ -55,7 +55,7 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 class GenerateQuizRequest(BaseModel):
     """
     POST /rag/create-quiz 請求 body。
-    欄位順序與 Rag_Quiz 表一致：rag_id, rag_tab_id, quiz_level（出題成功另寫入 unit_name 等）。
+    欄位順序與 Rag_Quiz 表一致：rag_id, rag_tab_id, quiz_level、unit_name（選填，出題成功另寫入 unit_name 等）。
     LLM API Key 依 Rag 的 person_id 從 User 表取得。
     """
 
@@ -65,6 +65,11 @@ class GenerateQuizRequest(BaseModel):
     rag_tab_id: int = Field(0, description="選填，Rag 表 rag_tab_id（來源 upload 識別）")
     # 難度等級，會寫入 Rag_Quiz 表 quiz_level
     quiz_level: int = Field(0, description="難度等級，會寫入 Rag_Quiz 表 quiz_level")
+    # 選填；指定 outputs 中哪一個上傳單元（與 build-rag-zip 的 outputs[].unit_name 一致）
+    unit_name: str = Field(
+        "",
+        description="選填；指定 rag_metadata.outputs 中某一上傳單元（與 POST /rag/build-rag-zip 的 outputs[].unit_name 一致）。未傳或空字串則使用第一筆輸出",
+    )
 
 
 class QuizGradeRequest(BaseModel):
@@ -353,7 +358,7 @@ def _insert_exam_answer(result_dict: dict, student_answer: str, *, exam_id: int,
 @router.post("/create-quiz", summary="Rag Create Quiz")
 def generate_quiz_api(body: GenerateQuizRequest):
     """
-    傳入 rag_id（Rag 表主鍵）、rag_tab_id（選填）、quiz_level。
+    傳入 rag_id（Rag 表主鍵）、rag_tab_id（選填）、quiz_level；可傳 unit_name 指定 outputs 中哪一個上傳單元（與 build-rag-zip 的 outputs[].unit_name 一致），未傳則用第一筆。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
     程式依 rag_id 對應的 rag_metadata.outputs 查找 RAG ZIP 出題；system_prompt_instruction 由 Rag 表取得。
     出題成功後寫入 public.Rag_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, reference_answer、rag_quiz_id 等。
@@ -364,8 +369,11 @@ def generate_quiz_api(body: GenerateQuizRequest):
 
     # 取得 Supabase 客戶端
     supabase = get_supabase()
-    # 由 rag_id 取得 Rag 列、stem、rag_zip_tab_id
-    row, stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, body.rag_id, include_row=True)
+    unit_filter = (body.unit_name or "").strip() or None
+    # 由 rag_id 取得 Rag 列、stem、rag_zip_tab_id（可依 unit_name 選 outputs 單元）
+    row, stem, rag_zip_tab_id = get_rag_stem_from_rag_id(
+        supabase, body.rag_id, include_row=True, unit_name=unit_filter
+    )
     # 從 row 取得 person_id 並去除空白
     person_id = (row.get("person_id") or "").strip()
     # 若 person_id 為空，無法取得 LLM API Key
