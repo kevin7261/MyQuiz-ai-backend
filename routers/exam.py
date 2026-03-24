@@ -397,6 +397,7 @@ def exam_generate_quiz(request: Request, body: ExamGenerateQuizRequest):
 
     unit_filter = (body.unit_name or "").strip() or None
     stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, rag_id, unit_name=unit_filter)
+    # 取得 RAG ZIP 路徑（下載至暫存檔）
     path = get_zip_path(rag_zip_tab_id)
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 rag_id={rag_id}（tab_id={rag_zip_tab_id}）")
@@ -445,6 +446,12 @@ def exam_generate_quiz(request: Request, body: ExamGenerateQuizRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # 清理從 Supabase Storage 下載的暫存檔
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 @router.post("/grade-quiz", summary="Exam Grade Quiz")
@@ -528,6 +535,7 @@ async def exam_grade_submission(request: Request, background_tasks: BackgroundTa
         stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, rag_id, unit_name=grade_unit_filter)
     except HTTPException as e:
         return JSONResponse(status_code=e.status_code, content={"error": e.detail})
+    # 取得 RAG ZIP 路徑（下載至暫存檔）
     rag_zip_path = get_zip_path(rag_zip_tab_id)
     if not rag_zip_path or not rag_zip_path.exists():
         return JSONResponse(status_code=404, content={"error": f"找不到 RAG ZIP（tab_id={rag_zip_tab_id}）"})
@@ -535,6 +543,7 @@ async def exam_grade_submission(request: Request, background_tasks: BackgroundTa
     work_dir = Path(tempfile.mkdtemp(prefix="aiquiz_exam_grade_"))
     zip_source_path = work_dir / "ref.zip"
     try:
+        # 複製 RAG ZIP 到 work_dir，複製完成後立即刪除從 Supabase Storage 下載的暫存檔
         shutil.copy(rag_zip_path, zip_source_path)
         if not zipfile.is_zipfile(zip_source_path):
             _cleanup_grade_workspace(work_dir)
@@ -542,6 +551,12 @@ async def exam_grade_submission(request: Request, background_tasks: BackgroundTa
     except Exception as e:
         _cleanup_grade_workspace(work_dir)
         return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        # 清理從 Supabase Storage 下載的暫存檔
+        try:
+            rag_zip_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     job_id = str(uuid.uuid4())
     _exam_grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}

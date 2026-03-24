@@ -379,7 +379,7 @@ def generate_quiz_api(body: GenerateQuizRequest):
     if not system_prompt_instruction:
         raise HTTPException(status_code=400, detail="該筆 Rag 的 system_prompt_instruction 未設定，請在 build-rag-zip 傳入出題系統指令")
 
-    # 取得 RAG ZIP 的檔案路徑
+    # 取得 RAG ZIP 的檔案路徑（下載至暫存檔）
     path = get_zip_path(rag_zip_tab_id)
     # 若路徑不存在，拋出 404
     if not path or not path.exists():
@@ -442,6 +442,12 @@ def generate_quiz_api(body: GenerateQuizRequest):
     except Exception as e:
         # 其他異常轉為 500
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # 清理從 Supabase Storage 下載的暫存檔
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 @router.post("/grade-quiz", summary="Rag Grade Quiz")
@@ -489,7 +495,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
                 "error": "該使用者（person_id）尚未於個人設定填寫 LLM API Key，請至 User 設定",
             },
         )
-    # 取得 RAG ZIP 路徑
+    # 取得 RAG ZIP 路徑（下載至暫存檔）
     rag_zip_path = get_zip_path(rag_zip_tab_id)
     if not rag_zip_path or not rag_zip_path.exists():
         return JSONResponse(status_code=404, content={"error": f"找不到 RAG ZIP，請確認 rag_id={rag_id_str}（tab_id={rag_zip_tab_id}）"})
@@ -504,7 +510,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     extract_folder.mkdir(parents=True, exist_ok=True)
 
     try:
-        # 複製 RAG ZIP 到 work_dir
+        # 複製 RAG ZIP 到 work_dir，複製完成後立即刪除從 Supabase Storage 下載的暫存檔
         shutil.copy(rag_zip_path, zip_source_path)
         if not zipfile.is_zipfile(zip_source_path):
             _cleanup_grade_workspace(work_dir)
@@ -512,6 +518,12 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     except Exception as e:
         _cleanup_grade_workspace(work_dir)
         return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        # 清理從 Supabase Storage 下載的暫存檔
+        try:
+            rag_zip_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     try:
         # 解析 rag_quiz_id，若為空則 0

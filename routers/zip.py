@@ -426,67 +426,79 @@ def build_rag_zip(body: PackRequest):
         raise HTTPException(status_code=404, detail="找不到該上傳的 ZIP，請先上傳或確認 rag_tab_id、person_id")
 
     try:
-        with zipfile.ZipFile(path, "r") as z:
-            folder_map = build_folder_map(z)
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="無法讀取該 ZIP 檔案")
-
-    packed = repack_tasks_to_zips(path, folder_map, body.rag_list)
-    if not packed:
-        raise HTTPException(status_code=400, detail="rag_list 為空或格式錯誤，例：220222+220301")
-
-    api_key = get_llm_api_key_for_person(pid)
-    if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="該使用者（person_id）尚未於個人設定填寫 LLM API Key，請至 User 設定",
-        )
-
-    outputs = []
-    for zip_bytes, filename in packed:
-        # 用 rag_list 衍生的檔名做 tab_id（如 220222_220301.zip -> 220222_220301），不再生成 UUID
-        repack_tab_id = Path(filename).stem if filename else None
-        if not repack_tab_id or "/" in repack_tab_id or "\\" in repack_tab_id:
-            repack_tab_id = str(uuid.uuid4())
-        tab_id = save_zip(
-            zip_bytes,
-            filename,
-            folder=FOLDER_REPACK,
-            person_id=pid,
-            parent_tab_id=body.rag_tab_id,
-            tab_id=repack_tab_id,
-        )
-        item = {
-            "unit_name": tab_id,
-            "filename": filename,
-        }
         try:
-            from utils.rag import make_rag_zip_from_zip_path
-            rag_path = get_zip_path(tab_id)
-            if rag_path and rag_path.exists():
-                rag_bytes = make_rag_zip_from_zip_path(
-                    rag_path,
-                    api_key,
-                    chunk_size=body.chunk_size,
-                    chunk_overlap=body.chunk_overlap,
-                )
-                # rag 檔名也依 rag_list，tab_id 加 _rag 以區分 repack
-                rag_tab_id = f"{tab_id}_rag"
-                save_zip(
-                    rag_bytes,
-                    f"{tab_id}.zip",
-                    folder=FOLDER_RAG,
-                    person_id=pid,
-                    parent_tab_id=body.rag_tab_id,
-                    tab_id=rag_tab_id,
-                )
-            else:
-                item["rag_error"] = "找不到 repack ZIP 路徑"
-        except ValueError as e:
-            item["rag_error"] = str(e)
-        except Exception as e:
-            item["rag_error"] = str(e)
-        outputs.append(item)
+            with zipfile.ZipFile(path, "r") as z:
+                folder_map = build_folder_map(z)
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=400, detail="無法讀取該 ZIP 檔案")
+
+        packed = repack_tasks_to_zips(path, folder_map, body.rag_list)
+        if not packed:
+            raise HTTPException(status_code=400, detail="rag_list 為空或格式錯誤，例：220222+220301")
+
+        api_key = get_llm_api_key_for_person(pid)
+        if not api_key:
+            raise HTTPException(
+                status_code=400,
+                detail="該使用者（person_id）尚未於個人設定填寫 LLM API Key，請至 User 設定",
+            )
+
+        outputs = []
+        for zip_bytes, filename in packed:
+            # 用 rag_list 衍生的檔名做 tab_id（如 220222_220301.zip -> 220222_220301），不再生成 UUID
+            repack_tab_id = Path(filename).stem if filename else None
+            if not repack_tab_id or "/" in repack_tab_id or "\\" in repack_tab_id:
+                repack_tab_id = str(uuid.uuid4())
+            tab_id = save_zip(
+                zip_bytes,
+                filename,
+                folder=FOLDER_REPACK,
+                person_id=pid,
+                parent_tab_id=body.rag_tab_id,
+                tab_id=repack_tab_id,
+            )
+            item = {
+                "unit_name": tab_id,
+                "filename": filename,
+            }
+            try:
+                from utils.rag import make_rag_zip_from_zip_path
+                rag_path = get_zip_path(tab_id)
+                if rag_path and rag_path.exists():
+                    try:
+                        rag_bytes = make_rag_zip_from_zip_path(
+                            rag_path,
+                            api_key,
+                            chunk_size=body.chunk_size,
+                            chunk_overlap=body.chunk_overlap,
+                        )
+                    finally:
+                        try:
+                            rag_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                    # rag 檔名也依 rag_list，tab_id 加 _rag 以區分 repack
+                    rag_tab_id = f"{tab_id}_rag"
+                    save_zip(
+                        rag_bytes,
+                        f"{tab_id}.zip",
+                        folder=FOLDER_RAG,
+                        person_id=pid,
+                        parent_tab_id=body.rag_tab_id,
+                        tab_id=rag_tab_id,
+                    )
+                else:
+                    item["rag_error"] = "找不到 repack ZIP 路徑"
+            except ValueError as e:
+                item["rag_error"] = str(e)
+            except Exception as e:
+                item["rag_error"] = str(e)
+            outputs.append(item)
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     response = {"source_rag_tab_id": body.rag_tab_id, "rag_list": body.rag_list, "outputs": outputs}
     try:
