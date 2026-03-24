@@ -501,7 +501,7 @@ def build_rag_zip(body: PackRequest):
             "system_prompt_instruction": body.system_prompt_instruction or "",
             "updated_at": now_utc_iso(),
         }
-        # llm_api_key 不寫入 Rag 表（該表無此欄位）；generate-quiz/quiz-grade 依 person_id 從 User 表取得
+        # llm_api_key 不寫入 Rag 表（該表無此欄位）；create-quiz/grade-quiz 依 person_id 從 User 表取得
         supabase.table("Rag").update(update_payload).eq("rag_tab_id", body.rag_tab_id).execute()
     except Exception:
         pass

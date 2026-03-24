@@ -54,7 +54,7 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 
 class GenerateQuizRequest(BaseModel):
     """
-    POST /rag/generate-quiz 請求 body。
+    POST /rag/create-quiz 請求 body。
     欄位順序與 Rag_Quiz 表一致：rag_id, rag_tab_id, quiz_level（出題成功另寫入 unit_name 等）。
     LLM API Key 依 Rag 的 person_id 從 User 表取得。
     """
@@ -69,7 +69,7 @@ class GenerateQuizRequest(BaseModel):
 
 class QuizGradeRequest(BaseModel):
     """
-    POST /rag/quiz-grade 請求 body。
+    POST /rag/grade-quiz 請求 body。
     欄位順序與 Rag_Answer 表一致：rag_id, rag_tab_id, rag_quiz_id, quiz_content, answer。
     LLM API Key 依 Rag 的 person_id 從 User 表取得。
     """
@@ -350,7 +350,7 @@ def _insert_exam_answer(result_dict: dict, student_answer: str, *, exam_id: int,
     return None
 
 
-@router.post("/generate-quiz")
+@router.post("/create-quiz", summary="Rag Create Quiz")
 def generate_quiz_api(body: GenerateQuizRequest):
     """
     傳入 rag_id（Rag 表主鍵）、rag_tab_id（選填）、quiz_level。
@@ -456,7 +456,7 @@ def generate_quiz_api(body: GenerateQuizRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/quiz-grade")
+@router.post("/grade-quiz", summary="Rag Grade Quiz")
 async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest):
     """
     傳入 rag_id（字串）、rag_tab_id（選填）、rag_quiz_id、quiz_content、answer。
