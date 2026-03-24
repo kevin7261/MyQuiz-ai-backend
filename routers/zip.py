@@ -2,8 +2,8 @@
 ZIP 與 RAG 相關 API 模組。
 提供：
 - GET /rag/for-exam：取得 for_exam=true 的 Rag
-- GET /rag/rags：列出 Rag 表（含 quizzes、answers）
-- POST /rag/create-rag：建立一筆 Rag
+- GET /rag/rags：列出 Rag 表（含 quizzes、answers）；query `local` 篩選 Rag.local，未傳時依連線是否本機判定
+- POST /rag/create-rag：建立一筆 Rag（可傳 local）
 - POST /rag/upload-zip：上傳 ZIP
 - POST /rag/build-rag-zip：依 rag_list 打包並建 RAG
 - PATCH /rag/for-exam/{rag_tab_id}：設為供測驗使用
@@ -23,8 +23,8 @@ from pathlib import Path
 # 引入 Any 型別
 from typing import Any
 
-# 引入 FastAPI 的 APIRouter、HTTPException、UploadFile、File、Form、Header、PathParam
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header, Path as PathParam
+# 引入 FastAPI 的 APIRouter、HTTPException、UploadFile、File、Form、Header、PathParam、Query、Request
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header, Path as PathParam, Query, Request
 # 引入 Pydantic 的 BaseModel、Field
 from pydantic import BaseModel, Field
 
@@ -67,6 +67,7 @@ def _rag_default_row(
     rag_name: str | None = None,
     system_prompt_instruction: str | None = None,
     file_metadata: Any = None,
+    local: bool = False,
 ) -> dict[str, Any]:
     """Rag 表一筆新增時的預設欄位，供 create_rag 使用。"""
     row: dict[str, Any] = {
@@ -77,6 +78,7 @@ def _rag_default_row(
         "chunk_size": 1000,
         "chunk_overlap": 200,
         "for_exam": False,
+        "local": local,
         "deleted": False,
         "updated_at": now_utc_iso(),
     }
@@ -89,12 +91,33 @@ def _rag_default_row(
     return row
 
 
-def _rag_table_select(select_columns: str = "*", exclude_deleted: bool = False) -> list[dict]:
-    """查詢 Rag 表全部列。回傳 list of dict。（表名為 public.Rag）exclude_deleted=True 時僅回傳 deleted=False。"""
+def _client_requests_local_rag(request: Request) -> bool:
+    """依連線來源是否本機回傳對應的 Rag.local 篩選值。優先 X-Forwarded-For 第一跳，否則 request.client.host。"""
+    host = ""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        host = xff.split(",")[0].strip()
+    elif request.client:
+        host = (request.client.host or "").strip()
+    host = host.lower()
+    if host.startswith("::ffff:"):
+        host = host[7:]
+    return host in ("127.0.0.1", "localhost", "::1")
+
+
+def _rag_table_select(
+    select_columns: str = "*",
+    exclude_deleted: bool = False,
+    *,
+    local_match: bool | None = None,
+) -> list[dict]:
+    """查詢 Rag 表全部列。回傳 list of dict。（表名為 public.Rag）exclude_deleted=True 時僅回傳 deleted=False。local_match 若指定則僅回傳 Rag.local 與其相符的列。"""
     supabase = get_supabase()
     q = supabase.table("Rag").select(select_columns)
     if exclude_deleted:
         q = q.eq("deleted", False)
+    if local_match is not None:
+        q = q.eq("local", local_match)
     resp = q.execute()
     return resp.data or []
 
@@ -136,10 +159,11 @@ class ListRagResponse(BaseModel):
 
 
 class CreateRagRequest(BaseModel):
-    """POST /rag/create-rag：只建立一筆 Rag 資料。欄位順序與 Rag 表一致：rag_tab_id, person_id, rag_name。system_prompt_instruction 請在 build-rag-zip 傳入。"""
+    """POST /rag/create-rag：只建立一筆 Rag 資料。欄位順序與 Rag 表一致：rag_tab_id, person_id, rag_name, local。system_prompt_instruction 請在 build-rag-zip 傳入。"""
     rag_tab_id: str = Field(..., description="Rag 的 tab 識別，對應 Rag 表 rag_tab_id 欄位")
     person_id: str = Field(..., description="使用者/路徑識別")
     rag_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 rag_name 欄位")
+    local: bool = Field(False, description="是否為本機 RAG，寫入 Rag 表 local 欄位")
 
 
 class PackRequest(BaseModel):
@@ -208,14 +232,22 @@ def get_for_exam_rag():
 
 
 @router.get("/rags", response_model=ListRagResponse)
-def list_rag():
+def list_rag(
+    request: Request,
+    local: bool | None = Query(
+        None,
+        description="僅回傳 Rag.local 與此值相同的列。未傳時：連線來源為 127.0.0.1、localhost、::1 視為 true，否則 false（與前端在本機開發傳 true、正式環境傳 false 一致）",
+    ),
+):
     """
-    列出 Rag 表內容，僅回傳 deleted=False 的資料；每筆 Rag 含表上所有欄位（含 for_exam），並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
+    列出 Rag 表內容，僅回傳 deleted=False 的資料，且 Rag.local 須與 query `local` 相符（未傳 `local` 時依連線是否本機自動判定）。
+    每筆 Rag 含表上所有欄位（含 for_exam），並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
     關聯方式：quizzes 下每筆 quiz 帶 answers（依 rag_quiz_id 關聯，每題僅一筆）；頂層 answers 為該 rag 下全部答案的扁平列表。
     LLM API Key 依 person_id 從 User 表取得。
     """
     try:
-        data = _rag_table_select(RAG_SELECT_ALL, exclude_deleted=True)
+        local_filter = local if local is not None else _client_requests_local_rag(request)
+        data = _rag_table_select(RAG_SELECT_ALL, exclude_deleted=True, local_match=local_filter)
         rag_ids = []
         for row in data:
             rid = row.get("rag_id")
@@ -261,8 +293,8 @@ def list_rag():
 @router.post("/create-rag")
 def create_rag(body: CreateRagRequest):
     """
-    只建立一筆 Rag 資料，接受 rag_tab_id、person_id、rag_name（必填）。system_prompt_instruction 請在 build-rag-zip 傳入。
-    回傳新增的 rag_id、rag_tab_id、person_id、rag_name、created_at。
+    只建立一筆 Rag 資料，接受 rag_tab_id、person_id、rag_name（必填）、local（選填，預設 false）。system_prompt_instruction 請在 build-rag-zip 傳入。
+    回傳新增的 rag_id、rag_tab_id、person_id、rag_name、local、created_at。
     """
     fid = (body.rag_tab_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
@@ -277,7 +309,15 @@ def create_rag(body: CreateRagRequest):
         supabase = get_supabase()
         r = (
             supabase.table("Rag")
-            .insert(_rag_default_row(fid, person_id=pid, rag_name=rag_name, file_metadata=None))
+            .insert(
+                _rag_default_row(
+                    fid,
+                    person_id=pid,
+                    rag_name=rag_name,
+                    file_metadata=None,
+                    local=body.local,
+                )
+            )
             .execute()
         )
         if not r.data or len(r.data) == 0:
@@ -288,6 +328,7 @@ def create_rag(body: CreateRagRequest):
             "rag_tab_id": row["rag_tab_id"],
             "person_id": row.get("person_id"),
             "rag_name": row.get("rag_name"),
+            "local": row.get("local"),
             "created_at": row.get("created_at"),
         }
     except HTTPException:
