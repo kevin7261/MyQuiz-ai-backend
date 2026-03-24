@@ -54,41 +54,36 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 
 class GenerateQuizRequest(BaseModel):
     """
-    POST /rag/create-quiz 請求 body。
-    欄位順序與 Rag_Quiz 表一致：rag_id, rag_tab_id, quiz_level、unit_name（選填，出題成功另寫入 unit_name 等）。
-    LLM API Key 依 Rag 的 person_id 從 User 表取得。
+    POST /rag/create-quiz 請求 body；欄位順序對齊 public.Rag_Quiz 中由客戶端提供的子集：
+    rag_id, rag_tab_id, person_id（後端自 Rag 帶入）, unit_name, file_name（後端帶入）, quiz_level, …
     """
 
-    # Rag 表主鍵；程式依該筆 rag_metadata.outputs 查找 RAG ZIP
     rag_id: int = Field(0, description="Rag 表主鍵 rag_id；程式依該筆 rag_metadata.outputs 查找 RAG ZIP")
-    # 選填，Rag 表 rag_tab_id（來源 upload 識別）
-    rag_tab_id: int = Field(0, description="選填，Rag 表 rag_tab_id（來源 upload 識別）")
-    # 難度等級，會寫入 Rag_Quiz 表 quiz_level
-    quiz_level: int = Field(0, description="難度等級，會寫入 Rag_Quiz 表 quiz_level")
-    # 選填；指定 outputs 中哪一個上傳單元（與 build-rag-zip 的 outputs[].unit_name 一致）
+    rag_tab_id: str = Field("", description="選填；覆寫寫入 Rag_Quiz.rag_tab_id，預設沿用 Rag 列之 rag_tab_id")
     unit_name: str = Field(
         "",
         description="選填；指定 rag_metadata.outputs 中某一上傳單元（與 POST /rag/build-rag-zip 的 outputs[].unit_name 一致）。未傳或空字串則使用第一筆輸出",
     )
+    quiz_level: int = Field(0, description="難度等級，寫入 Rag_Quiz.quiz_level")
 
 
 class QuizGradeRequest(BaseModel):
     """
     POST /rag/grade-quiz 請求 body。
-    欄位順序與 Rag_Answer 表一致：rag_id, rag_tab_id, rag_quiz_id, quiz_content, answer。
-    LLM API Key 依 Rag 的 person_id 從 User 表取得。
+    寫入 public.Rag_Answer 時對應：rag_id, rag_tab_id, rag_quiz_id, person_id（後端自 Rag 帶入）,
+    student_answer（本請求欄位名為 answer）, answer_grade, answer_feedback_metadata, answer_metadata。
     """
 
     # Rag 表主鍵（字串，會轉成數字查詢）
     rag_id: str = Field("", description="Rag 表主鍵 rag_id（字串，會轉成數字查詢）")
-    # 選填，Rag 表 rag_tab_id（來源識別）
-    rag_tab_id: str = Field("", description="選填，Rag 表 rag_tab_id（來源識別）")
+    # 選填；目前評分路徑仍以 Rag 列之 rag_tab_id 寫入 Rag_Answer（保留欄位供前端一致帶入）
+    rag_tab_id: str = Field("", description="選填；Rag_Answer.rag_tab_id 由後端取自 Rag 列")
     # 選填，寫入 Rag_Answer 表 rag_quiz_id
-    rag_quiz_id: str = Field("", description="選填，寫入 Rag_Answer 表 rag_quiz_id")
+    rag_quiz_id: str = Field("", description="選填，寫入 Rag_Answer.rag_quiz_id")
     # 測驗題目內容（與 Rag_Quiz 表 quiz_content 一致）
     quiz_content: str = Field(..., description="測驗題目內容（與 Rag_Quiz 表 quiz_content 一致）")
-    # 學生回答內容
-    answer: str = Field(..., description="學生回答")
+    # 學生回答內容（對應資料庫欄位 student_answer）
+    answer: str = Field(..., description="學生回答（寫入 Rag_Answer.student_answer）")
 
 
 class RubricItem(BaseModel):
@@ -291,68 +286,52 @@ def _run_grade_job_background(
         _cleanup_grade_workspace(work_dir)
 
 
-def _insert_rag_answer(result_dict: dict, student_answer: str, *, rag_id: int, rag_tab_id: str, person_id: str, rag_quiz_id: int) -> tuple[str, int] | None:
-    """寫入 Rag_Answer 表，回傳 ("rag_answer_id", id) 或 None。"""
+def _insert_answer_table_row(table: str, id_column: str, row: dict[str, Any]) -> tuple[str, int] | None:
+    """寫入 *Answer 表一列；成功回傳 (id_column 名稱, id)，失敗回傳 None（與背景評分靜默失敗策略一致）。"""
     try:
-        # 取得 Supabase 客戶端
         supabase = get_supabase()
-        # 將 result_dict 轉成 JSON 字串存入 answer_feedback_metadata
-        answer_feedback_json = json.dumps(result_dict, ensure_ascii=False)
-        # 組裝要寫入 Rag_Answer 的列
-        answer_row = {
-            "rag_id": rag_id,  # Rag 主鍵
-            "rag_tab_id": rag_tab_id or "",  # Rag tab 識別
-            "rag_quiz_id": rag_quiz_id,  # 題目主鍵
-            "person_id": person_id or "",  # 使用者識別
-            "student_answer": student_answer or "",  # 學生回答內容
-            "answer_grade": result_dict.get("score", 0),  # 分數
-            "answer_feedback_metadata": answer_feedback_json,  # JSON 字串格式的完整回饋
-            "answer_metadata": result_dict,  # dict 格式的完整回饋
-        }
-        # 執行 insert 並取得回傳
-        ins = supabase.table("Rag_Answer").insert(answer_row).execute()
-        # 若有新增資料
+        ins = supabase.table(table).insert(row).execute()
         if ins.data and len(ins.data) > 0:
-            # 取得 rag_answer_id
-            rid = ins.data[0].get("rag_answer_id")
-            # 若 id 不為 None，回傳 ("rag_answer_id", id)
+            rid = ins.data[0].get(id_column)
             if rid is not None:
-                return ("rag_answer_id", int(rid))
+                return (id_column, int(rid))
     except Exception:
-        # 靜默忽略任何異常
         pass
-    # 寫入失敗或無 id 時回傳 None
     return None
+
+
+def _answer_row_payload(result_dict: dict, student_answer: str) -> dict[str, Any]:
+    """Rag_Answer / Exam_Answer 共用的評分結果欄位（student_answer, answer_grade, answer_feedback_metadata, answer_metadata）。"""
+    return {
+        "student_answer": student_answer or "",
+        "answer_grade": result_dict.get("score", 0),
+        "answer_feedback_metadata": json.dumps(result_dict, ensure_ascii=False),
+        "answer_metadata": result_dict,
+    }
+
+
+def _insert_rag_answer(result_dict: dict, student_answer: str, *, rag_id: int, rag_tab_id: str, person_id: str, rag_quiz_id: int) -> tuple[str, int] | None:
+    """寫入 public.Rag_Answer，回傳 ("rag_answer_id", id) 或 None。"""
+    row = {
+        "rag_id": rag_id,
+        "rag_tab_id": rag_tab_id or "",
+        "rag_quiz_id": rag_quiz_id,
+        "person_id": person_id or "",
+        **_answer_row_payload(result_dict, student_answer),
+    }
+    return _insert_answer_table_row("Rag_Answer", "rag_answer_id", row)
 
 
 def _insert_exam_answer(result_dict: dict, student_answer: str, *, exam_id: int, exam_tab_id: str, person_id: str, exam_quiz_id: int) -> tuple[str, int] | None:
-    """寫入 Exam_Answer 表，回傳 ("exam_answer_id", id) 或 None。"""
-    try:
-        # 取得 Supabase 客戶端
-        supabase = get_supabase()
-        # 將 result_dict 轉成 JSON 字串
-        answer_feedback_json = json.dumps(result_dict, ensure_ascii=False)
-        # 組裝要寫入 Exam_Answer 的列
-        answer_row = {
-            "exam_id": exam_id,  # Exam 主鍵
-            "exam_tab_id": exam_tab_id or "",  # Exam tab 識別
-            "exam_quiz_id": exam_quiz_id,  # 題目主鍵
-            "person_id": person_id or "",  # 使用者識別
-            "student_answer": student_answer or "",  # 學生回答內容
-            "answer_grade": result_dict.get("score", 0),  # 分數
-            "answer_feedback_metadata": answer_feedback_json,  # JSON 字串格式回饋
-            "answer_metadata": result_dict,  # dict 格式回饋
-        }
-        # 執行 insert
-        ins = supabase.table("Exam_Answer").insert(answer_row).execute()
-        # 若有新增資料
-        if ins.data and len(ins.data) > 0:
-            rid = ins.data[0].get("exam_answer_id")
-            if rid is not None:
-                return ("exam_answer_id", int(rid))
-    except Exception:
-        pass
-    return None
+    """寫入 public.Exam_Answer，回傳 ("exam_answer_id", id) 或 None。"""
+    row = {
+        "exam_id": exam_id,
+        "exam_tab_id": exam_tab_id or "",
+        "exam_quiz_id": exam_quiz_id,
+        "person_id": person_id or "",
+        **_answer_row_payload(result_dict, student_answer),
+    }
+    return _insert_answer_table_row("Exam_Answer", "exam_answer_id", row)
 
 
 @router.post("/create-quiz", summary="Rag Create Quiz")
@@ -390,8 +369,10 @@ def generate_quiz_api(body: GenerateQuizRequest):
             status_code=400,
             detail="該使用者（person_id）尚未於個人設定填寫 LLM API Key，請至 User 設定",
         )
-    # 取得來源 rag_tab_id（用於寫入 Rag_Quiz）
+    # 寫入 Rag_Quiz.rag_tab_id：可請求覆寫，否則用該筆 Rag 的 rag_tab_id（varchar）
     source_rag_tab_id = (row.get("rag_tab_id") or "").strip()
+    override_rag_tab = (body.rag_tab_id or "").strip()
+    quiz_rag_tab_id = override_rag_tab if override_rag_tab else source_rag_tab_id
     # 取得出題系統指令
     system_prompt_instruction = (row.get("system_prompt_instruction") or "").strip()
     # 若未設定，拋出 400
@@ -427,20 +408,19 @@ def generate_quiz_api(body: GenerateQuizRequest):
         }
         # 取得 rag_id 用於寫入 Rag_Quiz
         rag_id = int(row.get("rag_id") or 0) if isinstance(row, dict) else 0
-        # 組裝 Rag_Quiz 表要寫入的列
+        # 組裝 Rag_Quiz 表要寫入的列（鍵順序同 public.Rag_Quiz，不含 rag_quiz_id / 時間戳）
         quiz_row: dict[str, Any] = {
-            "rag_id": rag_id,  # Rag 主鍵
-            "rag_tab_id": source_rag_tab_id,  # 來源 upload 的 rag_tab_id
-            "person_id": row.get("person_id") or "",  # 使用者識別
-            "unit_name": stem,  # Rag_Quiz：repack 單元名（與 outputs[].unit_name 一致）
-            "file_name": file_name,  # 對應 RAG 向量庫 ZIP 檔名（與 Exam_Quiz 一致）
-            "quiz_level": body.quiz_level,  # 難度等級
-            "quiz_content": result.get("quiz_content") or "",  # 題目內容
-            "quiz_hint": result.get("quiz_hint") or "",  # 提示
-            "reference_answer": result.get("reference_answer") or "",  # 參考答案
+            "rag_id": rag_id,
+            "rag_tab_id": quiz_rag_tab_id,
+            "person_id": (row.get("person_id") or "").strip(),
+            "unit_name": stem,
+            "file_name": file_name,
+            "quiz_level": body.quiz_level,
+            "quiz_content": result.get("quiz_content") or "",
+            "quiz_hint": result.get("quiz_hint") or "",
+            "reference_answer": result.get("reference_answer") or "",
+            "quiz_metadata": result,
         }
-        # 完整 API 回傳內容寫入 quiz_metadata（與 file_metadata、rag_metadata 模式一致）
-        quiz_row["quiz_metadata"] = result
         try:
             # 執行 insert 寫入 Rag_Quiz
             quiz_resp = supabase.table("Rag_Quiz").insert(quiz_row).execute()
@@ -449,7 +429,7 @@ def generate_quiz_api(body: GenerateQuizRequest):
                 # 將 rag_quiz_id 加入 result
                 result["rag_quiz_id"] = quiz_resp.data[0].get("rag_quiz_id")
                 # 更新 quiz_metadata 為含 rag_quiz_id 的完整 result
-                supabase.table("Rag_Quiz").update({"quiz_metadata": result}).eq("rag_quiz_id", result["rag_quiz_id"]).eq("rag_tab_id", source_rag_tab_id).execute()
+                supabase.table("Rag_Quiz").update({"quiz_metadata": result}).eq("rag_quiz_id", result["rag_quiz_id"]).eq("rag_id", rag_id).eq("rag_tab_id", quiz_rag_tab_id).execute()
         except Exception:
             pass  # 不因寫入 Rag_Quiz 失敗而影響回傳出題結果
         # 將 result 轉成 JSON bytes，以 UTF-8 編碼

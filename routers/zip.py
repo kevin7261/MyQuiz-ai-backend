@@ -64,30 +64,28 @@ RAG_SELECT_ALL = "*"
 def _rag_default_row(
     rag_tab_id: str,
     *,
-    person_id: str | None = None,
     rag_name: str | None = None,
+    person_id: str | None = None,
     system_prompt_instruction: str | None = None,
     file_metadata: Any = None,
     local: bool = False,
 ) -> dict[str, Any]:
-    """Rag 表一筆新增時的預設欄位，供 create_rag 使用。"""
+    """Rag 表一筆新增時的預設欄位；鍵順序同 public.Rag（rag_tab_id→…→updated_at，不含 rag_id/created_at）。"""
     row: dict[str, Any] = {
         "rag_tab_id": rag_tab_id,
+        "rag_name": rag_name if rag_name is not None else "",
+        "person_id": person_id if person_id is not None else "",
         "file_metadata": file_metadata,
         "rag_list": "",
-        "rag_metadata": None,
-        "chunk_size": 1000,
-        "chunk_overlap": 200,
-        "local": local,
-        "deleted": False,
-        "updated_at": now_utc_iso(),
     }
-    if person_id is not None:
-        row["person_id"] = person_id
-    if rag_name is not None:
-        row["rag_name"] = rag_name
     if system_prompt_instruction is not None:
         row["system_prompt_instruction"] = system_prompt_instruction
+    row["rag_metadata"] = None
+    row["chunk_size"] = 1000
+    row["chunk_overlap"] = 200
+    row["local"] = local
+    row["deleted"] = False
+    row["updated_at"] = now_utc_iso()
     return row
 
 
@@ -145,21 +143,21 @@ class ListRagResponse(BaseModel):
 
 
 class CreateRagRequest(BaseModel):
-    """POST /rag/create-rag：只建立一筆 Rag 資料。欄位順序與 Rag 表一致：rag_tab_id, person_id, rag_name, local。system_prompt_instruction 請在 build-rag-zip 傳入。"""
+    """POST /rag/create-rag：欄位順序同 public.Rag（rag_tab_id, rag_name, person_id, local；其餘欄位於 upload / build 寫入）。"""
     rag_tab_id: str = Field(..., description="Rag 的 tab 識別，對應 Rag 表 rag_tab_id 欄位")
-    person_id: str = Field(..., description="使用者/路徑識別")
     rag_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 rag_name 欄位")
+    person_id: str = Field(..., description="使用者/路徑識別")
     local: bool = Field(False, description="是否為本機 RAG，寫入 Rag 表 local 欄位")
 
 
 class PackRequest(BaseModel):
-    """指定先前上傳的 ZIP（rag_tab_id）與要打包的資料夾規則。欄位順序與 Rag 表一致：rag_tab_id, person_id, rag_list；其後為 Rag 表 chunk_size, chunk_overlap, system_prompt_instruction。LLM API Key 依 person_id 從 User 表取得。"""
+    """欄位順序對應 public.Rag 中本請求會更新的區段：rag_tab_id, person_id, rag_list, system_prompt_instruction, chunk_size, chunk_overlap（另寫 rag_metadata；比對 person_id + rag_tab_id 更新）。"""
     rag_tab_id: str
     person_id: str  # 與 upload-zip 一致，上傳 ZIP 所在路徑的 person_id
     rag_list: str  # 寫入 Rag 表 rag_list 欄位；例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
+    system_prompt_instruction: str = ""  # 出題系統指令，寫入 Rag 表 system_prompt_instruction 欄位
     chunk_size: int = 1000  # 寫入 Rag 表 chunk_size 欄位
     chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
-    system_prompt_instruction: str = ""  # 出題系統指令，寫入 Rag 表 system_prompt_instruction 欄位
 
 
 @router.get("/for-exam")
@@ -310,8 +308,8 @@ def create_rag(body: CreateRagRequest):
             .insert(
                 _rag_default_row(
                     fid,
-                    person_id=pid,
                     rag_name=rag_name,
+                    person_id=pid,
                     file_metadata=None,
                     local=body.local,
                 )
@@ -324,8 +322,8 @@ def create_rag(body: CreateRagRequest):
         return {
             "rag_id": row["rag_id"],
             "rag_tab_id": row["rag_tab_id"],
-            "person_id": row.get("person_id"),
             "rag_name": row.get("rag_name"),
+            "person_id": row.get("person_id"),
             "local": row.get("local"),
             "created_at": row.get("created_at"),
         }
@@ -495,14 +493,14 @@ def build_rag_zip(body: PackRequest):
         supabase = get_supabase()
         update_payload = {
             "rag_list": body.rag_list,
+            "system_prompt_instruction": body.system_prompt_instruction or "",
             "rag_metadata": response,
             "chunk_size": body.chunk_size,
             "chunk_overlap": body.chunk_overlap,
-            "system_prompt_instruction": body.system_prompt_instruction or "",
             "updated_at": now_utc_iso(),
         }
         # llm_api_key 不寫入 Rag 表（該表無此欄位）；create-quiz/grade-quiz 依 person_id 從 User 表取得
-        supabase.table("Rag").update(update_payload).eq("rag_tab_id", body.rag_tab_id).execute()
+        supabase.table("Rag").update(update_payload).eq("rag_tab_id", body.rag_tab_id).eq("person_id", pid).execute()
     except Exception:
         pass
     return response

@@ -9,6 +9,8 @@ Exam API 模組。對應 public.Exam / Exam_Quiz / Exam_Answer 表。
 
 # 引入 json 用於序列化回傳
 import json
+# 引入 logging 用於列出 Exam 錯誤紀錄（與 GET /rag/rags 一致）
+import logging
 # 引入 shutil 用於複製檔案
 import shutil
 # 引入 tempfile 用於暫存目錄
@@ -52,6 +54,25 @@ router = APIRouter(prefix="/exam", tags=["exam"])
 
 
 # --- GET /exam/exams（格式同 /rag/rags）---
+
+
+def _exam_default_row(
+    exam_tab_id: str,
+    *,
+    exam_name: str = "",
+    person_id: str = "",
+    local: bool = False,
+) -> dict[str, Any]:
+    """Exam 表新增一筆時的預設欄位；鍵順序同 public.Exam（不含 exam_id/created_at）。"""
+    return {
+        "exam_tab_id": exam_tab_id,
+        "exam_name": exam_name,
+        "person_id": person_id,
+        "local": local,
+        "deleted": False,
+        "updated_at": now_utc_iso(),
+    }
+
 
 def _exams_table_select(
     exclude_deleted: bool = True,
@@ -212,38 +233,39 @@ def list_exams(
         data = to_json_safe(data)
         return ListExamResponse(exams=data, count=len(data))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.exception("GET /exam/exams 錯誤")
+        raise HTTPException(status_code=500, detail=f"列出 Exam 失敗: {e!s}")
 
 
 class CreateExamRequest(BaseModel):
-    """POST /exam/create-exam 請求 body。欄位順序與 Exam 表一致：exam_tab_id, person_id, exam_name, local（用法同 POST /rag/create-rag）。"""
+    """POST /exam/create-exam：欄位順序同 public.Exam（exam_tab_id, exam_name, person_id, local；exam_id／created_at 由資料庫產生；insert 另帶 deleted, updated_at）。"""
 
     exam_tab_id: str | None = Field(None, description="選填；未傳則由後端產生（格式同 tab_id）")
-    person_id: str = Field("", description="選填，寫入 Exam 表 person_id")
     exam_name: str = Field("", description="測驗名稱，寫入 Exam 表 exam_name")
+    person_id: str = Field("", description="選填，寫入 Exam 表 person_id")
     local: bool = Field(False, description="是否為本機 Exam，寫入 Exam 表 local 欄位")
 
 
 class ExamGenerateQuizRequest(BaseModel):
-    """POST /exam/create-quiz 請求 body。exam_id／exam_tab_id、quiz_level；unit_name 選填，對應 build-rag-zip 回傳的 outputs[].unit_name（上傳單元）。LLM API Key 由系統設定取得。"""
+    """POST /exam/create-quiz；欄位順序對齊 public.Exam_Quiz 中由客戶端提供的子集：exam_id, exam_tab_id, person_id（後端自 Exam 帶入）, rag_id（後端帶入）, unit_name, …"""
 
     exam_id: int = Field(0, description="Exam 表主鍵 exam_id")
-    exam_tab_id: str | int = Field("", description="create-exam 回傳的 exam_tab_id（Exam 表識別）；與 exam_id 二擇一，可傳字串或 0")
-    quiz_level: int = Field(0, description="難度等級，寫入 Exam_Quiz 表 quiz_level")
+    exam_tab_id: str = Field("", description="create-exam 回傳的 exam_tab_id（varchar）；與 exam_id 二擇一")
     unit_name: str = Field(
         "",
         description="選填；指定供測驗 Rag 的 rag_metadata.outputs 中某一上傳單元（與 POST /rag/build-rag-zip 的 outputs[].unit_name 一致）。未傳或空字串則使用第一筆輸出",
     )
+    quiz_level: int = Field(0, description="難度等級，寫入 Exam_Quiz.quiz_level")
 
 
 class ExamQuizGradeRequest(BaseModel):
-    """POST /exam/grade-quiz 請求 body。欄位順序與 Exam_Answer 表一致：exam_id, exam_tab_id, exam_quiz_id, quiz_content, answer。LLM API Key 由系統設定（/system-settings/llm-api-key）取得，表僅一筆。"""
+    """POST /exam/grade-quiz：寫入 public.Exam_Answer 時對應 exam_id, exam_tab_id, exam_quiz_id, person_id（後端自 Exam 帶入）, student_answer（請求欄位名為 answer）, answer_grade, answer_feedback_metadata, answer_metadata。LLM API Key 由系統設定取得。"""
 
     exam_id: str = Field("", description="Exam 表主鍵 exam_id（字串）")
-    exam_tab_id: str = Field("", description="create-exam 回傳的 exam_tab_id；與 exam_id 二擇一")
-    exam_quiz_id: str = Field("", description="選填，寫入 Exam_Answer 表 exam_quiz_id")
-    quiz_content: str = Field(..., description="測驗題目內容（與 Exam_Quiz 表 quiz_content 一致）")
-    answer: str = Field(..., description="學生回答")
+    exam_tab_id: str = Field("", description="create-exam 回傳的 exam_tab_id（varchar）；與 exam_id 二擇一")
+    exam_quiz_id: str = Field("", description="選填，寫入 Exam_Answer.exam_quiz_id")
+    quiz_content: str = Field(..., description="測驗題目內容（與 Exam_Quiz.quiz_content 一致）")
+    answer: str = Field(..., description="學生回答（寫入 Exam_Answer.student_answer）")
 
 
 # 非同步評分結果暫存：job_id -> {"status": "pending"|"ready"|"error", "result": dict|None, "error": str|None}
@@ -266,14 +288,18 @@ def create_exam(body: CreateExamRequest):
     exam_name = (body.exam_name or "").strip()
 
     supabase = get_supabase()
-    insert_row = {
-        "exam_tab_id": fid,
-        "person_id": person_id,
-        "exam_name": exam_name,
-        "local": body.local,
-        "deleted": False,
-    }
-    ins = supabase.table("Exam").insert(insert_row).execute()
+    ins = (
+        supabase.table("Exam")
+        .insert(
+            _exam_default_row(
+                fid,
+                exam_name=exam_name,
+                person_id=person_id,
+                local=body.local,
+            )
+        )
+        .execute()
+    )
     if not ins.data or len(ins.data) == 0:
         raise HTTPException(status_code=500, detail="建立 Exam 失敗")
 
@@ -281,8 +307,8 @@ def create_exam(body: CreateExamRequest):
     return {
         "exam_id": row.get("exam_id"),
         "exam_tab_id": row.get("exam_tab_id", fid),
-        "person_id": row.get("person_id", person_id),
         "exam_name": row.get("exam_name", exam_name),
+        "person_id": row.get("person_id", person_id),
         "local": row.get("local", body.local),
         "created_at": row.get("created_at"),
     }
@@ -325,8 +351,7 @@ def exam_generate_quiz(request: Request, body: ExamGenerateQuizRequest):
     """
     supabase = get_supabase()
     exam_id = body.exam_id or 0
-    raw_tab = body.exam_tab_id
-    exam_tab_id = (raw_tab or "").strip() if isinstance(raw_tab, str) else (str(raw_tab).strip() if raw_tab else "")
+    exam_tab_id = (body.exam_tab_id or "").strip()
     if exam_id <= 0 and (not exam_tab_id or exam_tab_id == "0"):
         raise HTTPException(status_code=400, detail="請傳入 exam_id 或 exam_tab_id")
 
@@ -393,6 +418,7 @@ def exam_generate_quiz(request: Request, body: ExamGenerateQuizRequest):
         }
 
         file_name = f"{stem}.zip"
+        # 鍵順序同 public.Exam_Quiz（不含 exam_quiz_id / 時間戳）
         quiz_row: dict[str, Any] = {
             "exam_id": exam_id,
             "exam_tab_id": exam_tab_id,
@@ -404,12 +430,15 @@ def exam_generate_quiz(request: Request, body: ExamGenerateQuizRequest):
             "quiz_content": result.get("quiz_content") or "",
             "quiz_hint": result.get("quiz_hint") or "",
             "reference_answer": result.get("reference_answer") or "",
+            "quiz_metadata": result,
         }
-        quiz_row["quiz_metadata"] = result
-        quiz_resp = supabase.table("Exam_Quiz").insert(quiz_row).execute()
-        if quiz_resp.data and len(quiz_resp.data) > 0:
-            result["exam_quiz_id"] = quiz_resp.data[0].get("exam_quiz_id")
-            supabase.table("Exam_Quiz").update({"quiz_metadata": result}).eq("exam_quiz_id", result["exam_quiz_id"]).eq("exam_tab_id", exam_tab_id).execute()
+        try:
+            quiz_resp = supabase.table("Exam_Quiz").insert(quiz_row).execute()
+            if quiz_resp.data and len(quiz_resp.data) > 0:
+                result["exam_quiz_id"] = quiz_resp.data[0].get("exam_quiz_id")
+                supabase.table("Exam_Quiz").update({"quiz_metadata": result}).eq("exam_quiz_id", result["exam_quiz_id"]).eq("exam_id", exam_id).eq("exam_tab_id", exam_tab_id).execute()
+        except Exception:
+            pass  # 與 POST /rag/create-quiz 相同：寫入題庫失敗仍回傳出題 JSON
         body_bytes = json.dumps(result, ensure_ascii=False).encode("utf-8")
         return Response(content=body_bytes, media_type="application/json; charset=utf-8")
     except ValueError as e:
@@ -486,6 +515,7 @@ async def exam_grade_submission(request: Request, background_tasks: BackgroundTa
             supabase.table("Exam_Quiz")
             .select("unit_name")
             .eq("exam_quiz_id", exam_quiz_id_int)
+            .eq("exam_id", exam_id)
             .eq("exam_tab_id", exam_tab_id)
             .limit(1)
             .execute()
