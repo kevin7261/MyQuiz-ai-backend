@@ -1,7 +1,7 @@
 """
 Exam API 模組。對應 public.Exam / Exam_Quiz / Exam_Answer 表。
 - GET /exam/exams：列出 Exam 表（格式同 GET /rag/rags），query `local` 篩選 Exam.local，未傳時依連線是否本機判定；每筆含 quizzes（每題帶 answers）與頂層 answers。
-- POST /exam/create-exam：建立一筆 Exam 資料（可傳 local，用法同 POST /rag/create-rag）。
+- POST /exam/create-exam：建立一筆 Exam 資料（可傳 local，用法同 POST /rag/create-unit）。
 - POST /exam/create-quiz：依 exam_tab_id 與 rag_id 查找 RAG ZIP 出題，寫入 Exam_Quiz。
 - POST /exam/grade-quiz：非同步評分，寫入 Exam_Answer；輪詢 GET /exam/quiz-grade-result/{job_id}。
 - POST /exam/delete/{exam_tab_id}：軟刪除該筆 Exam（deleted=true）。
@@ -275,7 +275,7 @@ _exam_grade_job_results: dict[str, dict[str, Any]] = {}
 @router.post("/create-exam")
 def create_exam(body: CreateExamRequest):
     """
-    建立一筆 Exam 資料。exam_tab_id 可選，未傳則由後端產生；local 選填，預設 false（與 create-rag 一致）。
+    建立一筆 Exam 資料。exam_tab_id 可選，未傳則由後端產生；local 選填，預設 false（與 create-unit 一致）。
     回傳 exam_id、exam_tab_id、person_id、exam_name、local、created_at。
     """
     fid = (body.exam_tab_id or "").strip()

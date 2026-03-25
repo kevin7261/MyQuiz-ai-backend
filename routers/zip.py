@@ -3,7 +3,7 @@ ZIP 與 RAG 相關 API 模組。
 提供：
 - GET /rag/for-exam：依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id，回傳對應 Rag
 - GET /rag/rags：列出 Rag 表（含 quizzes、answers）；query `local` 篩選 Rag.local，未傳時依連線是否本機判定
-- POST /rag/create-rag：建立一筆 Rag（可傳 local）
+- POST /rag/create-unit：建立一筆 Rag（可傳 local）
 - POST /rag/upload-zip：上傳 ZIP
 - POST /rag/build-rag-zip：依 rag_list 打包並建 RAG
 - POST /rag/delete/{rag_tab_id}：軟刪除並刪除儲存
@@ -143,7 +143,7 @@ class ListRagResponse(BaseModel):
 
 
 class CreateRagRequest(BaseModel):
-    """POST /rag/create-rag：欄位順序同 public.Rag（rag_tab_id, rag_name, person_id, local；其餘欄位於 upload / build 寫入）。"""
+    """POST /rag/create-unit：欄位順序同 public.Rag（rag_tab_id, rag_name, person_id, local；其餘欄位於 upload / build 寫入）。"""
     rag_tab_id: str = Field(..., description="Rag 的 tab 識別，對應 Rag 表 rag_tab_id 欄位")
     rag_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 rag_name 欄位")
     person_id: str = Field(..., description="使用者/路徑識別")
@@ -286,8 +286,8 @@ def list_rag(
         raise HTTPException(status_code=500, detail=f"列出 Rag 失敗: {e!s}")
 
 
-@router.post("/create-rag")
-def create_rag(body: CreateRagRequest):
+@router.post("/create-unit")
+def create_unit(body: CreateRagRequest):
     """
     只建立一筆 Rag 資料，接受 rag_tab_id、person_id、rag_name（必填）、local（選填，預設 false）。system_prompt_instruction 請在 build-rag-zip 傳入。
     回傳新增的 rag_id、rag_tab_id、person_id、rag_name、local、created_at。
@@ -336,12 +336,12 @@ def create_rag(body: CreateRagRequest):
 @router.post("/upload-zip")
 async def upload_zip(
     file: UploadFile = File(...),
-    rag_tab_id: str = Form(..., description="對應 create-rag 建立的 rag_tab_id（Rag 表 rag_tab_id），ZIP 會存於此路徑"),
-    person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 create-rag 一致"),
+    rag_tab_id: str = Form(..., description="對應 create-unit 建立的 rag_tab_id（Rag 表 rag_tab_id），ZIP 會存於此路徑"),
+    person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 create-unit 一致"),
 ):
     """
-    Upload Zip：只做上傳並寫入資料庫。需先以 create-rag 建立該 rag_tab_id 的 Rag 資料。
-    傳入 rag_tab_id（create-rag 的 rag_tab_id）、ZIP 檔案與 person_id（Form 必填）。
+    Upload Zip：只做上傳並寫入資料庫。需先以 create-unit 建立該 rag_tab_id 的 Rag 資料。
+    傳入 rag_tab_id（create-unit 的 rag_tab_id）、ZIP 檔案與 person_id（Form 必填）。
     出題/評分時由後端依 person_id 從 User 表取得 LLM API Key。
     會更新該筆 Rag 的 file_metadata（filename、second_folders 等）。
     回傳 file_metadata。
@@ -372,7 +372,7 @@ async def upload_zip(
         supabase = get_supabase()
         r = supabase.table("Rag").select("rag_id, created_at").eq("rag_tab_id", fid).eq("person_id", resolved_person_id).execute()
         if not r.data or len(r.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料，請先呼叫 create-rag 建立")
+            raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料，請先呼叫 create-unit 建立")
         row = r.data[0]
     except HTTPException:
         raise
