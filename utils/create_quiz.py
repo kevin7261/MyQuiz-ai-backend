@@ -24,19 +24,10 @@ from langchain_community.vectorstores import FAISS
 # OpenAI 客戶端
 from openai import OpenAI
 
-
-# 預設出題系統指令（與 API 傳入的 system_prompt_instruction 一併使用，放在其上方）
-SYSTEM_INSTRUCTION_PREDEFINE = """
-            1. **請務必使用繁體中文 (Traditional Chinese) 出題與撰寫提示及參考答案。**
-            2. 在 'quiz_content' (測驗) 中：只說明**任務目標**。嚴禁直接列出步驟 1, 2, 3。請保留思考空間給學生。
-            3. 在 'quiz_hint' (提示) 中：才列出詳細的解題步驟。
-        """
-
-
 def generate_quiz(
     zip_path: Path,
     api_key: str,
-    quiz_level: int,
+    quiz_level: str,
     system_prompt_instruction: str,
 ) -> dict:
     """
@@ -77,29 +68,24 @@ def generate_quiz(
         )
 
         # 檢索查詢：空間分析 + 難度 + 重點概念與操作步驟
-        query = f"空間分析 {quiz_level} 重點概念與操作步驟"
+        query = f"課程 {quiz_level} 的重點概念"
         retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
         docs = retriever.invoke(query)
         context_text = "\n\n".join([d.page_content for d in docs])
 
-        sys_role = "你是頂尖的課程助教。請使用 GPT-4o 的強大邏輯來出題。"
-        task_instruction = f"難度：{quiz_level}。"
-        core_point = "🔥 **本次測驗核心考點：請根據以下參考講義內容設計**"
-
         final_system_prompt = f"""
-            {sys_role}
-            {task_instruction}
-            {core_point}
-            (Please design the quiz around the core concept above.)
-            【出題重要規範】
-            {SYSTEM_INSTRUCTION_PREDEFINE}
+            【出題規範】
+            請根據輸入的「參考內容」設計測驗題目。
+            請使用繁體中文 (Traditional Chinese) 出題與撰寫提示及參考答案。
+            題目難度：{quiz_level}。
             {system_prompt_instruction}
+            【回傳格式】
             請以 JSON 格式回傳：
-            {{ "quiz_content": "Quiz content (Markdown)...", 
-              "quiz_hint": "Hint for students...", 
-              "reference_answer": "參考答案（供教師參考，非標準答案）..." }}
+            {{ "quiz_content": "問題內容", 
+              "quiz_hint": "答案提示內容", 
+              "reference_answer": "參考答案內容" }}
         """
-        user_prompt_text = f"參考講義內容：\n{context_text}"
+        user_prompt_text = f"參考內容：\n{context_text}"
 
         client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(

@@ -29,7 +29,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Path as P
 # 引入 JSONResponse、Response
 from fastapi.responses import JSONResponse, Response
 # 引入 Pydantic 的 BaseModel、Field
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # UTC 時間
 from utils.datetime_utils import now_utc_iso
@@ -255,7 +255,14 @@ class ExamGenerateQuizRequest(BaseModel):
         "",
         description="選填；指定供測驗 Rag 的 rag_metadata.outputs 中某一上傳單元（與 POST /rag/build-rag-zip 的 outputs[].unit_name 一致）。未傳或空字串則使用第一筆輸出",
     )
-    quiz_level: int = Field(0, description="難度等級，寫入 Exam_Quiz.quiz_level")
+    quiz_level: str = Field("", description="難度／層級（字串），用於出題提示並寫入 quiz_metadata")
+
+    @field_validator("quiz_level", mode="before")
+    @classmethod
+    def _quiz_level_to_str(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        return str(v)
 
 
 class ExamQuizGradeRequest(BaseModel):
@@ -427,7 +434,6 @@ def exam_generate_quiz(request: Request, body: ExamGenerateQuizRequest):
             "rag_id": rag_id,
             "unit_name": stem,
             "file_name": file_name,
-            "quiz_level": body.quiz_level,
             "quiz_content": result.get("quiz_content") or "",
             "quiz_hint": result.get("quiz_hint") or "",
             "reference_answer": result.get("reference_answer") or "",

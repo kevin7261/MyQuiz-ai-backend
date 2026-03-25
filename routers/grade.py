@@ -26,7 +26,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 # 引入 JSONResponse、Response 用於回傳
 from fastapi.responses import JSONResponse, Response
 # 引入 Pydantic 的 BaseModel、ConfigDict、Field
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # LangChain 文字切分器
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -64,7 +64,14 @@ class GenerateQuizRequest(BaseModel):
         "",
         description="選填；指定 rag_metadata.outputs 中某一上傳單元（與 POST /rag/build-rag-zip 的 outputs[].unit_name 一致）。未傳或空字串則使用第一筆輸出",
     )
-    quiz_level: int = Field(0, description="難度等級，寫入 Rag_Quiz.quiz_level")
+    quiz_level: str = Field("", description="難度／層級（字串），寫入 Rag_Quiz.quiz_level")
+
+    @field_validator("quiz_level", mode="before")
+    @classmethod
+    def _quiz_level_to_str(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        return str(v)
 
 
 class QuizGradeRequest(BaseModel):
