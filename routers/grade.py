@@ -239,9 +239,9 @@ def _run_grade_job(
     prompt = f"""
         你是一位「{course_name}」課程的教授，請批改這道題目**。
         【評分規範】
-        跟據「測驗題目」與「課程內容」，評估「學生回答」的內容是否正確。
+        跟據「測驗題目」與「課程內容」，評估「學生答案」的內容是否正確。
         測驗題目：{quiz_content}
-        學生回答：{quiz_answer}
+        學生答案：{quiz_answer}
         課程內容：{context_text}
         【重要限制】
         請使用繁體繁體中文 (Traditional Chinese) 撰寫評語 (quiz_comments)。**
