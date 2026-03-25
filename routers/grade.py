@@ -244,9 +244,9 @@ def _run_grade_job(
         學生回答：{quiz_answer}
         課程內容：{context_text}
         【重要限制】
-        1. **請務必使用繁體中文 (Traditional Chinese) 撰寫評語（填入 quiz_comments 陣列）。**
+        請使用繁體繁體中文 (Traditional Chinese) 撰寫評語 (quiz_comments)。**
         【評分標準】
-        0-5分，一定是整數。
+        0-5分，一定是整數 (quiz_grade)。
         0: 完全錯誤或未作答。
         1: 只有少量內容正確。
         2: 大幅缺漏，只有部分內容正確。
@@ -254,10 +254,9 @@ def _run_grade_job(
         4: 大致正確，略有不足。
         5: 完全正確且完整。
         【輸出 JSON】
-        請以 JSON 格式回傳（quiz_grade 必須為 0 到 5 之間的整數，最高 5）：
+        請以 JSON 格式回傳：
         {{ "quiz_grade": int,
-        "quiz_comments": [] }}
-        （請使用鍵名 quiz_comments，勿使用 comments。陣列元素若為物件，建議以 quiz_comment 承載單則評語文字。）
+        "quiz_comments": str[] }}
     """
 
     # 建立 OpenAI 客戶端

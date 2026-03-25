@@ -80,7 +80,7 @@ def generate_quiz(
             你是一個「{course_name}」課程的教授，請給學生設計測驗題目：
             【出題規範】
             請根據輸入的「課程內容」設計測驗題目。
-            請使用繁體中文 (Traditional Chinese) 出題與撰寫提示及參考答案。
+            請使用繁體中文 (Traditional Chinese) 出題與撰寫答案提示 (quiz_hint) 及參考答案 (quiz_reference_answer)。
             題目難度：{quiz_level}。
             **{system_prompt_instruction}**
             【回傳格式】
