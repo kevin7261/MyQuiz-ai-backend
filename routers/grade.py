@@ -387,7 +387,7 @@ def generate_quiz_api(body: GenerateQuizRequest):
 
     try:
         # 動態引入 generate_quiz 避免循環 import
-        from utils.quiz_gen import generate_quiz
+        from utils.create_quiz import generate_quiz
         # 呼叫 generate_quiz 產生題目
         result = generate_quiz(
             path,  # RAG ZIP 路徑

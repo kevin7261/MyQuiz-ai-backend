@@ -403,7 +403,7 @@ def exam_generate_quiz(request: Request, body: ExamGenerateQuizRequest):
         raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 rag_id={rag_id}（tab_id={rag_zip_tab_id}）")
 
     try:
-        from utils.quiz_gen import generate_quiz
+        from utils.create_quiz import generate_quiz
         result = generate_quiz(
             path,
             api_key=api_key,
