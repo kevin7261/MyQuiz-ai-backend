@@ -1,7 +1,7 @@
 """
 評分 API 模組。
 依 rag_id 自 rag_metadata.outputs 取得 repack stem，再以 {stem}_rag 載入 RAG ZIP 檢索講義後由 GPT-4o 評分。
-非同步：POST /rag/grade-quiz 或 POST /rag/quiz-grade（同義）回傳 202 + job_id，背景執行評分；前端以 GET /rag/quiz-grade-result/{job_id} 輪詢結果。
+非同步：POST /rag/grade-quiz 或 POST /rag/quiz-grade（同義）回傳 202 + job_id，背景執行評分並寫入 Rag_Answer；前端以 GET /rag/quiz-grade-result/{job_id} 輪詢（寫入失敗時 status 為 error）。
 """
 
 # 引入 json 用於解析 GPT 回傳與序列化
@@ -39,13 +39,13 @@ from langchain_community.vectorstores import FAISS
 # OpenAI 客戶端
 from openai import OpenAI
 
+from utils.course_name_utils import get_course_name_for_prompt
 # 依 person_id 從 User 表取得 LLM API Key
 from utils.llm_api_key_utils import get_llm_api_key_for_person
 # 從 ZIP 載入文件為 Document 列表
 from utils.rag import process_zip_to_docs
 # 由 rag_id 取得 stem、rag_zip_tab_id
 from utils.rag_common import get_rag_stem_from_rag_id
-from utils.system_setting_utils import get_course_name_setting_value
 # 取得 ZIP 儲存路徑
 from utils.storage import get_zip_path
 # Supabase 客戶端
@@ -77,11 +77,15 @@ def _quiz_grade_from_llm_json(llm_json: dict[str, Any]) -> int:
     return _clamp_quiz_grade(v)
 
 
+def _normalize_grading_llm_json(llm_json: dict[str, Any]) -> None:
+    """將舊鍵 comments 併入 quiz_comments 後移除 comments（與 API 欄位名一致）。"""
+    if "quiz_comments" not in llm_json and "comments" in llm_json:
+        llm_json["quiz_comments"] = llm_json.pop("comments")
+
+
 def _quiz_comments_from_llm_json(llm_json: dict[str, Any]) -> list[str]:
-    """自 LLM JSON 取出 quiz_comments，正規化為字串列表；若無則相容舊鍵 comments。"""
+    """自 LLM JSON 取出 quiz_comments，正規化為字串列表。物件元素優先讀 quiz_comment，其次 comment、criteria。"""
     raw = llm_json.get("quiz_comments")
-    if raw is None:
-        raw = llm_json.get("comments")
     if not isinstance(raw, list):
         return []
     out: list[str] = []
@@ -89,7 +93,11 @@ def _quiz_comments_from_llm_json(llm_json: dict[str, Any]) -> list[str]:
         if isinstance(x, str):
             out.append(x)
         elif isinstance(x, dict):
-            c = x.get("comment") if x.get("comment") is not None else x.get("criteria")
+            c = x.get("quiz_comment")
+            if c is None:
+                c = x.get("comment")
+            if c is None:
+                c = x.get("criteria")
             if c is not None:
                 out.append(str(c))
         elif x is not None:
@@ -226,7 +234,7 @@ def _run_grade_job(
     # 將每份文件的 page_content 以雙換行連接成 context_text
     context_text = "\n\n".join([d.page_content for d in docs])
 
-    course_name = get_course_name_setting_value()
+    course_name = get_course_name_for_prompt()
     # 組裝評分 prompt：角色、目標、限制、評分標準、輸出格式、題目、學生答案、講義依據
     prompt = f"""
         你是一位「{course_name}」課程的教授，請批改這道題目**。
@@ -249,6 +257,7 @@ def _run_grade_job(
         請以 JSON 格式回傳（quiz_grade 必須為 0 到 5 之間的整數，最高 5）：
         {{ "quiz_grade": int,
         "quiz_comments": [] }}
+        （請使用鍵名 quiz_comments，勿使用 comments。陣列元素若為物件，建議以 quiz_comment 承載單則評語文字。）
     """
 
     # 建立 OpenAI 客戶端
@@ -268,6 +277,7 @@ def _run_grade_job(
         llm_json = {}
     if not isinstance(llm_json, dict):
         llm_json = {}
+    _normalize_grading_llm_json(llm_json)
     return llm_raw, llm_json
 
 
@@ -292,21 +302,25 @@ def _run_grade_job_background(
         }
         # 呼叫 insert_answer_fn 寫入 DB，回傳 (id_key, id_val) 或 None
         inserted = insert_answer_fn(result_dict, quiz_answer)
-        # 若有寫入成功，將 id 加入 result_dict
         if inserted:
             result_dict[inserted[0]] = inserted[1]
-        else:
-            _logger.warning(
-                "批改 LLM 已完成但寫入答案表失敗或未取得 id（見上一則 *Answer insert 日誌）。常見原因："
-                "未設定 SUPABASE_SERVICE_ROLE_KEY 而改用 anon 遭 RLS 擋、欄位名／型別與表不符（quiz_answer、quiz_grade、quiz_grade_metadata）、或外鍵失敗"
+            results_store[job_id] = {"status": "ready", "result": result_dict, "error": None}
+            _logger.info(
+                "批改完成 job_id=%s 回傳結果: %s",
+                job_id,
+                json.dumps(result_dict, ensure_ascii=False),
             )
-        # 將結果存入 results_store，狀態為 ready
-        results_store[job_id] = {"status": "ready", "result": result_dict, "error": None}
-        _logger.info(
-            "批改完成 job_id=%s 回傳結果: %s",
-            job_id,
-            json.dumps(result_dict, ensure_ascii=False),
-        )
+        else:
+            err_detail = (
+                "寫入答案表失敗或未取得主鍵 id。常見原因：未設定 SUPABASE_SERVICE_ROLE_KEY 而改用 anon 遭 RLS 擋、"
+                "欄位 quiz_answer／quiz_grade／quiz_grade_metadata 與表不符、或外鍵失敗。請見伺服器日誌 *Answer insert。"
+            )
+            _logger.warning(
+                "批改 LLM 已完成但寫入答案表失敗 job_id=%s：%s",
+                job_id,
+                err_detail,
+            )
+            results_store[job_id] = {"status": "error", "result": None, "error": err_detail}
     except Exception as e:
         # 發生異常時，將錯誤訊息存入 results_store
         results_store[job_id] = {"status": "error", "result": None, "error": str(e)}
@@ -376,8 +390,9 @@ def _insert_exam_answer(result_dict: dict, quiz_answer: str, *, exam_id: int, ex
     return _insert_answer_table_row("Exam_Answer", "exam_answer_id", row)
 
 
-@router.post("/create-quiz", summary="Rag Create Quiz")
-def generate_quiz_api(body: GenerateQuizRequest):
+@router.post("/create-quiz", summary="Rag Create Quiz", operation_id="rag_create_quiz")
+@router.post("/generate-quiz", include_in_schema=False)
+def rag_create_quiz(body: GenerateQuizRequest):
     """
     傳入 rag_id（Rag 表主鍵）、rag_tab_id（選填）、quiz_level；可傳 unit_name 指定 outputs 中哪一個上傳單元（與 build-rag-zip 的 outputs[].unit_name 一致），未傳則用第一筆。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
@@ -498,7 +513,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     """
     傳入 rag_id（字串）、rag_tab_id（選填）、rag_quiz_id、quiz_content、quiz_answer。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
-    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。驗證後回傳 202 與 job_id；背景寫入 public.Rag_Answer。輪詢 GET /rag/quiz-grade-result/{job_id}，ready 時 result 僅含 quiz_grade、quiz_comments（與 LLM 約定之 JSON）及 rag_answer_id。
+    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。驗證後回傳 202 與 job_id；背景寫入 public.Rag_Answer（寫入失敗則輪詢為 error）。輪詢 GET /rag/quiz-grade-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 rag_answer_id。
     """
     # 取得 rag_id 字串並去除空白
     rag_id_str = (body.rag_id or "").strip()
@@ -598,7 +613,8 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
 async def get_grade_result(job_id: str):  # 路徑參數 job_id
     """
     輪詢評分結果。回傳 status: pending | ready | error；
-    ready 時 result 為 quiz_grade、quiz_comments（與評分 prompt 之 JSON）及 rag_answer_id；error 時 error 為錯誤訊息。
+    ready 時 result 為 quiz_grade、quiz_comments（與評分 prompt 之 JSON）及 rag_answer_id（已寫入 Rag_Answer）；
+    error 時為 LLM／ZIP 例外，或 LLM 成功但寫入 Rag_Answer 失敗。
     此端點刻意保持輕量（僅記憶體查表），以減少代理逾時 502。
     """
     # 若 job_id 不存在於 _grade_job_results（可能服務重啟）

@@ -20,7 +20,6 @@ from pydantic import BaseModel, Field
 from utils.datetime_utils import now_utc_iso
 # 引入 Supabase 客戶端
 from utils.supabase_client import get_supabase
-from utils.system_setting_utils import COURSE_NAME_SETTING_KEY
 # 供測驗 RAG：System_Setting 固定 key
 from utils.rag_exam_setting import RAG_EXAM_SETTING_KEY_DEPLOY, RAG_EXAM_SETTING_KEY_LOCALHOST
 
@@ -29,7 +28,7 @@ router = APIRouter(prefix="/system-settings", tags=["system-settings"])
 
 # System_Setting 表：key / value。llm_api_key、course_name 各一筆，直接取值。
 SYSTEM_SETTING_LLM_KEY = "llm_api_key"
-SYSTEM_SETTING_COURSE_NAME_KEY = COURSE_NAME_SETTING_KEY
+SYSTEM_SETTING_COURSE_NAME_KEY = "course_name"
 SYSTEM_SETTING_COLUMNS = "system_setting_id, key, value, updated_at, created_at"
 
 

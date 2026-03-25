@@ -24,7 +24,7 @@ from langchain_community.vectorstores import FAISS
 # OpenAI 客戶端
 from openai import OpenAI
 
-from utils.system_setting_utils import get_course_name_setting_value
+from utils.course_name_utils import get_course_name_for_prompt
 
 def generate_quiz(
     zip_path: Path,
@@ -75,7 +75,7 @@ def generate_quiz(
         docs = retriever.invoke(query)
         context_text = "\n\n".join([d.page_content for d in docs])
 
-        course_name = get_course_name_setting_value()
+        course_name = get_course_name_for_prompt()
         final_system_prompt = f"""
             你是一個「{course_name}」課程的教授，請給學生設計測驗題目：
             【出題規範】

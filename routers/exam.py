@@ -3,7 +3,7 @@ Exam API 模組。對應 public.Exam / Exam_Quiz / Exam_Answer 表。
 - GET /exam/exams：列出 Exam 表（格式同 GET /rag/rags），query `local` 篩選 Exam.local，未傳時依連線是否本機判定；每筆含 quizzes（每題帶 answers）與頂層 answers。
 - POST /exam/create-exam：建立一筆 Exam 資料（可傳 local，用法同 POST /rag/create-unit）。
 - POST /exam/create-quiz：依 exam_tab_id 與 rag_id 查找 RAG ZIP 出題，寫入 Exam_Quiz。
-- POST /exam/grade-quiz 或 POST /exam/quiz-grade（同義）：非同步評分，寫入 Exam_Answer；輪詢 GET /exam/quiz-grade-result/{job_id}。
+- POST /exam/grade-quiz 或 POST /exam/quiz-grade（同義）：非同步評分並寫入 Exam_Answer（與 /rag 評分流程一致；寫入失敗時輪詢 status 為 error）；輪詢 GET /exam/quiz-grade-result/{job_id}。
 - POST /exam/delete/{exam_tab_id}：軟刪除該筆 Exam（deleted=true）。
 """
 
@@ -352,8 +352,9 @@ def delete_exam(
     }
 
 
-@router.post("/create-quiz", summary="Exam Create Quiz")
-def exam_generate_quiz(request: Request, body: ExamGenerateQuizRequest):
+@router.post("/create-quiz", summary="Exam Create Quiz", operation_id="exam_create_quiz")
+@router.post("/generate-quiz", include_in_schema=False)
+def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest):
     """
     傳入 exam_id 或 exam_tab_id（二擇一）、quiz_level；可傳 unit_name 指定 outputs 中哪一個上傳單元（與 build-rag-zip 的 outputs[].unit_name 一致），未傳則用第一筆。
     LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
@@ -471,7 +472,7 @@ async def exam_grade_submission(request: Request, background_tasks: BackgroundTa
     傳入 exam_id 或 exam_tab_id、exam_quiz_id、quiz_content、quiz_answer。
     LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
     依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id；若帶 exam_quiz_id 則依該題 Exam_Quiz.unit_name 載入對應 RAG ZIP（與 create-quiz 指定 unit_name 一致），否則使用第一筆 outputs。
-    回傳 202 與 job_id；背景寫入 public.Exam_Answer。輪詢 GET /exam/quiz-grade-result/{job_id}，ready 時 result 僅含 quiz_grade、quiz_comments 及 exam_answer_id。
+    回傳 202 與 job_id；背景寫入 public.Exam_Answer（與 POST /rag/grade-quiz 相同管線；寫入失敗則輪詢為 error）。輪詢 GET /exam/quiz-grade-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 exam_answer_id。
     """
     exam_id_str = (body.exam_id or "").strip()
     exam_tab_id = (body.exam_tab_id or "").strip()
@@ -553,6 +554,8 @@ async def exam_grade_submission(request: Request, background_tasks: BackgroundTa
 
     work_dir = Path(tempfile.mkdtemp(prefix="aiquiz_exam_grade_"))
     zip_source_path = work_dir / "ref.zip"
+    extract_folder = work_dir / "extract"
+    extract_folder.mkdir(parents=True, exist_ok=True)
     try:
         # 複製 RAG ZIP 到 work_dir，複製完成後立即刪除從 Supabase Storage 下載的暫存檔
         shutil.copy(rag_zip_path, zip_source_path)
@@ -588,7 +591,9 @@ async def exam_grade_submission(request: Request, background_tasks: BackgroundTa
 @router.get("/quiz-grade-result/{job_id}", tags=["exam"])
 async def get_exam_grade_result(job_id: str):
     """
-    輪詢 Exam 評分結果。回傳 status: pending | ready | error；ready 時 result 含 quiz_grade、quiz_comments、exam_answer_id，error 時 error 為錯誤訊息。
+    輪詢 Exam 評分結果（行為同 GET /rag/quiz-grade-result/{job_id}）。
+    status: pending | ready | error；ready 時 result 含 quiz_grade、quiz_comments、exam_answer_id（已寫入 Exam_Answer）；
+    error 時為 LLM／ZIP 例外，或 LLM 成功但寫入 Exam_Answer 失敗。
     """
     if job_id not in _exam_grade_job_results:
         return JSONResponse(
