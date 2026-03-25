@@ -1,11 +1,13 @@
 """
 評分 API 模組。
 依 rag_id 自 rag_metadata.outputs 取得 repack stem，再以 {stem}_rag 載入 RAG ZIP 檢索講義後由 GPT-4o 評分。
-非同步：POST 回傳 202 + job_id，背景執行評分；前端以 GET /rag/quiz-grade-result/{job_id} 輪詢結果。
+非同步：POST /rag/grade-quiz 或 POST /rag/quiz-grade（同義）回傳 202 + job_id，背景執行評分；前端以 GET /rag/quiz-grade-result/{job_id} 輪詢結果。
 """
 
 # 引入 json 用於解析 GPT 回傳與序列化
 import json
+# 引入 logging 用於終端機輸出批改結果（等同開發時 console 可見）
+import logging
 # 引入 os 用於 os.walk
 import os
 # 引入 shutil 用於刪除暫存目錄
@@ -18,15 +20,15 @@ import uuid
 import zipfile
 # 引入 Path 用於路徑操作
 from pathlib import Path
-# 引入 Any、Callable、Optional 型別
-from typing import Any, Callable, Optional
+# 引入 Any、Callable 型別
+from typing import Any, Callable
 
 # 引入 FastAPI 的 APIRouter、BackgroundTasks、HTTPException
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 # 引入 JSONResponse、Response 用於回傳
 from fastapi.responses import JSONResponse, Response
 # 引入 Pydantic 的 BaseModel、ConfigDict、Field
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 # LangChain 文字切分器
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -43,6 +45,7 @@ from utils.llm_api_key_utils import get_llm_api_key_for_person
 from utils.rag import process_zip_to_docs
 # 由 rag_id 取得 stem、rag_zip_tab_id
 from utils.rag_common import get_rag_stem_from_rag_id
+from utils.system_setting_utils import get_course_name_setting_value
 # 取得 ZIP 儲存路徑
 from utils.storage import get_zip_path
 # Supabase 客戶端
@@ -50,6 +53,48 @@ from utils.supabase_client import get_supabase
 
 # 建立路由，前綴 /rag，標籤 rag
 router = APIRouter(prefix="/rag", tags=["rag"])
+
+# 批改背景任務完成時寫入日誌（uvicorn 預設會顯示 INFO）
+_logger = logging.getLogger(__name__)
+
+
+def _clamp_quiz_grade(v: Any) -> int:
+    """將 quiz_grade 化為 0～5 的整數（滿分固定為 5）。"""
+    if v is None:
+        return 0
+    try:
+        n = int(round(float(v)))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(5, n))
+
+
+def _quiz_grade_from_llm_json(llm_json: dict[str, Any]) -> int:
+    """自 LLM JSON 取出分數；優先 quiz_grade，若無則相容舊鍵 score。"""
+    v = llm_json.get("quiz_grade")
+    if v is None:
+        v = llm_json.get("score")
+    return _clamp_quiz_grade(v)
+
+
+def _quiz_comments_from_llm_json(llm_json: dict[str, Any]) -> list[str]:
+    """自 LLM JSON 取出 quiz_comments，正規化為字串列表；若無則相容舊鍵 comments。"""
+    raw = llm_json.get("quiz_comments")
+    if raw is None:
+        raw = llm_json.get("comments")
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for x in raw:
+        if isinstance(x, str):
+            out.append(x)
+        elif isinstance(x, dict):
+            c = x.get("comment") if x.get("comment") is not None else x.get("criteria")
+            if c is not None:
+                out.append(str(c))
+        elif x is not None:
+            out.append(str(x))
+    return out
 
 
 class GenerateQuizRequest(BaseModel):
@@ -78,7 +123,7 @@ class QuizGradeRequest(BaseModel):
     """
     POST /rag/grade-quiz 請求 body。
     寫入 public.Rag_Answer 時對應：rag_id, rag_tab_id, rag_quiz_id, person_id（後端自 Rag 帶入）,
-    student_answer（本請求欄位名為 answer）, answer_grade, answer_feedback_metadata, answer_metadata。
+    quiz_answer（與舊欄位 answer 同義）；評分後寫入 quiz_grade、quiz_grade_metadata。
     """
 
     # Rag 表主鍵（字串，會轉成數字查詢）
@@ -89,43 +134,12 @@ class QuizGradeRequest(BaseModel):
     rag_quiz_id: str = Field("", description="選填，寫入 Rag_Answer.rag_quiz_id")
     # 測驗題目內容（與 Rag_Quiz 表 quiz_content 一致）
     quiz_content: str = Field(..., description="測驗題目內容（與 Rag_Quiz 表 quiz_content 一致）")
-    # 學生回答內容（對應資料庫欄位 student_answer）
-    answer: str = Field(..., description="學生回答（寫入 Rag_Answer.student_answer）")
-
-
-class RubricItem(BaseModel):
-    """單一評分項目（GPT 可能回傳 criteria、score、comment 等）。"""
-
-    # 評分項目名稱或說明
-    criteria: str = Field(default="", description="評分項目名稱或說明")
-    # 該項得分
-    score: Optional[int] = None
-    # 該項評語
-    comment: Optional[str] = None
-    # 允許額外欄位（GPT 可能回傳其他欄位）
-    model_config = ConfigDict(extra="allow")
-
-
-class GradingResult(BaseModel):
-    """批改結果結構化回傳，便於前端分項顯示。"""
-
-    # 總分（0–10）
-    score: int = Field(..., description="總分 (0–10)")
-    # 等級，如：優秀、良好、待加強
-    level: str = Field(..., description="等級，如：優秀、良好、待加強")
-    # 各項評分 [概念正確性, 邏輯與解釋, 完整性]
-    rubric: list[RubricItem] = Field(
-        default_factory=list,
-        description="各項評分 [概念正確性, 邏輯與解釋, 完整性]",
+    # 學生作答：請求欄位 quiz_answer（相容舊欄位 answer）；寫入 Rag_Answer.quiz_answer
+    quiz_answer: str = Field(
+        ...,
+        description="學生作答（寫入 Rag_Answer.quiz_answer）；相容舊 JSON 欄位 answer",
+        validation_alias=AliasChoices("quiz_answer", "answer"),
     )
-    # 優點列表
-    strengths: list[str] = Field(default_factory=list, description="優點")
-    # 待改進之處
-    weaknesses: list[str] = Field(default_factory=list, description="待改進之處")
-    # 遺漏或未提及的項目
-    missing_items: list[str] = Field(default_factory=list, description="遺漏或未提及的項目")
-    # 建議後續行動
-    action_items: list[str] = Field(default_factory=list, description="建議後續行動")
 
 
 # 非同步評分結果暫存：job_id -> {"status": "pending"|"ready"|"error", "result": dict|None, "error": str|None}
@@ -143,9 +157,9 @@ def _run_grade_job(
     work_dir: Path,
     api_key: str,
     quiz_content: str,
-    student_answer: str,
-) -> GradingResult:
-    """在給定的 work_dir（已含 ref.zip）執行 RAG + GPT 評分，回傳 GradingResult。"""
+    quiz_answer: str,
+) -> tuple[str, dict[str, Any]]:
+    """在給定的 work_dir（已含 ref.zip）執行 RAG + GPT 評分。回傳 (LLM 訊息原文, 解析後 JSON 物件)。"""
     # 工作目錄中的 ZIP 路徑
     zip_source_path = work_dir / "ref.zip"
     # 解壓目錄路徑
@@ -212,17 +226,30 @@ def _run_grade_job(
     # 將每份文件的 page_content 以雙換行連接成 context_text
     context_text = "\n\n".join([d.page_content for d in docs])
 
+    course_name = get_course_name_setting_value()
     # 組裝評分 prompt：角色、目標、限制、評分標準、輸出格式、題目、學生答案、講義依據
-    prompt = f"""你是一位「地理資訊系統與環境資料分析」助教。請批改這道**觀念簡答題**。
-                目標：評估學生對「地理資訊系統與環境資料分析」的理解、邏輯推演與解釋清晰度。
-                【重要限制】
-                1. **請務必使用繁體中文 (Traditional Chinese) 撰寫所有評語、優點、弱點與行動建議。**
-                【評分標準】A) 概念正確性 (3分), B) 邏輯與解釋 (4分), C) 完整性 (3分)。
-                【輸出 JSON】{{ "score": int, "level": str, "rubric": [], "strengths": [], "weaknesses": [], "missing_items": [], "action_items": [] }}
-                [測驗題目（quiz）] {quiz_content}
-                [學生回答] {student_answer}
-                [講義依據] {context_text}
-            """
+    prompt = f"""
+        你是一位「{course_name}」課程的教授，請批改這道題目**。
+        【評分規範】
+        跟據「測驗題目」與「課程內容」，評估「學生回答」的內容是否正確。
+        測驗題目：{quiz_content}
+        學生回答：{quiz_answer}
+        課程內容：{context_text}
+        【重要限制】
+        1. **請務必使用繁體中文 (Traditional Chinese) 撰寫評語（填入 quiz_comments 陣列）。**
+        【評分標準】
+        0-5分，一定是整數。
+        0: 完全錯誤或未作答。
+        1: 只有少量內容正確。
+        2: 大幅缺漏，只有部分內容正確。
+        3: 部分正確，但有大幅缺漏。
+        4: 大致正確，略有不足。
+        5: 完全正確且完整。
+        【輸出 JSON】
+        請以 JSON 格式回傳（quiz_grade 必須為 0 到 5 之間的整數，最高 5）：
+        {{ "quiz_grade": int,
+        "quiz_comments": [] }}
+    """
 
     # 建立 OpenAI 客戶端
     client = OpenAI(api_key=api_key)
@@ -234,30 +261,14 @@ def _run_grade_job(
         temperature=0.3,  # 較低溫度以保持評分穩定
     )
 
-    # 從 response 取出 content 並解析為 dict
-    raw = json.loads(response.choices[0].message.content)
-    # 取得 rubric 陣列，若無則為 []
-    rubric_raw = raw.get("rubric", [])
-    # 用於存放 RubricItem 的列表
-    rubric_list = []
-    # 遍歷 rubric_raw 每筆，轉成 RubricItem
-    for item in rubric_raw:
-        # 若為 dict，用 model_validate 轉換
-        if isinstance(item, dict):
-            rubric_list.append(RubricItem.model_validate(item))
-        # 否則以 str(item) 作為 criteria
-        else:
-            rubric_list.append(RubricItem(criteria=str(item)))
-    # 組裝 GradingResult 並回傳
-    return GradingResult(
-        score=raw.get("score", 0),  # 總分，預設 0
-        level=raw.get("level", ""),  # 等級
-        rubric=rubric_list,  # 各項評分
-        strengths=raw.get("strengths", []),  # 優點
-        weaknesses=raw.get("weaknesses", []),  # 弱點
-        missing_items=raw.get("missing_items", []),  # 遺漏項目
-        action_items=raw.get("action_items", []),  # 建議行動
-    )
+    llm_raw = response.choices[0].message.content or ""
+    try:
+        llm_json = json.loads(llm_raw)
+    except json.JSONDecodeError:
+        llm_json = {}
+    if not isinstance(llm_json, dict):
+        llm_json = {}
+    return llm_raw, llm_json
 
 
 def _run_grade_job_background(
@@ -265,36 +276,48 @@ def _run_grade_job_background(
     work_dir: Path,
     api_key: str,
     quiz_content: str,
-    student_answer: str,
+    quiz_answer: str,
     results_store: dict[str, dict[str, Any]],
     insert_answer_fn: Callable[[dict, str], tuple[str, int] | None],
 ) -> None:
     """
     通用背景評分：執行評分、可選寫入 DB、結果存 results_store。
-    insert_answer_fn(result_dict, student_answer) 寫入 DB 並回傳 (id_key, id_val) 或 None。
+    insert_answer_fn(result_dict, quiz_answer) 寫入 DB 並回傳 (id_key, id_val) 或 None。
     """
     try:
-        # 呼叫 _run_grade_job 執行評分
-        result = _run_grade_job(work_dir, api_key, quiz_content, student_answer)
-        # 將 Pydantic 模型轉為 dict
-        result_dict = result.model_dump()
+        _, llm_json = _run_grade_job(work_dir, api_key, quiz_content, quiz_answer)
+        result_dict: dict[str, Any] = {
+            "quiz_grade": _quiz_grade_from_llm_json(llm_json),
+            "quiz_comments": _quiz_comments_from_llm_json(llm_json),
+        }
         # 呼叫 insert_answer_fn 寫入 DB，回傳 (id_key, id_val) 或 None
-        inserted = insert_answer_fn(result_dict, student_answer)
+        inserted = insert_answer_fn(result_dict, quiz_answer)
         # 若有寫入成功，將 id 加入 result_dict
         if inserted:
             result_dict[inserted[0]] = inserted[1]
+        else:
+            _logger.warning(
+                "批改 LLM 已完成但寫入答案表失敗或未取得 id（見上一則 *Answer insert 日誌）。常見原因："
+                "未設定 SUPABASE_SERVICE_ROLE_KEY 而改用 anon 遭 RLS 擋、欄位名／型別與表不符（quiz_answer、quiz_grade、quiz_grade_metadata）、或外鍵失敗"
+            )
         # 將結果存入 results_store，狀態為 ready
         results_store[job_id] = {"status": "ready", "result": result_dict, "error": None}
+        _logger.info(
+            "批改完成 job_id=%s 回傳結果: %s",
+            job_id,
+            json.dumps(result_dict, ensure_ascii=False),
+        )
     except Exception as e:
         # 發生異常時，將錯誤訊息存入 results_store
         results_store[job_id] = {"status": "error", "result": None, "error": str(e)}
+        _logger.error("批改失敗 job_id=%s: %s", job_id, e, exc_info=True)
     finally:
         # 不論成功或失敗，都清理暫存目錄
         _cleanup_grade_workspace(work_dir)
 
 
 def _insert_answer_table_row(table: str, id_column: str, row: dict[str, Any]) -> tuple[str, int] | None:
-    """寫入 *Answer 表一列；成功回傳 (id_column 名稱, id)，失敗回傳 None（與背景評分靜默失敗策略一致）。"""
+    """寫入 *Answer 表一列；成功回傳 (id_column 名稱, id)，失敗回傳 None（錯誤會寫入日誌）。"""
     try:
         supabase = get_supabase()
         ins = supabase.table(table).insert(row).execute()
@@ -302,41 +325,53 @@ def _insert_answer_table_row(table: str, id_column: str, row: dict[str, Any]) ->
             rid = ins.data[0].get(id_column)
             if rid is not None:
                 return (id_column, int(rid))
-    except Exception:
-        pass
+        _logger.warning(
+            "%s insert 成功但未回傳列（無 %s）；若使用 anon key 可能被 RLS 擋或 API 未回傳 representation",
+            table,
+            id_column,
+        )
+    except Exception as e:
+        _logger.warning("%s insert 失敗: %s", table, e, exc_info=True)
     return None
 
 
-def _answer_row_payload(result_dict: dict, student_answer: str) -> dict[str, Any]:
-    """Rag_Answer / Exam_Answer 共用的評分結果欄位（student_answer, answer_grade, answer_feedback_metadata, answer_metadata）。"""
+def _answer_row_payload(
+    result_dict: dict,
+    quiz_answer: str,
+    *,
+    answer_text_column: str = "quiz_answer",
+) -> dict[str, Any]:
+    """寫入 Rag_Answer／Exam_Answer：quiz_answer、quiz_grade、quiz_grade_metadata（對齊兩表目前 schema）。"""
+    grade = _clamp_quiz_grade(
+        result_dict.get("quiz_grade", result_dict.get("score", 0))
+    )
     return {
-        "student_answer": student_answer or "",
-        "answer_grade": result_dict.get("score", 0),
-        "answer_feedback_metadata": json.dumps(result_dict, ensure_ascii=False),
-        "answer_metadata": result_dict,
+        answer_text_column: quiz_answer or "",
+        "quiz_grade": grade,
+        "quiz_grade_metadata": result_dict,
     }
 
 
-def _insert_rag_answer(result_dict: dict, student_answer: str, *, rag_id: int, rag_tab_id: str, person_id: str, rag_quiz_id: int) -> tuple[str, int] | None:
-    """寫入 public.Rag_Answer，回傳 ("rag_answer_id", id) 或 None。"""
+def _insert_rag_answer(result_dict: dict, quiz_answer: str, *, rag_id: int, rag_tab_id: str, person_id: str, rag_quiz_id: int) -> tuple[str, int] | None:
+    """寫入 public.Rag_Answer，回傳 ("rag_answer_id", id) 或 None。rag_quiz_id<=0 時送 0（與 NOT NULL DEFAULT 0 之 schema 一致）。quiz_answer、quiz_grade、quiz_grade_metadata 與 Exam_Answer 欄位對齊。"""
     row = {
         "rag_id": rag_id,
         "rag_tab_id": rag_tab_id or "",
-        "rag_quiz_id": rag_quiz_id,
+        "rag_quiz_id": rag_quiz_id if rag_quiz_id > 0 else 0,
         "person_id": person_id or "",
-        **_answer_row_payload(result_dict, student_answer),
+        **_answer_row_payload(result_dict, quiz_answer),
     }
     return _insert_answer_table_row("Rag_Answer", "rag_answer_id", row)
 
 
-def _insert_exam_answer(result_dict: dict, student_answer: str, *, exam_id: int, exam_tab_id: str, person_id: str, exam_quiz_id: int) -> tuple[str, int] | None:
-    """寫入 public.Exam_Answer，回傳 ("exam_answer_id", id) 或 None。"""
+def _insert_exam_answer(result_dict: dict, quiz_answer: str, *, exam_id: int, exam_tab_id: str, person_id: str, exam_quiz_id: int) -> tuple[str, int] | None:
+    """寫入 public.Exam_Answer，回傳 ("exam_answer_id", id) 或 None。exam_quiz_id<=0 時送 0（與 NOT NULL DEFAULT 0 之 schema 一致）。作答寫入 quiz_answer；分數與 LLM 結果寫入 quiz_grade、quiz_grade_metadata。"""
     row = {
         "exam_id": exam_id,
         "exam_tab_id": exam_tab_id or "",
-        "exam_quiz_id": exam_quiz_id,
+        "exam_quiz_id": exam_quiz_id if exam_quiz_id > 0 else 0,
         "person_id": person_id or "",
-        **_answer_row_payload(result_dict, student_answer),
+        **_answer_row_payload(result_dict, quiz_answer),
     }
     return _insert_answer_table_row("Exam_Answer", "exam_answer_id", row)
 
@@ -347,7 +382,7 @@ def generate_quiz_api(body: GenerateQuizRequest):
     傳入 rag_id（Rag 表主鍵）、rag_tab_id（選填）、quiz_level；可傳 unit_name 指定 outputs 中哪一個上傳單元（與 build-rag-zip 的 outputs[].unit_name 一致），未傳則用第一筆。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
     程式依 rag_id 對應的 rag_metadata.outputs 查找 RAG ZIP 出題；system_prompt_instruction 由 Rag 表取得。
-    出題成功後寫入 public.Rag_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, reference_answer、rag_quiz_id 等。
+    出題成功後寫入 public.Rag_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, quiz_reference_answer、rag_quiz_id 等。
     """
     # 驗證 rag_id 必填
     if not body.rag_id:
@@ -425,7 +460,7 @@ def generate_quiz_api(body: GenerateQuizRequest):
             "quiz_level": body.quiz_level,
             "quiz_content": result.get("quiz_content") or "",
             "quiz_hint": result.get("quiz_hint") or "",
-            "reference_answer": result.get("reference_answer") or "",
+            "quiz_answer_reference": result.get("quiz_reference_answer") or "",
             "quiz_metadata": result,
         }
         try:
@@ -458,11 +493,12 @@ def generate_quiz_api(body: GenerateQuizRequest):
 
 
 @router.post("/grade-quiz", summary="Rag Grade Quiz")
+@router.post("/quiz-grade", summary="Rag Grade Quiz (alias: /quiz-grade)")
 async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest):
     """
-    傳入 rag_id（字串）、rag_tab_id（選填）、rag_quiz_id、quiz_content、answer。
+    傳入 rag_id（字串）、rag_tab_id（選填）、rag_quiz_id、quiz_content、quiz_answer。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
-    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。驗證後回傳 202 與 job_id；背景寫入 public.Rag_Answer。輪詢 GET /rag/quiz-grade-result/{job_id}。
+    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。驗證後回傳 202 與 job_id；背景寫入 public.Rag_Answer。輪詢 GET /rag/quiz-grade-result/{job_id}，ready 時 result 僅含 quiz_grade、quiz_comments（與 LLM 約定之 JSON）及 rag_answer_id。
     """
     # 取得 rag_id 字串並去除空白
     rag_id_str = (body.rag_id or "").strip()
@@ -542,7 +578,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     # 初始化 job 狀態為 pending
     _grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
     # 建立 insert_fn，用於背景任務寫入 Rag_Answer
-    insert_fn = lambda rd, sa: _insert_rag_answer(rd, sa, rag_id=rag_id_for_answer, rag_tab_id=source_rag_tab_id, person_id=person_id, rag_quiz_id=rag_quiz_id_int)
+    insert_fn = lambda rd, qa: _insert_rag_answer(rd, qa, rag_id=rag_id_for_answer, rag_tab_id=source_rag_tab_id, person_id=person_id, rag_quiz_id=rag_quiz_id_int)
     # 加入背景任務
     background_tasks.add_task(
         _run_grade_job_background,  # 背景任務函數
@@ -550,7 +586,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
         work_dir,  # 暫存工作目錄
         api_key,  # LLM API Key
         body.quiz_content or "",  # 題目內容
-        body.answer or "",  # 學生回答
+        body.quiz_answer or "",
         _grade_job_results,  # 結果存放的 dict
         insert_fn,  # 寫入 Rag_Answer 的函數
     )
@@ -562,7 +598,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
 async def get_grade_result(job_id: str):  # 路徑參數 job_id
     """
     輪詢評分結果。回傳 status: pending | ready | error；
-    ready 時 result 為批改結果（含 rag_answer_id）；error 時 error 為錯誤訊息。
+    ready 時 result 為 quiz_grade、quiz_comments（與評分 prompt 之 JSON）及 rag_answer_id；error 時 error 為錯誤訊息。
     此端點刻意保持輕量（僅記憶體查表），以減少代理逾時 502。
     """
     # 若 job_id 不存在於 _grade_job_results（可能服務重啟）

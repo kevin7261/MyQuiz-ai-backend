@@ -34,7 +34,7 @@ app = FastAPI()
 
 # 註冊 CORS 中介軟體，允許前端跨域呼叫 API，避免瀏覽器 CORS 或 "Failed to fetch" 錯誤
 # 若出現 502，回應來自 Render 代理（逾時約 30 秒），不會帶 CORS 標頭
-# 評分已改為非同步：POST /rag/grade-quiz 回傳 202 + job_id，請用 GET /rag/quiz-grade-result/{job_id} 輪詢結果
+# 評分已改為非同步：POST /rag/grade-quiz 或 /rag/quiz-grade 回傳 202 + job_id，請用 GET /rag/quiz-grade-result/{job_id} 輪詢結果
 app.add_middleware(
     # 使用 CORSMiddleware 中介軟體
     CORSMiddleware,

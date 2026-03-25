@@ -24,6 +24,8 @@ from langchain_community.vectorstores import FAISS
 # OpenAI 客戶端
 from openai import OpenAI
 
+from utils.system_setting_utils import get_course_name_setting_value
+
 def generate_quiz(
     zip_path: Path,
     api_key: str,
@@ -34,7 +36,7 @@ def generate_quiz(
     從現成 RAG ZIP（含 FAISS 向量庫）解壓 → 載入向量庫 → 檢索 → 呼叫 GPT-4o 出題。
     僅支援由 build-rag-zip 產出的 RAG ZIP，不支援一般講義 ZIP。
     system_prompt_instruction 為必填參數，由 API 呼叫端傳入出題系統指令。
-    回傳 {"quiz_content", "quiz_hint", "reference_answer"}；API 層會再加上 system_prompt_instruction、quiz_level 等。
+    回傳 {"quiz_content", "quiz_hint", "quiz_reference_answer"}；API 層會再加上 system_prompt_instruction、quiz_level 等。
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 llm_api_key")
@@ -73,9 +75,11 @@ def generate_quiz(
         docs = retriever.invoke(query)
         context_text = "\n\n".join([d.page_content for d in docs])
 
+        course_name = get_course_name_setting_value()
         final_system_prompt = f"""
+            你是一個「{course_name}」課程的教授，請給學生設計測驗題目：
             【出題規範】
-            請根據輸入的「參考內容」設計測驗題目。
+            請根據輸入的「課程內容」設計測驗題目。
             請使用繁體中文 (Traditional Chinese) 出題與撰寫提示及參考答案。
             題目難度：{quiz_level}。
             **{system_prompt_instruction}**
@@ -83,9 +87,9 @@ def generate_quiz(
             請以 JSON 格式回傳：
             {{ "quiz_content": "題目內容", 
               "quiz_hint": "答案提示內容", 
-              "reference_answer": "參考答案內容" }}
+              "quiz_reference_answer": "參考答案內容" }}
         """
-        user_prompt_text = f"參考內容：\n{context_text}"
+        user_prompt_text = f"課程內容：\n{context_text}"
 
         client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
@@ -100,9 +104,11 @@ def generate_quiz(
 
         content = response.choices[0].message.content
         data = json.loads(content)  # 解析 JSON
-        # 統一使用 reference_answer（參考答案）；相容舊回傳 answer
-        if "reference_answer" not in data and "answer" in data:
-            data["reference_answer"] = data.pop("answer")
+        # 統一使用 quiz_reference_answer（參考答案）；相容 LLM 舊鍵 reference_answer / answer（此 answer 為參考答案，非評分 API 的學生作答 quiz_answer）
+        if "quiz_reference_answer" not in data and "reference_answer" in data:
+            data["quiz_reference_answer"] = data.pop("reference_answer")
+        if "quiz_reference_answer" not in data and "answer" in data:
+            data["quiz_reference_answer"] = data.pop("answer")
         # 統一使用 quiz_hint；相容舊回傳 hint
         if "quiz_hint" not in data and "hint" in data:
             data["quiz_hint"] = data.pop("hint")

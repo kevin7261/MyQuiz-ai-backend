@@ -3,7 +3,7 @@ Exam API 模組。對應 public.Exam / Exam_Quiz / Exam_Answer 表。
 - GET /exam/exams：列出 Exam 表（格式同 GET /rag/rags），query `local` 篩選 Exam.local，未傳時依連線是否本機判定；每筆含 quizzes（每題帶 answers）與頂層 answers。
 - POST /exam/create-exam：建立一筆 Exam 資料（可傳 local，用法同 POST /rag/create-unit）。
 - POST /exam/create-quiz：依 exam_tab_id 與 rag_id 查找 RAG ZIP 出題，寫入 Exam_Quiz。
-- POST /exam/grade-quiz：非同步評分，寫入 Exam_Answer；輪詢 GET /exam/quiz-grade-result/{job_id}。
+- POST /exam/grade-quiz 或 POST /exam/quiz-grade（同義）：非同步評分，寫入 Exam_Answer；輪詢 GET /exam/quiz-grade-result/{job_id}。
 - POST /exam/delete/{exam_tab_id}：軟刪除該筆 Exam（deleted=true）。
 """
 
@@ -29,7 +29,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Path as P
 # 引入 JSONResponse、Response
 from fastapi.responses import JSONResponse, Response
 # 引入 Pydantic 的 BaseModel、Field
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 # UTC 時間
 from utils.datetime_utils import now_utc_iso
@@ -266,13 +266,17 @@ class ExamGenerateQuizRequest(BaseModel):
 
 
 class ExamQuizGradeRequest(BaseModel):
-    """POST /exam/grade-quiz：寫入 public.Exam_Answer 時對應 exam_id, exam_tab_id, exam_quiz_id, person_id（後端自 Exam 帶入）, student_answer（請求欄位名為 answer）, answer_grade, answer_feedback_metadata, answer_metadata。LLM API Key 由系統設定取得。"""
+    """POST /exam/grade-quiz：寫入 public.Exam_Answer 時對應 exam_id, exam_tab_id, exam_quiz_id, person_id（後端自 Exam 帶入）, quiz_answer；評分後寫入 quiz_grade、quiz_grade_metadata。LLM API Key 由系統設定取得。"""
 
     exam_id: str = Field("", description="Exam 表主鍵 exam_id（字串）")
     exam_tab_id: str = Field("", description="create-exam 回傳的 exam_tab_id（varchar）；與 exam_id 二擇一")
     exam_quiz_id: str = Field("", description="選填，寫入 Exam_Answer.exam_quiz_id")
     quiz_content: str = Field(..., description="測驗題目內容（與 Exam_Quiz.quiz_content 一致）")
-    answer: str = Field(..., description="學生回答（寫入 Exam_Answer.student_answer）")
+    quiz_answer: str = Field(
+        ...,
+        description="學生作答（寫入 Exam_Answer.quiz_answer）；相容舊 JSON 欄位 answer",
+        validation_alias=AliasChoices("quiz_answer", "answer"),
+    )
 
 
 # 非同步評分結果暫存：job_id -> {"status": "pending"|"ready"|"error", "result": dict|None, "error": str|None}
@@ -354,7 +358,7 @@ def exam_generate_quiz(request: Request, body: ExamGenerateQuizRequest):
     傳入 exam_id 或 exam_tab_id（二擇一）、quiz_level；可傳 unit_name 指定 outputs 中哪一個上傳單元（與 build-rag-zip 的 outputs[].unit_name 一致），未傳則用第一筆。
     LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
     依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id，取得對應 Rag，依選定單元載入 RAG ZIP 出題。
-    出題成功後寫入 public.Exam_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, reference_answer、exam_quiz_id 等。
+    出題成功後寫入 public.Exam_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, quiz_reference_answer、exam_quiz_id 等。
     """
     supabase = get_supabase()
     exam_id = body.exam_id or 0
@@ -436,7 +440,7 @@ def exam_generate_quiz(request: Request, body: ExamGenerateQuizRequest):
             "file_name": file_name,
             "quiz_content": result.get("quiz_content") or "",
             "quiz_hint": result.get("quiz_hint") or "",
-            "reference_answer": result.get("reference_answer") or "",
+            "quiz_answer_reference": result.get("quiz_reference_answer") or "",
             "quiz_metadata": result,
         }
         try:
@@ -461,12 +465,13 @@ def exam_generate_quiz(request: Request, body: ExamGenerateQuizRequest):
 
 
 @router.post("/grade-quiz", summary="Exam Grade Quiz")
+@router.post("/quiz-grade", summary="Exam Grade Quiz (alias: /quiz-grade)")
 async def exam_grade_submission(request: Request, background_tasks: BackgroundTasks, body: ExamQuizGradeRequest):
     """
-    傳入 exam_id 或 exam_tab_id、exam_quiz_id、quiz_content、answer。
+    傳入 exam_id 或 exam_tab_id、exam_quiz_id、quiz_content、quiz_answer。
     LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
     依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id；若帶 exam_quiz_id 則依該題 Exam_Quiz.unit_name 載入對應 RAG ZIP（與 create-quiz 指定 unit_name 一致），否則使用第一筆 outputs。
-    回傳 202 與 job_id；背景寫入 public.Exam_Answer。輪詢 GET /exam/quiz-grade-result/{job_id}。
+    回傳 202 與 job_id；背景寫入 public.Exam_Answer。輪詢 GET /exam/quiz-grade-result/{job_id}，ready 時 result 僅含 quiz_grade、quiz_comments 及 exam_answer_id。
     """
     exam_id_str = (body.exam_id or "").strip()
     exam_tab_id = (body.exam_tab_id or "").strip()
@@ -566,14 +571,14 @@ async def exam_grade_submission(request: Request, background_tasks: BackgroundTa
 
     job_id = str(uuid.uuid4())
     _exam_grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
-    insert_fn = lambda rd, sa: _insert_exam_answer(rd, sa, exam_id=exam_id, exam_tab_id=exam_tab_id, person_id=person_id, exam_quiz_id=exam_quiz_id_int)
+    insert_fn = lambda rd, qa: _insert_exam_answer(rd, qa, exam_id=exam_id, exam_tab_id=exam_tab_id, person_id=person_id, exam_quiz_id=exam_quiz_id_int)
     background_tasks.add_task(
         _run_grade_job_background,
         job_id,
         work_dir,
         api_key,
         body.quiz_content or "",
-        body.answer or "",
+        body.quiz_answer or "",
         _exam_grade_job_results,
         insert_fn,
     )
@@ -583,7 +588,7 @@ async def exam_grade_submission(request: Request, background_tasks: BackgroundTa
 @router.get("/quiz-grade-result/{job_id}", tags=["exam"])
 async def get_exam_grade_result(job_id: str):
     """
-    輪詢 Exam 評分結果。回傳 status: pending | ready | error；ready 時 result 含 exam_answer_id（對應 public.Exam_Answer 表），error 時 error 為錯誤訊息。
+    輪詢 Exam 評分結果。回傳 status: pending | ready | error；ready 時 result 含 quiz_grade、quiz_comments、exam_answer_id，error 時 error 為錯誤訊息。
     """
     if job_id not in _exam_grade_job_results:
         return JSONResponse(

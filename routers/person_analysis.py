@@ -6,10 +6,10 @@
   LLM API Key 由系統設定取得；若有設定則會依題目／參考答案／使用者答案彙整弱點，由 AI 產生報告。
 """
 
-# 引入 json 用於解析 answer_feedback_metadata
+# 引入 json 用於解析 quiz_grade_metadata／answer_feedback_metadata
 import json
 # 引入 Optional 型別
-from typing import Optional
+from typing import Any, Optional
 
 # 引入 FastAPI 的 APIRouter、HTTPException、PathParam
 from fastapi import APIRouter, HTTPException, Path as PathParam
@@ -36,13 +36,19 @@ class ListQuizzesByPersonResponse(BaseModel):
     weakness_report: Optional[str] = Field(default=None, description="依題目／參考答案／使用者答案彙整後由 AI 產生的 Markdown 弱點報告；系統未設定 LLM API Key 時為 None")
 
 
+def _metadata_for_weaknesses(ans: dict) -> Any:
+    """quiz_grade_metadata；舊列可能仍為 answer_feedback_metadata。"""
+    meta = ans.get("quiz_grade_metadata") or ans.get("answer_feedback_metadata")
+    return meta
+
+
 def _collect_weaknesses_from_quizzes(quizzes: list[dict]) -> list[str]:
-    """從 person-analysis 回傳的 quizzes 中，收集所有 answer_feedback_metadata 的 weaknesses。"""
+    """從 person-analysis 回傳的 quizzes 中，收集 quiz_grade_metadata 或 answer_feedback_metadata 內的 weaknesses。"""
     all_weaknesses: list[str] = []
     for quiz in quizzes or []:
         answers = quiz.get("answers") or []
         for ans in answers:
-            meta = ans.get("answer_feedback_metadata")
+            meta = _metadata_for_weaknesses(ans)
             if not meta:
                 continue
             if isinstance(meta, dict):
