@@ -81,7 +81,7 @@ def generate_quiz(
             {system_prompt_instruction}
             【回傳格式】
             請以 JSON 格式回傳：
-            {{ "quiz_content": "問題內容", 
+            {{ "quiz_content": "題目內容", 
               "quiz_hint": "答案提示內容", 
               "reference_answer": "參考答案內容" }}
         """
