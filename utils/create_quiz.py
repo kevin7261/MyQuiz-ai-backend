@@ -78,7 +78,7 @@ def generate_quiz(
             請根據輸入的「參考內容」設計測驗題目。
             請使用繁體中文 (Traditional Chinese) 出題與撰寫提示及參考答案。
             題目難度：{quiz_level}。
-            {system_prompt_instruction}
+            **{system_prompt_instruction}**
             【回傳格式】
             請以 JSON 格式回傳：
             {{ "quiz_content": "題目內容", 
