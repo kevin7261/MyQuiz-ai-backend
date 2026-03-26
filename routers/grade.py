@@ -237,7 +237,7 @@ def _run_grade_job(
     course_name = get_course_name_for_prompt()
     # 組裝評分 prompt：角色、目標、限制、評分標準、輸出格式、題目、學生答案、講義依據
     prompt = f"""
-        你是一位「{course_name}」課程的教授，請批改這道題目**。
+        你是一位「{course_name}」課程的教授，請批改這道題目：。
         【評分規範】
         跟據「測驗題目」與「課程內容」，評估「學生答案」的內容是否正確。
         測驗題目：{quiz_content}
