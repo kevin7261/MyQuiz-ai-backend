@@ -2,8 +2,9 @@
 ZIP 與 RAG 相關 API 模組。
 提供：
 - GET /rag/for-exam：依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id，回傳對應 Rag
-- GET /rag/rags：列出 Rag 表（含 quizzes、answers）；query `local` 篩選 Rag.local，未傳時依連線是否本機判定
+- GET /rag/rags：列出 Rag 表（含 quizzes、answers）；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新
 - POST /rag/create-unit：建立一筆 Rag（可傳 local）
+- PUT /rag/unit-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name；與 create-unit 回傳之 rag_id 相同）
 - POST /rag/upload-zip：上傳 ZIP
 - POST /rag/build-rag-zip：依 unit_list 打包並建 RAG
 - POST /rag/delete/{rag_tab_id}：軟刪除並刪除儲存
@@ -95,13 +96,14 @@ def _rag_table_select(
     *,
     local_match: bool | None = None,
 ) -> list[dict]:
-    """查詢 Rag 表全部列。回傳 list of dict。（表名為 public.Rag）exclude_deleted=True 時僅回傳 deleted=False。local_match 若指定則僅回傳 Rag.local 與其相符的列。"""
+    """查詢 Rag 表全部列。回傳 list of dict。（表名為 public.Rag）exclude_deleted=True 時僅回傳 deleted=False。local_match 若指定則僅回傳 Rag.local 與其相符的列。依 created_at 升序（舊→新）。"""
     supabase = get_supabase()
     q = supabase.table("Rag").select(select_columns)
     if exclude_deleted:
         q = q.eq("deleted", False)
     if local_match is not None:
         q = q.eq("local", local_match)
+    q = q.order("created_at", desc=False)
     resp = q.execute()
     return resp.data or []
 
@@ -148,6 +150,12 @@ class CreateRagRequest(BaseModel):
     tab_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 tab_name 欄位")
     person_id: str = Field(..., description="使用者/路徑識別")
     local: bool = Field(False, description="是否為本機 RAG，寫入 Rag 表 local 欄位")
+
+
+class UpdateRagUnitNameRequest(BaseModel):
+    """PUT /rag/unit-name：請求僅含 rag_id（主鍵）、tab_name；勿傳 rag_tab_id。"""
+    rag_id: int = Field(..., description="Rag 表主鍵（整數），與 POST /rag/create-unit 回傳之 rag_id 相同；辨識請用 rag_id，非 rag_tab_id")
+    tab_name: str = Field(..., description="新的顯示名稱，寫入 Rag 表 tab_name 欄位")
 
 
 class PackRequest(BaseModel):
@@ -243,6 +251,7 @@ def list_rag(
 ):
     """
     列出 Rag 表內容，僅回傳 deleted=False 的資料，且 Rag.local 須與 query `local` 相符（未傳 `local` 時依連線是否本機自動判定）。
+    回傳列依 created_at 由舊到新排序。
     每筆 Rag 含表上所有欄位，並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
     關聯方式：quizzes 下每筆 quiz 帶 answers（依 rag_quiz_id 關聯，每題僅一筆）；頂層 answers 為該 rag 下全部答案的扁平列表。
     LLM API Key 依 person_id 從 User 表取得。
@@ -332,6 +341,47 @@ def create_unit(body: CreateRagRequest):
             "person_id": row.get("person_id"),
             "local": row.get("local"),
             "created_at": row.get("created_at"),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/unit-name")
+def update_unit_tab_name(body: UpdateRagUnitNameRequest):
+    """
+    更新既有 Rag 的 tab_name。以 rag_id（Rag 主鍵）比對；僅更新 deleted=false 的列。
+    回傳 rag_id、rag_tab_id、person_id、tab_name、updated_at。
+    """
+    if body.rag_id <= 0:
+        raise HTTPException(status_code=400, detail="無效的 rag_id")
+    tab_name = (body.tab_name or "").strip()
+    if not tab_name:
+        raise HTTPException(status_code=400, detail="請傳入 tab_name")
+    try:
+        supabase = get_supabase()
+        sel = (
+            supabase.table("Rag")
+            .select("rag_id, rag_tab_id, person_id")
+            .eq("rag_id", body.rag_id)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+        if not sel.data or len(sel.data) == 0:
+            raise HTTPException(status_code=404, detail="找不到該 rag_id 的 Rag 資料，或已刪除")
+        row = sel.data[0]
+        fid = row.get("rag_tab_id")
+        pid = row.get("person_id")
+        ts = now_utc_iso()
+        supabase.table("Rag").update({"tab_name": tab_name, "updated_at": ts}).eq("rag_id", body.rag_id).eq("deleted", False).execute()
+        return {
+            "rag_id": body.rag_id,
+            "rag_tab_id": fid,
+            "person_id": pid,
+            "tab_name": tab_name,
+            "updated_at": ts,
         }
     except HTTPException:
         raise

@@ -1,7 +1,8 @@
 """
 Exam API 模組。對應 public.Exam / Exam_Quiz / Exam_Answer 表。
-- GET /exam/exams：列出 Exam 表（格式同 GET /rag/rags），query `local` 篩選 Exam.local，未傳時依連線是否本機判定；每筆含 quizzes（Exam_Quiz 全欄位含 quiz_rate，每題帶 answers）與頂層 answers。
+- GET /exam/exams：列出 Exam 表（格式同 GET /rag/rags），query `local` 篩選 Exam.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；每筆含 quizzes（Exam_Quiz 全欄位含 quiz_rate，每題帶 answers）與頂層 answers。
 - POST /exam/create-exam：建立一筆 Exam 資料（可傳 local，用法同 POST /rag/create-unit）。
+- PUT /exam/unit-name：更新既有 Exam 的 tab_name（body：exam_id、tab_name；與 create-exam 回傳之 exam_id 相同）。
 - POST /exam/create-quiz：依 exam_tab_id 與 rag_id 查找 RAG ZIP 出題，寫入 Exam_Quiz。
 - POST /exam/rate-quiz：依 exam_quiz_id 更新 Exam_Quiz.quiz_rate（僅 -1、0、1；quiz_rate 未傳預設 0）。
 - POST /exam/grade-quiz：非同步評分並寫入 Exam_Answer（與 /rag 評分流程一致；寫入失敗時輪詢 status 為 error）；輪詢 GET /exam/grade-quiz-result/{job_id}。
@@ -83,13 +84,14 @@ def _exams_table_select(
     *,
     local_match: bool | None = None,
 ) -> list[dict]:
-    """查詢 Exam 表全部列。exclude_deleted=True 時僅回傳 deleted=False。local_match 若指定則僅回傳 Exam.local 與其相符的列。"""
+    """查詢 Exam 表全部列。exclude_deleted=True 時僅回傳 deleted=False。local_match 若指定則僅回傳 Exam.local 與其相符的列。依 created_at 升序（舊→新）。"""
     supabase = get_supabase()
     q = supabase.table("Exam").select("*")
     if exclude_deleted:
         q = q.eq("deleted", False)
     if local_match is not None:
         q = q.eq("local", local_match)
+    q = q.order("created_at", desc=False)
     resp = q.execute()
     return resp.data or []
 
@@ -194,6 +196,7 @@ def list_exams(
 ):
     """
     列出 Exam 表內容，僅回傳 deleted=False 的資料，且 Exam.local 須與 query `local` 相符（未傳 `local` 時依連線是否本機自動判定）。
+    回傳列依 created_at 由舊到新排序。
     每筆 Exam 含表上所有欄位，並帶關聯的 Exam_Quiz（quizzes：含 quiz_rate 等表欄位，每題帶一筆 answer）與頂層 answers。
     格式同 GET /rag/rags。
     """
@@ -251,6 +254,12 @@ class CreateExamRequest(BaseModel):
     tab_name: str = Field("", description="測驗顯示名稱，寫入 Exam 表 tab_name")
     person_id: str = Field("", description="選填，寫入 Exam 表 person_id")
     local: bool = Field(False, description="是否為本機 Exam，寫入 Exam 表 local 欄位")
+
+
+class UpdateExamUnitNameRequest(BaseModel):
+    """PUT /exam/unit-name：請求僅含 exam_id（主鍵）、tab_name；勿傳 exam_tab_id。"""
+    exam_id: int = Field(..., description="Exam 表主鍵（整數），與 POST /exam/create-exam 回傳之 exam_id 相同；辨識請用 exam_id，非 exam_tab_id")
+    tab_name: str = Field(..., description="新的顯示名稱，寫入 Exam 表 tab_name 欄位")
 
 
 class ExamGenerateQuizRequest(BaseModel):
@@ -344,6 +353,47 @@ def create_exam(body: CreateExamRequest):
         "local": row.get("local", body.local),
         "created_at": row.get("created_at"),
     }
+
+
+@router.put("/unit-name", summary="Update Unit Tab Name")
+def update_exam_unit_tab_name(body: UpdateExamUnitNameRequest):
+    """
+    更新既有 Exam 的 tab_name。以 exam_id（Exam 主鍵）比對；僅更新 deleted=false 的列。
+    回傳 exam_id、exam_tab_id、person_id、tab_name、updated_at。
+    """
+    if body.exam_id <= 0:
+        raise HTTPException(status_code=400, detail="無效的 exam_id")
+    tab_name = (body.tab_name or "").strip()
+    if not tab_name:
+        raise HTTPException(status_code=400, detail="請傳入 tab_name")
+    try:
+        supabase = get_supabase()
+        sel = (
+            supabase.table("Exam")
+            .select("exam_id, exam_tab_id, person_id")
+            .eq("exam_id", body.exam_id)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+        if not sel.data or len(sel.data) == 0:
+            raise HTTPException(status_code=404, detail="找不到該 exam_id 的 Exam 資料，或已刪除")
+        row = sel.data[0]
+        fid = row.get("exam_tab_id")
+        pid = row.get("person_id")
+        ts = now_utc_iso()
+        supabase.table("Exam").update({"tab_name": tab_name, "updated_at": ts}).eq("exam_id", body.exam_id).eq("deleted", False).execute()
+        return {
+            "exam_id": body.exam_id,
+            "exam_tab_id": fid,
+            "person_id": pid,
+            "tab_name": tab_name,
+            "updated_at": ts,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/delete/{exam_tab_id}", status_code=200)
