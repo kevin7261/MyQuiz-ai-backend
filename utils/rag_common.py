@@ -13,7 +13,13 @@ def _stem_from_output_entry(entry: dict) -> str:
     """由單一 outputs[] 項目取得 repack stem（與 RAG ZIP 的 {stem}_rag 一致）。"""
     if not isinstance(entry, dict):
         return ""
-    stem = (entry.get("rag_tab_id") or entry.get("unit_name") or entry.get("rag_name") or "").strip()
+    stem = (
+        entry.get("rag_tab_id")
+        or entry.get("unit_name")
+        or entry.get("tab_name")
+        or entry.get("rag_name")
+        or ""
+    ).strip()
     if not stem and entry.get("filename"):
         stem = Path(str(entry["filename"])).stem.strip()
     return stem
@@ -24,7 +30,7 @@ def _output_unit_candidates(entry: dict) -> set[str]:
     out: set[str] = set()
     if not isinstance(entry, dict):
         return out
-    for k in ("unit_name", "rag_tab_id", "rag_name"):
+    for k in ("unit_name", "rag_tab_id", "tab_name", "rag_name"):
         v = (entry.get(k) or "").strip()
         if v:
             out.add(v)
@@ -59,7 +65,7 @@ def get_rag_stem_from_rag_id(
     row = rag_rows.data[0]
     # 取得 rag_metadata（可能為 dict 或 None）
     meta = row.get("rag_metadata")
-    # 從 rag_metadata.outputs 取得 outputs 陣列；stem 來自 rag_tab_id（舊）/ unit_name / rag_name（舊）/ filename
+    # 從 rag_metadata.outputs 取得 outputs 陣列；stem 來自 rag_tab_id（舊）/ unit_name / tab_name / rag_name（舊）/ filename
     outputs = (meta.get("outputs", []) if isinstance(meta, dict) else []) or []
     # 若 outputs 為空，表示尚未執行 build-rag-zip，拋出 400
     if not outputs:

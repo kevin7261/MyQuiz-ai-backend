@@ -5,7 +5,7 @@ ZIP 與 RAG 相關 API 模組。
 - GET /rag/rags：列出 Rag 表（含 quizzes、answers）；query `local` 篩選 Rag.local，未傳時依連線是否本機判定
 - POST /rag/create-unit：建立一筆 Rag（可傳 local）
 - POST /rag/upload-zip：上傳 ZIP
-- POST /rag/build-rag-zip：依 rag_list 打包並建 RAG
+- POST /rag/build-rag-zip：依 unit_list 打包並建 RAG
 - POST /rag/delete/{rag_tab_id}：軟刪除並刪除儲存
 """
 
@@ -64,7 +64,7 @@ RAG_SELECT_ALL = "*"
 def _rag_default_row(
     rag_tab_id: str,
     *,
-    rag_name: str | None = None,
+    tab_name: str | None = None,
     person_id: str | None = None,
     system_prompt_instruction: str | None = None,
     file_metadata: Any = None,
@@ -73,10 +73,10 @@ def _rag_default_row(
     """Rag 表一筆新增時的預設欄位；鍵順序同 public.Rag（rag_tab_id→…→updated_at，不含 rag_id/created_at）。"""
     row: dict[str, Any] = {
         "rag_tab_id": rag_tab_id,
-        "rag_name": rag_name if rag_name is not None else "",
+        "tab_name": tab_name if tab_name is not None else "",
         "person_id": person_id if person_id is not None else "",
         "file_metadata": file_metadata,
-        "rag_list": "",
+        "unit_list": "",
     }
     if system_prompt_instruction is not None:
         row["system_prompt_instruction"] = system_prompt_instruction
@@ -143,18 +143,18 @@ class ListRagResponse(BaseModel):
 
 
 class CreateRagRequest(BaseModel):
-    """POST /rag/create-unit：欄位順序同 public.Rag（rag_tab_id, rag_name, person_id, local；其餘欄位於 upload / build 寫入）。"""
+    """POST /rag/create-unit：欄位順序同 public.Rag（rag_tab_id, tab_name, person_id, local；其餘欄位於 upload / build 寫入）。"""
     rag_tab_id: str = Field(..., description="Rag 的 tab 識別，對應 Rag 表 rag_tab_id 欄位")
-    rag_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 rag_name 欄位")
+    tab_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 tab_name 欄位")
     person_id: str = Field(..., description="使用者/路徑識別")
     local: bool = Field(False, description="是否為本機 RAG，寫入 Rag 表 local 欄位")
 
 
 class PackRequest(BaseModel):
-    """欄位順序對應 public.Rag 中本請求會更新的區段：rag_tab_id, person_id, rag_list, system_prompt_instruction, chunk_size, chunk_overlap（另寫 rag_metadata；比對 person_id + rag_tab_id 更新）。"""
+    """欄位順序對應 public.Rag 中本請求會更新的區段：rag_tab_id, person_id, unit_list, system_prompt_instruction, chunk_size, chunk_overlap（另寫 rag_metadata；比對 person_id + rag_tab_id 更新）。"""
     rag_tab_id: str
     person_id: str  # 與 upload-zip 一致，上傳 ZIP 所在路徑的 person_id
-    rag_list: str  # 寫入 Rag 表 rag_list 欄位；例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
+    unit_list: str  # 寫入 Rag 表 unit_list 欄位；例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
     system_prompt_instruction: str = ""  # 出題系統指令，寫入 Rag 表 system_prompt_instruction 欄位
     chunk_size: int = 1000  # 寫入 Rag 表 chunk_size 欄位
     chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
@@ -172,7 +172,7 @@ def get_for_exam_rag(request: Request):
         if rag_id is None or rag_id <= 0:
             return {
                 "source_rag_tab_id": None,
-                "rag_list": None,
+                "unit_list": None,
                 "outputs": [],
                 "rag_id": None,
                 "rag_tab_id": None,
@@ -191,7 +191,7 @@ def get_for_exam_rag(request: Request):
         if len(data) == 0:
             return {
                 "source_rag_tab_id": None,
-                "rag_list": None,
+                "unit_list": None,
                 "outputs": [],
                 "rag_id": None,
                 "rag_tab_id": None,
@@ -207,15 +207,21 @@ def get_for_exam_rag(request: Request):
             "system_prompt_instruction": row.get("system_prompt_instruction"),
         }
         if isinstance(meta, dict) and "source_rag_tab_id" in meta and "outputs" in meta:
+            ul = meta.get("unit_list")
+            if ul is None or ul == "":
+                ul = meta.get("rag_list")  # 舊版 rag_metadata 內鍵名
             return to_json_safe({
                 "source_rag_tab_id": meta.get("source_rag_tab_id"),
-                "rag_list": meta.get("rag_list"),
+                "unit_list": ul,
                 "outputs": meta.get("outputs", []),
                 **extra,
             })
+        row_ul = row.get("unit_list")
+        if row_ul is None or row_ul == "":
+            row_ul = row.get("rag_list") or ""
         return to_json_safe({
             "source_rag_tab_id": row.get("rag_tab_id"),
-            "rag_list": row.get("rag_list") or "",
+            "unit_list": row_ul,
             "outputs": (meta or {}).get("outputs", []) if isinstance(meta, dict) else [],
             **extra,
         })
@@ -289,8 +295,8 @@ def list_rag(
 @router.post("/create-unit")
 def create_unit(body: CreateRagRequest):
     """
-    只建立一筆 Rag 資料，接受 rag_tab_id、person_id、rag_name（必填）、local（選填，預設 false）。system_prompt_instruction 請在 build-rag-zip 傳入。
-    回傳新增的 rag_id、rag_tab_id、person_id、rag_name、local、created_at。
+    只建立一筆 Rag 資料，接受 rag_tab_id、person_id、tab_name（必填）、local（選填，預設 false）。system_prompt_instruction 請在 build-rag-zip 傳入。
+    回傳新增的 rag_id、rag_tab_id、person_id、tab_name、local、created_at。
     """
     fid = (body.rag_tab_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
@@ -298,9 +304,9 @@ def create_unit(body: CreateRagRequest):
     pid = (body.person_id or "").strip()
     if not pid:
         raise HTTPException(status_code=400, detail="請傳入 person_id")
-    rag_name = (body.rag_name or "").strip()
-    if not rag_name:
-        raise HTTPException(status_code=400, detail="請傳入 rag_name")
+    tab_name = (body.tab_name or "").strip()
+    if not tab_name:
+        raise HTTPException(status_code=400, detail="請傳入 tab_name")
     try:
         supabase = get_supabase()
         r = (
@@ -308,7 +314,7 @@ def create_unit(body: CreateRagRequest):
             .insert(
                 _rag_default_row(
                     fid,
-                    rag_name=rag_name,
+                    tab_name=tab_name,
                     person_id=pid,
                     file_metadata=None,
                     local=body.local,
@@ -322,7 +328,7 @@ def create_unit(body: CreateRagRequest):
         return {
             "rag_id": row["rag_id"],
             "rag_tab_id": row["rag_tab_id"],
-            "rag_name": row.get("rag_name"),
+            "tab_name": row.get("tab_name"),
             "person_id": row.get("person_id"),
             "local": row.get("local"),
             "created_at": row.get("created_at"),
@@ -412,9 +418,9 @@ async def upload_zip(
 @router.post("/build-rag-zip")
 def build_rag_zip(body: PackRequest):
     """
-    依先前上傳的 ZIP（rag_tab_id）與 rag_list 字串，抽出指定資料夾名稱（路徑上任一層目錄名皆可，含 6 位數週次）重新壓成 ZIP 並存到後端。
+    依先前上傳的 ZIP（rag_tab_id）與 unit_list 字串，抽出指定資料夾名稱（路徑上任一層目錄名皆可，含 6 位數週次）重新壓成 ZIP 並存到後端。
     ZIP 檔位置為 {person_id}/{rag_tab_id}/upload（與 upload-zip 一致），body 需傳入 person_id。
-    rag_list 寫入 Rag 表；格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
+    unit_list 寫入 Rag 表；格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
     一律做成 RAG（FAISS）ZIP；LLM API Key 依 person_id 從 User 表取得。回傳內容完整寫入 Rag 表 rag_metadata，並 update chunk_size、chunk_overlap。
     """
     pid = (body.person_id or "").strip()
@@ -432,9 +438,9 @@ def build_rag_zip(body: PackRequest):
         except zipfile.BadZipFile:
             raise HTTPException(status_code=400, detail="無法讀取該 ZIP 檔案")
 
-        packed = repack_tasks_to_zips(path, folder_map, body.rag_list)
+        packed = repack_tasks_to_zips(path, folder_map, body.unit_list)
         if not packed:
-            raise HTTPException(status_code=400, detail="rag_list 為空或格式錯誤，例：220222+220301")
+            raise HTTPException(status_code=400, detail="unit_list 為空或格式錯誤，例：220222+220301")
 
         api_key = get_llm_api_key_for_person(pid)
         if not api_key:
@@ -445,7 +451,7 @@ def build_rag_zip(body: PackRequest):
 
         outputs = []
         for zip_bytes, filename in packed:
-            # 用 rag_list 衍生的檔名做 tab_id（如 220222_220301.zip -> 220222_220301），不再生成 UUID
+            # 用 unit_list 衍生的檔名做 tab_id（如 220222_220301.zip -> 220222_220301），不再生成 UUID
             repack_tab_id = Path(filename).stem if filename else None
             if not repack_tab_id or "/" in repack_tab_id or "\\" in repack_tab_id:
                 repack_tab_id = str(uuid.uuid4())
@@ -477,7 +483,7 @@ def build_rag_zip(body: PackRequest):
                             rag_path.unlink(missing_ok=True)
                         except Exception:
                             pass
-                    # rag 檔名也依 rag_list，tab_id 加 _rag 以區分 repack
+                    # rag 檔名也依 unit_list，tab_id 加 _rag 以區分 repack
                     rag_tab_id = f"{tab_id}_rag"
                     save_zip(
                         rag_bytes,
@@ -500,11 +506,11 @@ def build_rag_zip(body: PackRequest):
         except Exception:
             pass
 
-    response = {"source_rag_tab_id": body.rag_tab_id, "rag_list": body.rag_list, "outputs": outputs}
+    response = {"source_rag_tab_id": body.rag_tab_id, "unit_list": body.unit_list, "outputs": outputs}
     try:
         supabase = get_supabase()
         update_payload = {
-            "rag_list": body.rag_list,
+            "unit_list": body.unit_list,
             "system_prompt_instruction": body.system_prompt_instruction or "",
             "rag_metadata": response,
             "chunk_size": body.chunk_size,

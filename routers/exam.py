@@ -3,7 +3,7 @@ Exam API 模組。對應 public.Exam / Exam_Quiz / Exam_Answer 表。
 - GET /exam/exams：列出 Exam 表（格式同 GET /rag/rags），query `local` 篩選 Exam.local，未傳時依連線是否本機判定；每筆含 quizzes（Exam_Quiz 全欄位含 quiz_rate，每題帶 answers）與頂層 answers。
 - POST /exam/create-exam：建立一筆 Exam 資料（可傳 local，用法同 POST /rag/create-unit）。
 - POST /exam/create-quiz：依 exam_tab_id 與 rag_id 查找 RAG ZIP 出題，寫入 Exam_Quiz。
-- POST /exam/rate-quiz：依 exam_quiz_id 更新 Exam_Quiz.quiz_rate（僅 -1、0、1）。
+- POST /exam/rate-quiz：依 exam_quiz_id 更新 Exam_Quiz.quiz_rate（僅 -1、0、1；quiz_rate 未傳預設 0）。
 - POST /exam/grade-quiz：非同步評分並寫入 Exam_Answer（與 /rag 評分流程一致；寫入失敗時輪詢 status 為 error）；輪詢 GET /exam/grade-quiz-result/{job_id}。
 - POST /exam/delete/{exam_tab_id}：軟刪除該筆 Exam（deleted=true）。
 """
@@ -63,14 +63,14 @@ ExamQuizRateValue = Literal[-1, 0, 1]
 def _exam_default_row(
     exam_tab_id: str,
     *,
-    exam_name: str = "",
+    tab_name: str = "",
     person_id: str = "",
     local: bool = False,
 ) -> dict[str, Any]:
     """Exam 表新增一筆時的預設欄位；鍵順序同 public.Exam（不含 exam_id/created_at）。"""
     return {
         "exam_tab_id": exam_tab_id,
-        "exam_name": exam_name,
+        "tab_name": tab_name,
         "person_id": person_id,
         "local": local,
         "deleted": False,
@@ -245,10 +245,10 @@ def list_exams(
 
 
 class CreateExamRequest(BaseModel):
-    """POST /exam/create-exam：欄位順序同 public.Exam（exam_tab_id, exam_name, person_id, local；exam_id／created_at 由資料庫產生；insert 另帶 deleted, updated_at）。"""
+    """POST /exam/create-exam：欄位順序同 public.Exam（exam_tab_id, tab_name, person_id, local；exam_id／created_at 由資料庫產生；insert 另帶 deleted, updated_at）。"""
 
     exam_tab_id: str | None = Field(None, description="選填；未傳則由後端產生（格式同 tab_id）")
-    exam_name: str = Field("", description="測驗名稱，寫入 Exam 表 exam_name")
+    tab_name: str = Field("", description="測驗顯示名稱，寫入 Exam 表 tab_name")
     person_id: str = Field("", description="選填，寫入 Exam 表 person_id")
     local: bool = Field(False, description="是否為本機 Exam，寫入 Exam 表 local 欄位")
 
@@ -277,12 +277,12 @@ class ExamGenerateQuizRequest(BaseModel):
 
 
 class ExamQuizRateRequest(BaseModel):
-    """POST /exam/rate-quiz：更新 public.Exam_Quiz.quiz_rate。"""
+    """POST /exam/rate-quiz：更新 public.Exam_Quiz.quiz_rate（quiz_rate 預設 0）。"""
 
     exam_quiz_id: int = Field(..., ge=1, description="Exam_Quiz 主鍵 exam_quiz_id")
     quiz_rate: ExamQuizRateValue = Field(
-        ...,
-        description="寫入 Exam_Quiz.quiz_rate，僅允許 -1、0、1",
+        0,
+        description="寫入 Exam_Quiz.quiz_rate，僅允許 -1、0、1（未傳時預設 0）",
     )
 
 
@@ -308,7 +308,7 @@ _exam_grade_job_results: dict[str, dict[str, Any]] = {}
 def create_exam(body: CreateExamRequest):
     """
     建立一筆 Exam 資料。exam_tab_id 可選，未傳則由後端產生；local 選填，預設 false（與 create-unit 一致）。
-    回傳 exam_id、exam_tab_id、person_id、exam_name、local、created_at。
+    回傳 exam_id、exam_tab_id、person_id、tab_name、local、created_at。
     """
     fid = (body.exam_tab_id or "").strip()
     if not fid:
@@ -317,7 +317,7 @@ def create_exam(body: CreateExamRequest):
         raise HTTPException(status_code=400, detail="無效的 exam_tab_id")
 
     person_id = (body.person_id or "").strip()
-    exam_name = (body.exam_name or "").strip()
+    tab_name = (body.tab_name or "").strip()
 
     supabase = get_supabase()
     ins = (
@@ -325,7 +325,7 @@ def create_exam(body: CreateExamRequest):
         .insert(
             _exam_default_row(
                 fid,
-                exam_name=exam_name,
+                tab_name=tab_name,
                 person_id=person_id,
                 local=body.local,
             )
@@ -339,7 +339,7 @@ def create_exam(body: CreateExamRequest):
     return {
         "exam_id": row.get("exam_id"),
         "exam_tab_id": row.get("exam_tab_id", fid),
-        "exam_name": row.get("exam_name", exam_name),
+        "tab_name": row.get("tab_name", tab_name),
         "person_id": row.get("person_id", person_id),
         "local": row.get("local", body.local),
         "created_at": row.get("created_at"),
@@ -490,7 +490,7 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest):
 @router.post("/rate-quiz", summary="Exam Rate Quiz", status_code=200)
 def update_exam_quiz_rate(body: ExamQuizRateRequest):
     """
-    依 body 的 exam_quiz_id 更新該筆 Exam_Quiz 的 quiz_rate（**僅 -1、0、1**）。
+    依 body 的 exam_quiz_id 更新該筆 Exam_Quiz 的 quiz_rate（**僅 -1、0、1**；未傳 quiz_rate 時視為 **0**）。
     成功後回傳 exam_quiz_id、quiz_rate、updated_at 與提示訊息。
     """
     exam_quiz_id = int(body.exam_quiz_id)
