@@ -1,7 +1,7 @@
 """
 評分 API 模組。
 依 rag_id 自 rag_metadata.outputs 取得 repack stem，再以 {stem}_rag 載入 RAG ZIP 檢索講義後由 GPT-4o 評分。
-非同步：POST /rag/grade-quiz 或 POST /rag/quiz-grade（同義）回傳 202 + job_id，背景執行評分並寫入 Rag_Answer；前端以 GET /rag/quiz-grade-result/{job_id} 輪詢（寫入失敗時 status 為 error）。
+非同步：POST /rag/grade-quiz 回傳 202 + job_id，背景執行評分並寫入 Rag_Answer；前端以 GET /rag/grade-quiz-result/{job_id} 輪詢（寫入失敗時 status 為 error）。
 """
 
 # 引入 json 用於解析 GPT 回傳與序列化
@@ -507,12 +507,11 @@ def rag_create_quiz(body: GenerateQuizRequest):
 
 
 @router.post("/grade-quiz", summary="Rag Grade Quiz")
-@router.post("/quiz-grade", summary="Rag Grade Quiz (alias: /quiz-grade)")
 async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest):
     """
     傳入 rag_id（字串）、rag_tab_id（選填）、rag_quiz_id、quiz_content、quiz_answer。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
-    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。驗證後回傳 202 與 job_id；背景寫入 public.Rag_Answer（寫入失敗則輪詢為 error）。輪詢 GET /rag/quiz-grade-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 rag_answer_id。
+    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。驗證後回傳 202 與 job_id；背景寫入 public.Rag_Answer（寫入失敗則輪詢為 error）。輪詢 GET /rag/grade-quiz-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 rag_answer_id。
     """
     # 取得 rag_id 字串並去除空白
     rag_id_str = (body.rag_id or "").strip()
@@ -608,7 +607,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
 
-@router.get("/quiz-grade-result/{job_id}", tags=["rag"])
+@router.get("/grade-quiz-result/{job_id}", tags=["rag"])
 async def get_grade_result(job_id: str):  # 路徑參數 job_id
     """
     輪詢評分結果。回傳 status: pending | ready | error；

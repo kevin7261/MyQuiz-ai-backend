@@ -1,9 +1,10 @@
 """
 Exam API 模組。對應 public.Exam / Exam_Quiz / Exam_Answer 表。
-- GET /exam/exams：列出 Exam 表（格式同 GET /rag/rags），query `local` 篩選 Exam.local，未傳時依連線是否本機判定；每筆含 quizzes（每題帶 answers）與頂層 answers。
+- GET /exam/exams：列出 Exam 表（格式同 GET /rag/rags），query `local` 篩選 Exam.local，未傳時依連線是否本機判定；每筆含 quizzes（Exam_Quiz 全欄位含 quiz_rate，每題帶 answers）與頂層 answers。
 - POST /exam/create-exam：建立一筆 Exam 資料（可傳 local，用法同 POST /rag/create-unit）。
 - POST /exam/create-quiz：依 exam_tab_id 與 rag_id 查找 RAG ZIP 出題，寫入 Exam_Quiz。
-- POST /exam/grade-quiz 或 POST /exam/quiz-grade（同義）：非同步評分並寫入 Exam_Answer（與 /rag 評分流程一致；寫入失敗時輪詢 status 為 error）；輪詢 GET /exam/quiz-grade-result/{job_id}。
+- POST /exam/rate-quiz：依 exam_quiz_id 更新 Exam_Quiz.quiz_rate（僅 -1、0、1）。
+- POST /exam/grade-quiz：非同步評分並寫入 Exam_Answer（與 /rag 評分流程一致；寫入失敗時輪詢 status 為 error）；輪詢 GET /exam/grade-quiz-result/{job_id}。
 - POST /exam/delete/{exam_tab_id}：軟刪除該筆 Exam（deleted=true）。
 """
 
@@ -21,8 +22,8 @@ import uuid
 import zipfile
 # 引入 Path 用於路徑
 from pathlib import Path
-# 引入 Any、Optional 型別
-from typing import Any, Optional
+# 引入 Any、Literal、Optional 型別
+from typing import Any, Literal, Optional
 
 # 引入 FastAPI 相關
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Path as PathParam, Query, Request
@@ -51,6 +52,9 @@ from routers.grade import _run_grade_job_background, _insert_exam_answer, _clean
 
 # 建立路由，前綴 /exam
 router = APIRouter(prefix="/exam", tags=["exam"])
+
+# Exam_Quiz.quiz_rate：僅 -1、0、1（語意由產品定義；預設 0）
+ExamQuizRateValue = Literal[-1, 0, 1]
 
 
 # --- GET /exam/exams（格式同 /rag/rags）---
@@ -100,7 +104,7 @@ def _exams_by_ids(exam_ids: list[int]) -> list[dict]:
 
 
 def _quizzes_by_exam_id(exam_ids: list[int]) -> dict[int, list[dict]]:
-    """依 exam_id 查詢 Exam_Quiz 表，回傳 exam_id -> list of quiz。"""
+    """依 exam_id 查詢 Exam_Quiz 表（select *，含 quiz_rate），回傳 exam_id -> list of quiz。"""
     if not exam_ids:
         return {}
     supabase = get_supabase()
@@ -171,8 +175,11 @@ def _answers_by_exam_quiz_ids(exam_quiz_ids: list[int]) -> dict[int, list[dict]]
 
 
 class ListExamResponse(BaseModel):
-    """GET /exam/exams 回應：Exam 表全部資料，每筆另含關聯的 Exam_Quiz（quizzes，每題帶一筆 answer）與頂層 Exam_Answer（answers）。"""
-    exams: list[dict]
+    """GET /exam/exams 回應：Exam 表全部資料，每筆另含關聯的 Exam_Quiz（quizzes：表上欄位如 quiz_rate、quiz_content…，每題帶一筆 answer）與頂層 Exam_Answer（answers）。"""
+    exams: list[dict] = Field(
+        ...,
+        description="每筆 Exam 的 quizzes[] 為 Exam_Quiz 列（含 quiz_rate，值僅 -1／0／1），每題 answers 最多一筆",
+    )
     count: int
 
 
@@ -187,7 +194,7 @@ def list_exams(
 ):
     """
     列出 Exam 表內容，僅回傳 deleted=False 的資料，且 Exam.local 須與 query `local` 相符（未傳 `local` 時依連線是否本機自動判定）。
-    每筆 Exam 含表上所有欄位，並帶關聯的 Exam_Quiz（quizzes，每題帶一筆 answer）與頂層 answers。
+    每筆 Exam 含表上所有欄位，並帶關聯的 Exam_Quiz（quizzes：含 quiz_rate 等表欄位，每題帶一筆 answer）與頂層 answers。
     格式同 GET /rag/rags。
     """
     try:
@@ -247,7 +254,7 @@ class CreateExamRequest(BaseModel):
 
 
 class ExamGenerateQuizRequest(BaseModel):
-    """POST /exam/create-quiz；欄位順序對齊 public.Exam_Quiz 中由客戶端提供的子集：exam_id, exam_tab_id, person_id（後端自 Exam 帶入）, rag_id（後端帶入）, unit_name, …"""
+    """POST /exam/create-quiz；欄位順序對齊 public.Exam_Quiz 中由客戶端提供的子集：exam_id, exam_tab_id, person_id（後端自 Exam 帶入）, rag_id（後端帶入）, unit_name, quiz_rate, …"""
 
     exam_id: int = Field(0, description="Exam 表主鍵 exam_id")
     exam_tab_id: str = Field("", description="create-exam 回傳的 exam_tab_id（varchar）；與 exam_id 二擇一")
@@ -256,6 +263,10 @@ class ExamGenerateQuizRequest(BaseModel):
         description="選填；指定供測驗 Rag 的 rag_metadata.outputs 中某一上傳單元（與 POST /rag/build-rag-zip 的 outputs[].unit_name 一致）。未傳或空字串則使用第一筆輸出",
     )
     quiz_level: str = Field("", description="難度／層級（字串），用於出題提示並寫入 quiz_metadata")
+    quiz_rate: ExamQuizRateValue = Field(
+        0,
+        description="寫入 Exam_Quiz.quiz_rate，僅允許 -1、0、1（預設 0）",
+    )
 
     @field_validator("quiz_level", mode="before")
     @classmethod
@@ -263,6 +274,16 @@ class ExamGenerateQuizRequest(BaseModel):
         if v is None:
             return ""
         return str(v)
+
+
+class ExamQuizRateRequest(BaseModel):
+    """POST /exam/rate-quiz：更新 public.Exam_Quiz.quiz_rate。"""
+
+    exam_quiz_id: int = Field(..., ge=1, description="Exam_Quiz 主鍵 exam_quiz_id")
+    quiz_rate: ExamQuizRateValue = Field(
+        ...,
+        description="寫入 Exam_Quiz.quiz_rate，僅允許 -1、0、1",
+    )
 
 
 class ExamQuizGradeRequest(BaseModel):
@@ -442,6 +463,7 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest):
             "quiz_content": result.get("quiz_content") or "",
             "quiz_hint": result.get("quiz_hint") or "",
             "quiz_answer_reference": result.get("quiz_reference_answer") or "",
+            "quiz_rate": int(body.quiz_rate),
             "quiz_metadata": result,
         }
         try:
@@ -465,14 +487,48 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest):
             pass
 
 
+@router.post("/rate-quiz", summary="Exam Rate Quiz", status_code=200)
+def update_exam_quiz_rate(body: ExamQuizRateRequest):
+    """
+    依 body 的 exam_quiz_id 更新該筆 Exam_Quiz 的 quiz_rate（**僅 -1、0、1**）。
+    成功後回傳 exam_quiz_id、quiz_rate、updated_at 與提示訊息。
+    """
+    exam_quiz_id = int(body.exam_quiz_id)
+    quiz_rate = int(body.quiz_rate)
+    supabase = get_supabase()
+    r = (
+        supabase.table("Exam_Quiz")
+        .select("exam_quiz_id")
+        .eq("exam_quiz_id", exam_quiz_id)
+        .limit(1)
+        .execute()
+    )
+    if not r.data or len(r.data) == 0:
+        raise HTTPException(status_code=404, detail=f"找不到 exam_quiz_id={exam_quiz_id} 的 Exam_Quiz")
+    supabase.table("Exam_Quiz").update(
+        {"quiz_rate": quiz_rate, "updated_at": now_utc_iso()}
+    ).eq("exam_quiz_id", exam_quiz_id).execute()
+    after = (
+        supabase.table("Exam_Quiz")
+        .select("exam_quiz_id, quiz_rate, updated_at")
+        .eq("exam_quiz_id", exam_quiz_id)
+        .limit(1)
+        .execute()
+    )
+    if not after.data or len(after.data) == 0:
+        raise HTTPException(status_code=500, detail="更新 quiz_rate 後讀取失敗")
+    out = dict(after.data[0])
+    out["message"] = "已更新 quiz_rate"
+    return to_json_safe(out)
+
+
 @router.post("/grade-quiz", summary="Exam Grade Quiz")
-@router.post("/quiz-grade", summary="Exam Grade Quiz (alias: /quiz-grade)")
 async def exam_grade_submission(request: Request, background_tasks: BackgroundTasks, body: ExamQuizGradeRequest):
     """
     傳入 exam_id 或 exam_tab_id、exam_quiz_id、quiz_content、quiz_answer。
     LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
     依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id；若帶 exam_quiz_id 則依該題 Exam_Quiz.unit_name 載入對應 RAG ZIP（與 create-quiz 指定 unit_name 一致），否則使用第一筆 outputs。
-    回傳 202 與 job_id；背景寫入 public.Exam_Answer（與 POST /rag/grade-quiz 相同管線；寫入失敗則輪詢為 error）。輪詢 GET /exam/quiz-grade-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 exam_answer_id。
+    回傳 202 與 job_id；背景寫入 public.Exam_Answer（與 POST /rag/grade-quiz 相同管線；寫入失敗則輪詢為 error）。輪詢 GET /exam/grade-quiz-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 exam_answer_id。
     """
     exam_id_str = (body.exam_id or "").strip()
     exam_tab_id = (body.exam_tab_id or "").strip()
@@ -588,10 +644,10 @@ async def exam_grade_submission(request: Request, background_tasks: BackgroundTa
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
 
-@router.get("/quiz-grade-result/{job_id}", tags=["exam"])
+@router.get("/grade-quiz-result/{job_id}", tags=["exam"])
 async def get_exam_grade_result(job_id: str):
     """
-    輪詢 Exam 評分結果（行為同 GET /rag/quiz-grade-result/{job_id}）。
+    輪詢 Exam 評分結果（行為同 GET /rag/grade-quiz-result/{job_id}）。
     status: pending | ready | error；ready 時 result 含 quiz_grade、quiz_comments、exam_answer_id（已寫入 Exam_Answer）；
     error 時為 LLM／ZIP 例外，或 LLM 成功但寫入 Exam_Answer 失敗。
     """
