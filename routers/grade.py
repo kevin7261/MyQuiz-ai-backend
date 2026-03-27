@@ -43,11 +43,11 @@ from utils.course_name_utils import get_course_name_for_prompt
 # 依 person_id 從 User 表取得 LLM API Key
 from utils.llm_api_key_utils import get_llm_api_key_for_person
 # 從 ZIP 載入文件為 Document 列表
-from utils.rag import process_zip_to_docs
+from utils.rag_faiss_zip import process_zip_to_docs
 # 由 rag_id 取得 stem、rag_zip_tab_id
-from utils.rag_common import get_rag_stem_from_rag_id
+from utils.rag_stem_utils import get_rag_stem_from_rag_id
 # 取得 ZIP 儲存路徑
-from utils.storage import get_zip_path
+from utils.zip_storage import get_zip_path
 # Supabase 客戶端
 from utils.supabase_client import get_supabase
 
@@ -196,7 +196,7 @@ def _run_grade_job(
             db_folder = root
             break
 
-    # Embeddings 須與建立 RAG ZIP 時一致（utils.rag 使用 text-embedding-3-small）
+    # Embeddings 須與建立 RAG ZIP 時一致（utils.rag_faiss_zip 使用 text-embedding-3-small）
     embeddings = OpenAIEmbeddings(
         model="text-embedding-3-small",  # 指定 embedding 模型
         api_key=api_key,  # 傳入 OpenAI API Key
@@ -212,7 +212,7 @@ def _run_grade_job(
         )
     # 否則為一般講義 ZIP，需先處理文件再建向量庫
     else:
-        # 從 ZIP 載入講義（與 utils.rag.process_zip_to_docs 支援的副檔名一致）
+        # 從 ZIP 載入講義（與 utils.rag_faiss_zip.process_zip_to_docs 支援的副檔名一致）
         all_documents = process_zip_to_docs(zip_source_path, extract_folder)
         # 若無任何文件，拋出 ValueError
         if not all_documents:
@@ -443,7 +443,7 @@ def rag_create_quiz(body: GenerateQuizRequest):
 
     try:
         # 動態引入 generate_quiz 避免循環 import
-        from utils.create_quiz import generate_quiz
+        from utils.quiz_generation import generate_quiz
         # 呼叫 generate_quiz 產生題目
         result = generate_quiz(
             path,  # RAG ZIP 路徑

@@ -41,7 +41,7 @@ from utils.zip_utils import (
     repack_tasks_to_zips,
 )
 # 儲存工具
-from utils.storage import (
+from utils.zip_storage import (
     save_zip,
     get_zip_path,
     get_zip_path_by_person,
@@ -518,7 +518,7 @@ def build_rag_zip(body: PackRequest):
                 "filename": filename,
             }
             try:
-                from utils.rag import make_rag_zip_from_zip_path
+                from utils.rag_faiss_zip import make_rag_zip_from_zip_path
                 rag_path = get_zip_path(tab_id)
                 if rag_path and rag_path.exists():
                     try:

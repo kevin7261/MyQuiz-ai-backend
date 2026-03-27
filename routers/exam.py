@@ -40,11 +40,11 @@ from utils.json_utils import to_json_safe
 # 系統 LLM API Key（Exam 使用系統設定，非個人）
 from utils.llm_api_key_utils import get_llm_api_key
 # 由 rag_id 取得 stem、rag_zip_tab_id
-from utils.rag_common import get_rag_stem_from_rag_id
+from utils.rag_stem_utils import get_rag_stem_from_rag_id
 # 供測驗 RAG：System_Setting rag_id、本機判定（與 Rag.local 篩選一致）
 from utils.rag_exam_setting import fetch_exam_rag_id_from_settings, is_localhost_request
 # 儲存：generate_tab_id、get_zip_path
-from utils.storage import generate_tab_id, get_zip_path
+from utils.zip_storage import generate_tab_id, get_zip_path
 # Supabase 客戶端
 from utils.supabase_client import get_supabase
 
@@ -486,7 +486,7 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest):
         raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 rag_id={rag_id}（tab_id={rag_zip_tab_id}）")
 
     try:
-        from utils.create_quiz import generate_quiz
+        from utils.quiz_generation import generate_quiz
         result = generate_quiz(
             path,
             api_key=api_key,

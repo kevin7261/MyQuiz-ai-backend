@@ -1,6 +1,5 @@
 """
-RAG 相關共用邏輯模組。
-提供由 rag_id 查詢 Rag 表並取得 stem、rag_zip_tab_id 的函數。
+依 Rag 表與 rag_metadata.outputs 解析 repack stem、rag_zip_tab_id（供取得 RAG ZIP 路徑等）。
 """
 
 # 引入 FastAPI 的 HTTPException，用於拋出 404、400 等錯誤

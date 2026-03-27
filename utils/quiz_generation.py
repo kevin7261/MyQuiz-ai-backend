@@ -1,5 +1,5 @@
 """
-從 RAG ZIP（FAISS 向量庫）載入後檢索 Context，呼叫 GPT-4o 生成測驗。
+從 RAG ZIP（FAISS）載入、檢索後以 LLM 生成測驗內容（generate_quiz）。
 """
 
 # 引入 json 用於解析 LLM 回傳

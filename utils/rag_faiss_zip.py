@@ -1,6 +1,6 @@
 """
-從 ZIP 製作 RAG 用 FAISS 向量庫，並打包成 ZIP 供下載。
-LLM API key 由呼叫端傳入，不從環境變數讀取。
+從講義 ZIP 建 FAISS 向量庫並打包成 RAG ZIP；含 process_zip_to_docs（與建庫相同副檔名規則）。
+Embeddings 由呼叫端傳入 API key，不從環境變數讀取。
 """
 
 # 引入 io 模組，用於 BytesIO 等
