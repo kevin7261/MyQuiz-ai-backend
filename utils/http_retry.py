@@ -1,5 +1,5 @@
 """
-當下游 HTTP API 回傳 status 500 時，暫停後重試（預設間隔 3 秒、最多重試 3 次）。
+當下游 HTTP API 回傳 status 500 時，暫停後重試（預設間隔 5 秒、最多重試 5 次）。
 供 Supabase（PostgREST / Storage）monkey-patch 與 OpenAI 等呼叫使用。
 """
 
@@ -8,9 +8,9 @@ from __future__ import annotations
 import time
 from typing import Callable, TypeVar
 
-# 第一次請求失敗後再重試的次數（共最多 1 + 3 次請求）
-HTTP_500_MAX_RETRIES = 3
-HTTP_500_RETRY_DELAY_SEC = 3.0
+# 第一次請求失敗後再重試的次數（共最多 1 + 5 次請求）
+HTTP_500_MAX_RETRIES = 5
+HTTP_500_RETRY_DELAY_SEC = 5.0
 
 T = TypeVar("T")
 
