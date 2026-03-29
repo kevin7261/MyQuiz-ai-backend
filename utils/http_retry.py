@@ -1,6 +1,8 @@
 """
-當下游 HTTP API 回傳 status 500 時，暫停後重試（預設間隔 5 秒、最多重試 5 次）。
+當下游 HTTP API 回傳可重試的 HTTP 500 時，暫停後重試，預設**直到成功為止**（間隔見 HTTP_500_RETRY_DELAY_SEC）。
 供 Supabase（PostgREST / Storage）monkey-patch 與 OpenAI 等呼叫使用。
+
+若需限制次數，可對 call_with_500_retry 傳入 max_retries（正整數）。
 """
 
 from __future__ import annotations
@@ -8,8 +10,8 @@ from __future__ import annotations
 import time
 from typing import Callable, TypeVar
 
-# 第一次請求失敗後再重試的次數（共最多 1 + 5 次請求）
-HTTP_500_MAX_RETRIES = 5
+# 預設 None = 不限制次數，對可重試的 HTTP 500 一直重試到請求成功
+HTTP_500_MAX_RETRIES: int | None = None
 HTTP_500_RETRY_DELAY_SEC = 5.0
 
 T = TypeVar("T")
@@ -65,23 +67,26 @@ def is_retryable_http_500(exc: BaseException) -> bool:
 def call_with_500_retry(
     fn: Callable[[], T],
     *,
-    max_retries: int = HTTP_500_MAX_RETRIES,
+    max_retries: int | None = HTTP_500_MAX_RETRIES,
     delay_sec: float = HTTP_500_RETRY_DELAY_SEC,
 ) -> T:
     """
-    執行 fn；若拋出可重試的 HTTP 500，則延遲後重試，最多重試 max_retries 次。
+    執行 fn；若拋出可重試的 HTTP 500，則延遲後重試。
+
+    max_retries 為 None 時不限制次數，直到成功或拋出非可重試錯誤。
+    為正整數時，失敗後最多再重試 max_retries 次（與舊版「最多 5 次再試」語意相同）。
     """
-    last: Exception | None = None
-    for attempt in range(max_retries + 1):
+    attempt = 0
+    while True:
         try:
             return fn()
         except Exception as e:
-            last = e
-            if not is_retryable_http_500(e) or attempt >= max_retries:
+            if not is_retryable_http_500(e):
                 raise
+            if max_retries is not None and attempt >= max_retries:
+                raise
+            attempt += 1
             time.sleep(delay_sec)
-    assert last is not None
-    raise last
 
 
 def install_supabase_500_retry_patches() -> None:
