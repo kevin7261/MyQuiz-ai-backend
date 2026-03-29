@@ -50,7 +50,7 @@ def get_rag_stem_from_rag_id(
     """
     由 rag_id 查詢 Rag 表，回傳 stem（RAG ZIP 的 tab_id）與 rag_zip_tab_id（通常為 {stem}_rag）。
     include_row=True 時回傳 (row, stem, rag_zip_tab_id)；否則回傳 (stem, rag_zip_tab_id)。
-    unit_name 若指定（非空白），則自 rag_metadata.outputs 選取該上傳單元（與 build-rag-zip 的 outputs[].unit_name 等一致）；未指定則使用第一筆輸出。
+    unit_name 若指定（非空白），則自 rag_metadata.outputs 選取該上傳單元（與 tab/build-rag-zip 的 outputs[].unit_name 等一致）；未指定則使用第一筆輸出。
     """
     # 依據 include_row 決定查詢欄位：需要完整 row 時多查 rag_tab_id、system_prompt_instruction、person_id、rag_id
     # include_row 時多查 rag_tab_id、person_id 等
@@ -66,9 +66,9 @@ def get_rag_stem_from_rag_id(
     meta = row.get("rag_metadata")
     # 從 rag_metadata.outputs 取得 outputs 陣列；stem 來自 rag_tab_id（舊）/ unit_name / tab_name / rag_name（舊）/ filename
     outputs = (meta.get("outputs", []) if isinstance(meta, dict) else []) or []
-    # 若 outputs 為空，表示尚未執行 build-rag-zip，拋出 400
+    # 若 outputs 為空，表示尚未執行 tab/build-rag-zip，拋出 400
     if not outputs:
-        raise HTTPException(status_code=400, detail=f"該筆 Rag（rag_id={rag_id}）的 rag_metadata.outputs 為空，請先執行 build-rag-zip")
+        raise HTTPException(status_code=400, detail=f"該筆 Rag（rag_id={rag_id}）的 rag_metadata.outputs 為空，請先執行 POST /rag/tab/build-rag-zip")
 
     wanted = (unit_name or "").strip()
     stem = ""

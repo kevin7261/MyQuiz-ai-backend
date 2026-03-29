@@ -2,7 +2,7 @@
 個人分析 API 模組。
 依 person_id 查詢 Exam_Quiz / Exam_Answer 等分析用資料。
 - GET /person-analysis/quizzes/{person_id}：依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**。
-  回傳格式與 GET /rag/rags、GET /exam/exams 完全一致；另帶 weakness_report（系統有設定 LLM API Key 時必為非空字串，AI 產生 Markdown 或備援說明）。
+  回傳格式與 GET /rag/tabs、GET /exam/tabs 完全一致；另帶 weakness_report（系統有設定 LLM API Key 時必為非空字串，AI 產生 Markdown 或備援說明）。
   LLM API Key 由 System_Setting 取得；會優先使用批改 metadata 的 quiz_comments／weaknesses，否則以題幹與作答呼叫 AI 彙整。
 """
 
@@ -30,7 +30,7 @@ router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
 
 
 class ListQuizzesByPersonResponse(BaseModel):
-    """GET /person-analysis/quizzes/{person_id} 回應。格式與 GET /rag/rags、GET /exam/exams 一致；可選帶 weakness_report。"""
+    """GET /person-analysis/quizzes/{person_id} 回應。格式與 GET /rag/tabs、GET /exam/tabs 一致；可選帶 weakness_report。"""
     exams: list[dict]
     count: int
     weakness_report: Optional[str] = Field(
@@ -183,7 +183,7 @@ def list_quizzes_by_person(
 ):
     """
     依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**。
-    回傳格式與 GET /rag/rags、GET /exam/exams 完全一致；另帶 weakness_report（系統有設定 LLM API Key 時由 AI 產生）。
+    回傳格式與 GET /rag/tabs、GET /exam/tabs 完全一致；另帶 weakness_report（系統有設定 LLM API Key 時由 AI 產生）。
     """
     try:
         quizzes = _quizzes_by_person_id(person_id)

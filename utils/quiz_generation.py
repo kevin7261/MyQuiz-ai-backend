@@ -34,7 +34,7 @@ def generate_quiz(
 ) -> dict:
     """
     從現成 RAG ZIP（含 FAISS 向量庫）解壓 → 載入向量庫 → 檢索 → 呼叫 GPT-4o 出題。
-    僅支援由 build-rag-zip 產出的 RAG ZIP，不支援一般講義 ZIP。
+    僅支援由 POST /rag/tab/build-rag-zip 產出的 RAG ZIP，不支援一般講義 ZIP。
     system_prompt_instruction 為必填參數，由 API 呼叫端傳入出題系統指令。
     回傳 {"quiz_content", "quiz_hint", "quiz_reference_answer"}；API 層會再加上 system_prompt_instruction、quiz_level 等。
     """
@@ -62,7 +62,7 @@ def generate_quiz(
                 db_folder = root
                 break
         if not db_folder:
-            raise ValueError("此 API 僅支援 RAG ZIP（由 build-rag-zip 產出），請上傳含 FAISS 向量庫的 ZIP")
+            raise ValueError("此 API 僅支援 RAG ZIP（由 POST /rag/tab/build-rag-zip 產出），請上傳含 FAISS 向量庫的 ZIP")
 
         embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=api_key)
         vectorstore = FAISS.load_local(  # 載入 FAISS 向量庫

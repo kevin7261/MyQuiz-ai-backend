@@ -16,9 +16,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # 引入各子模組的路由器，並以別名區分（zip_router 等）
 from routers.zip import router as zip_router
-# 評分相關路由（含 create-quiz、grade-quiz、grade-quiz-result）
+# 評分相關路由（含 tab/quiz/create、tab/quiz/grade、tab/quiz/grade-result）
 from routers.grade import router as grade_router
-# Exam 測驗相關路由（exams、create-exam、create-quiz、grade-quiz 等）
+# Exam 測驗相關路由（tabs、tab/create、tab/quiz/create、tab/quiz/grade 等）
 from routers.exam import router as exam_router
 # 個人分析路由（依 person_id 查詢測驗與弱點報告）
 from routers.person_analysis import router as person_analysis_router
@@ -34,7 +34,7 @@ app = FastAPI()
 
 # 註冊 CORS 中介軟體，允許前端跨域呼叫 API，避免瀏覽器 CORS 或 "Failed to fetch" 錯誤
 # 若出現 502，回應來自 Render 代理（逾時約 30 秒），不會帶 CORS 標頭
-# 評分已改為非同步：POST /rag/grade-quiz 回傳 202 + job_id，請用 GET /rag/grade-quiz-result/{job_id} 輪詢結果
+# 評分已改為非同步：POST /rag/tab/quiz/grade 回傳 202 + job_id，請用 GET /rag/tab/quiz/grade-result/{job_id} 輪詢結果
 app.add_middleware(
     # 使用 CORSMiddleware 中介軟體
     CORSMiddleware,
@@ -54,7 +54,7 @@ app.add_middleware(
 )
 
 # 依序掛載各路由至 app；順序影響 Swagger API 文件顯示
-# zip_router 先掛載，使 create-quiz / grade-quiz / grade-quiz-result 出現在 rag 群組最下面
+# zip_router 先掛載，使 tab/quiz/create / tab/quiz/grade / tab/quiz/grade-result 出現在 rag 群組最下面
 app.include_router(zip_router)
 # 評分相關 API
 app.include_router(grade_router)

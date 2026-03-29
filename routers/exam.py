@@ -1,17 +1,17 @@
 """
 Exam API 模組。對應 public.Exam / Exam_Quiz / Exam_Answer 表。
-- GET /exam/exams：列出 Exam 表（格式同 GET /rag/rags），query `local` 篩選 Exam.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；每筆含 quizzes（Exam_Quiz 全欄位含 quiz_rate，每題帶 answers）與頂層 answers。
-- POST /exam/create-exam：建立一筆 Exam 資料（可傳 local，用法同 POST /rag/create-unit）。
-- PUT /exam/unit-name：更新既有 Exam 的 tab_name（body：exam_id、tab_name；與 create-exam 回傳之 exam_id 相同）。
-- POST /exam/create-quiz：依 exam_tab_id 與 rag_id 查找 RAG ZIP 出題，寫入 Exam_Quiz。
-- POST /exam/rate-quiz：依 exam_quiz_id 更新 Exam_Quiz.quiz_rate（僅 -1、0、1；quiz_rate 未傳預設 0）。
-- POST /exam/grade-quiz：非同步評分並寫入 Exam_Answer（與 /rag 評分流程一致；寫入失敗時輪詢 status 為 error）；輪詢 GET /exam/grade-quiz-result/{job_id}。
-- POST /exam/delete/{exam_tab_id}：軟刪除該筆 Exam（deleted=true）。
+- GET /exam/tabs：列出 Exam 表（格式同 GET /rag/tabs），query `local` 篩選 Exam.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；每筆含 quizzes（Exam_Quiz 全欄位含 quiz_rate，每題帶 answers）與頂層 answers。
+- POST /exam/tab/create：建立一筆 Exam 資料（可傳 local，用法同 POST /rag/tab/create）。
+- PUT /exam/tab/tab-name：更新既有 Exam 的 tab_name（body：exam_id、tab_name；與 tab/create 回傳之 exam_id 相同）。
+- POST /exam/tab/quiz/create：依 exam_tab_id 與 rag_id 查找 RAG ZIP 出題，寫入 Exam_Quiz。
+- POST /exam/tab/quiz/rate：依 exam_quiz_id 更新 Exam_Quiz.quiz_rate（僅 -1、0、1；quiz_rate 未傳預設 0）。
+- POST /exam/tab/quiz/grade：非同步評分並寫入 Exam_Answer（與 /rag 評分流程一致；寫入失敗時輪詢 status 為 error）；輪詢 GET /exam/tab/quiz/grade-result/{job_id}。
+- POST /exam/tab/delete/{exam_tab_id}：軟刪除該筆 Exam（deleted=true）。
 """
 
 # 引入 json 用於序列化回傳
 import json
-# 引入 logging 用於列出 Exam 錯誤紀錄（與 GET /rag/rags 一致）
+# 引入 logging 用於列出 Exam 錯誤紀錄（與 GET /rag/tabs 一致）
 import logging
 # 引入 shutil 用於複製檔案
 import shutil
@@ -35,7 +35,7 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 # UTC 時間
 from utils.datetime_utils import now_utc_iso
-# 轉成可 JSON 序列化（與 GET /rag/rags 一致）
+# 轉成可 JSON 序列化（與 GET /rag/tabs 一致）
 from utils.json_utils import to_json_safe
 # 系統 LLM API Key（Exam 使用系統設定，非個人）
 from utils.llm_api_key_utils import get_llm_api_key
@@ -58,7 +58,7 @@ router = APIRouter(prefix="/exam", tags=["exam"])
 ExamQuizRateValue = Literal[-1, 0, 1]
 
 
-# --- GET /exam/exams（格式同 /rag/rags）---
+# --- GET /exam/tabs（格式同 /rag/tabs）---
 
 
 def _exam_default_row(
@@ -177,7 +177,7 @@ def _answers_by_exam_quiz_ids(exam_quiz_ids: list[int]) -> dict[int, list[dict]]
 
 
 class ListExamResponse(BaseModel):
-    """GET /exam/exams 回應：Exam 表全部資料，每筆另含關聯的 Exam_Quiz（quizzes：表上欄位如 quiz_rate、quiz_content…，每題帶一筆 answer）與頂層 Exam_Answer（answers）。"""
+    """GET /exam/tabs 回應：Exam 表全部資料，每筆另含關聯的 Exam_Quiz（quizzes：表上欄位如 quiz_rate、quiz_content…，每題帶一筆 answer）與頂層 Exam_Answer（answers）。"""
     exams: list[dict] = Field(
         ...,
         description="每筆 Exam 的 quizzes[] 為 Exam_Quiz 列（含 quiz_rate，值僅 -1／0／1），每題 answers 最多一筆",
@@ -185,20 +185,20 @@ class ListExamResponse(BaseModel):
     count: int
 
 
-@router.get("/exams", response_model=ListExamResponse)
+@router.get("/tabs", response_model=ListExamResponse)
 def list_exams(
     request: Request,
     person_id: Optional[str] = Query(None, description="選填，篩選 person_id；未傳則回傳全部"),
     local: bool | None = Query(
         None,
-        description="僅回傳 Exam.local 與此值相同的列。未傳時：連線來源為 127.0.0.1、localhost、::1 視為 true，否則 false（與 GET /rag/rags 一致）",
+        description="僅回傳 Exam.local 與此值相同的列。未傳時：連線來源為 127.0.0.1、localhost、::1 視為 true，否則 false（與 GET /rag/tabs 一致）",
     ),
 ):
     """
     列出 Exam 表內容，僅回傳 deleted=False 的資料，且 Exam.local 須與 query `local` 相符（未傳 `local` 時依連線是否本機自動判定）。
     回傳列依 created_at 由舊到新排序。
     每筆 Exam 含表上所有欄位，並帶關聯的 Exam_Quiz（quizzes：含 quiz_rate 等表欄位，每題帶一筆 answer）與頂層 answers。
-    格式同 GET /rag/rags。
+    格式同 GET /rag/tabs。
     """
     try:
         local_filter = local if local is not None else is_localhost_request(request)
@@ -243,12 +243,12 @@ def list_exams(
         data = to_json_safe(data)
         return ListExamResponse(exams=data, count=len(data))
     except Exception as e:
-        logging.exception("GET /exam/exams 錯誤")
+        logging.exception("GET /exam/tabs 錯誤")
         raise HTTPException(status_code=500, detail=f"列出 Exam 失敗: {e!s}")
 
 
 class CreateExamRequest(BaseModel):
-    """POST /exam/create-exam：欄位順序同 public.Exam（exam_tab_id, tab_name, person_id, local；exam_id／created_at 由資料庫產生；insert 另帶 deleted, updated_at）。"""
+    """POST /exam/tab/create：欄位順序同 public.Exam（exam_tab_id, tab_name, person_id, local；exam_id／created_at 由資料庫產生；insert 另帶 deleted, updated_at）。"""
 
     exam_tab_id: str | None = Field(None, description="選填；未傳則由後端產生（格式同 tab_id）")
     tab_name: str = Field("", description="測驗顯示名稱，寫入 Exam 表 tab_name")
@@ -257,19 +257,19 @@ class CreateExamRequest(BaseModel):
 
 
 class UpdateExamUnitNameRequest(BaseModel):
-    """PUT /exam/unit-name：請求僅含 exam_id（主鍵）、tab_name；勿傳 exam_tab_id。"""
-    exam_id: int = Field(..., description="Exam 表主鍵（整數），與 POST /exam/create-exam 回傳之 exam_id 相同；辨識請用 exam_id，非 exam_tab_id")
+    """PUT /exam/tab/tab-name：請求僅含 exam_id（主鍵）、tab_name；勿傳 exam_tab_id。"""
+    exam_id: int = Field(..., description="Exam 表主鍵（整數），與 POST /exam/tab/create 回傳之 exam_id 相同；辨識請用 exam_id，非 exam_tab_id")
     tab_name: str = Field(..., description="新的顯示名稱，寫入 Exam 表 tab_name 欄位")
 
 
 class ExamGenerateQuizRequest(BaseModel):
-    """POST /exam/create-quiz；欄位順序對齊 public.Exam_Quiz 中由客戶端提供的子集：exam_id, exam_tab_id, person_id（後端自 Exam 帶入）, rag_id（後端帶入）, unit_name, quiz_rate, …"""
+    """POST /exam/tab/quiz/create；欄位順序對齊 public.Exam_Quiz 中由客戶端提供的子集：exam_id, exam_tab_id, person_id（後端自 Exam 帶入）, rag_id（後端帶入）, unit_name, quiz_rate, …"""
 
     exam_id: int = Field(0, description="Exam 表主鍵 exam_id")
-    exam_tab_id: str = Field("", description="create-exam 回傳的 exam_tab_id（varchar）；與 exam_id 二擇一")
+    exam_tab_id: str = Field("", description="tab/create 回傳的 exam_tab_id（varchar）；與 exam_id 二擇一")
     unit_name: str = Field(
         "",
-        description="選填；指定供測驗 Rag 的 rag_metadata.outputs 中某一上傳單元（與 POST /rag/build-rag-zip 的 outputs[].unit_name 一致）。未傳或空字串則使用第一筆輸出",
+        description="選填；指定供測驗 Rag 的 rag_metadata.outputs 中某一上傳單元（與 POST /rag/tab/build-rag-zip 的 outputs[].unit_name 一致）。未傳或空字串則使用第一筆輸出",
     )
     quiz_level: str = Field("", description="難度／層級（字串），用於出題提示並寫入 quiz_metadata")
     quiz_rate: ExamQuizRateValue = Field(
@@ -286,7 +286,7 @@ class ExamGenerateQuizRequest(BaseModel):
 
 
 class ExamQuizRateRequest(BaseModel):
-    """POST /exam/rate-quiz：更新 public.Exam_Quiz.quiz_rate（quiz_rate 預設 0）。"""
+    """POST /exam/tab/quiz/rate：更新 public.Exam_Quiz.quiz_rate（quiz_rate 預設 0）。"""
 
     exam_quiz_id: int = Field(..., ge=1, description="Exam_Quiz 主鍵 exam_quiz_id")
     quiz_rate: ExamQuizRateValue = Field(
@@ -296,10 +296,10 @@ class ExamQuizRateRequest(BaseModel):
 
 
 class ExamQuizGradeRequest(BaseModel):
-    """POST /exam/grade-quiz：寫入 public.Exam_Answer 時對應 exam_id, exam_tab_id, exam_quiz_id, person_id（後端自 Exam 帶入）, quiz_answer；評分後寫入 quiz_grade、quiz_grade_metadata。LLM API Key 由系統設定取得。"""
+    """POST /exam/tab/quiz/grade：寫入 public.Exam_Answer 時對應 exam_id, exam_tab_id, exam_quiz_id, person_id（後端自 Exam 帶入）, quiz_answer；評分後寫入 quiz_grade、quiz_grade_metadata。LLM API Key 由系統設定取得。"""
 
     exam_id: str = Field("", description="Exam 表主鍵 exam_id（字串）")
-    exam_tab_id: str = Field("", description="create-exam 回傳的 exam_tab_id（varchar）；與 exam_id 二擇一")
+    exam_tab_id: str = Field("", description="tab/create 回傳的 exam_tab_id（varchar）；與 exam_id 二擇一")
     exam_quiz_id: str = Field("", description="選填，寫入 Exam_Answer.exam_quiz_id")
     quiz_content: str = Field(..., description="測驗題目內容（與 Exam_Quiz.quiz_content 一致）")
     quiz_answer: str = Field(
@@ -313,10 +313,10 @@ class ExamQuizGradeRequest(BaseModel):
 _exam_grade_job_results: dict[str, dict[str, Any]] = {}
 
 
-@router.post("/create-exam")
+@router.post("/tab/create")
 def create_exam(body: CreateExamRequest):
     """
-    建立一筆 Exam 資料。exam_tab_id 可選，未傳則由後端產生；local 選填，預設 false（與 create-unit 一致）。
+    建立一筆 Exam 資料。exam_tab_id 可選，未傳則由後端產生；local 選填，預設 false（與 POST /rag/tab/create 一致）。
     回傳 exam_id、exam_tab_id、person_id、tab_name、local、created_at。
     """
     fid = (body.exam_tab_id or "").strip()
@@ -355,7 +355,7 @@ def create_exam(body: CreateExamRequest):
     }
 
 
-@router.put("/unit-name", summary="Update Unit Tab Name")
+@router.put("/tab/tab-name", summary="Update Exam Tab Name")
 def update_exam_unit_tab_name(body: UpdateExamUnitNameRequest):
     """
     更新既有 Exam 的 tab_name。以 exam_id（Exam 主鍵）比對；僅更新 deleted=false 的列。
@@ -396,13 +396,13 @@ def update_exam_unit_tab_name(body: UpdateExamUnitNameRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/delete/{exam_tab_id}", status_code=200)
+@router.post("/tab/delete/{exam_tab_id}", status_code=200)
 def delete_exam(
     exam_tab_id: str = PathParam(..., description="要刪除的 Exam 的 exam_tab_id"),
     x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
-    POST /exam/delete/{exam_tab_id}，person_id 請帶 Header X-Person-Id。
+    POST /exam/tab/delete/{exam_tab_id}，person_id 請帶 Header X-Person-Id。
     軟刪除：將 Exam 表該筆 deleted 設為 true。
     """
     pid = (x_person_id or "").strip()
@@ -423,11 +423,11 @@ def delete_exam(
     }
 
 
-@router.post("/create-quiz", summary="Exam Create Quiz", operation_id="exam_create_quiz")
+@router.post("/tab/quiz/create", summary="Exam Create Quiz", operation_id="exam_create_quiz")
 @router.post("/generate-quiz", include_in_schema=False)
 def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest):
     """
-    傳入 exam_id 或 exam_tab_id（二擇一）、quiz_level；可傳 unit_name 指定 outputs 中哪一個上傳單元（與 build-rag-zip 的 outputs[].unit_name 一致），未傳則用第一筆。
+    傳入 exam_id 或 exam_tab_id（二擇一）、quiz_level；可傳 unit_name 指定 outputs 中哪一個上傳單元（與 tab/build-rag-zip 的 outputs[].unit_name 一致），未傳則用第一筆。
     LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
     依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id，取得對應 Rag，依選定單元載入 RAG ZIP 出題。
     出題成功後寫入 public.Exam_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, quiz_reference_answer、exam_quiz_id 等。
@@ -476,7 +476,7 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest):
     rag_id = int(rag_rows.data[0].get("rag_id") or 0)
     system_prompt_instruction = (rag_rows.data[0].get("system_prompt_instruction") or "").strip()
     if not system_prompt_instruction:
-        raise HTTPException(status_code=400, detail="該筆供測驗 Rag 的 system_prompt_instruction 未設定，請在 build-rag-zip 傳入")
+        raise HTTPException(status_code=400, detail="該筆供測驗 Rag 的 system_prompt_instruction 未設定，請在 POST /rag/tab/build-rag-zip 傳入")
 
     unit_filter = (body.unit_name or "").strip() or None
     stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, rag_id, unit_name=unit_filter)
@@ -522,7 +522,7 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest):
                 result["exam_quiz_id"] = quiz_resp.data[0].get("exam_quiz_id")
                 supabase.table("Exam_Quiz").update({"quiz_metadata": result}).eq("exam_quiz_id", result["exam_quiz_id"]).eq("exam_id", exam_id).eq("exam_tab_id", exam_tab_id).execute()
         except Exception:
-            pass  # 與 POST /rag/create-quiz 相同：寫入題庫失敗仍回傳出題 JSON
+            pass  # 與 POST /rag/tab/quiz/create 相同：寫入題庫失敗仍回傳出題 JSON
         body_bytes = json.dumps(result, ensure_ascii=False).encode("utf-8")
         return Response(content=body_bytes, media_type="application/json; charset=utf-8")
     except ValueError as e:
@@ -537,7 +537,7 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest):
             pass
 
 
-@router.post("/rate-quiz", summary="Exam Rate Quiz", status_code=200)
+@router.post("/tab/quiz/rate", summary="Exam Rate Quiz", status_code=200)
 def update_exam_quiz_rate(body: ExamQuizRateRequest):
     """
     依 body 的 exam_quiz_id 更新該筆 Exam_Quiz 的 quiz_rate（**僅 -1、0、1**；未傳 quiz_rate 時視為 **0**）。
@@ -572,13 +572,13 @@ def update_exam_quiz_rate(body: ExamQuizRateRequest):
     return to_json_safe(out)
 
 
-@router.post("/grade-quiz", summary="Exam Grade Quiz")
+@router.post("/tab/quiz/grade", summary="Exam Grade Quiz")
 async def exam_grade_submission(request: Request, background_tasks: BackgroundTasks, body: ExamQuizGradeRequest):
     """
     傳入 exam_id 或 exam_tab_id、exam_quiz_id、quiz_content、quiz_answer。
     LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
-    依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id；若帶 exam_quiz_id 則依該題 Exam_Quiz.unit_name 載入對應 RAG ZIP（與 create-quiz 指定 unit_name 一致），否則使用第一筆 outputs。
-    回傳 202 與 job_id；背景寫入 public.Exam_Answer（與 POST /rag/grade-quiz 相同管線；寫入失敗則輪詢為 error）。輪詢 GET /exam/grade-quiz-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 exam_answer_id。
+    依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id；若帶 exam_quiz_id 則依該題 Exam_Quiz.unit_name 載入對應 RAG ZIP（與 tab/quiz/create 指定 unit_name 一致），否則使用第一筆 outputs。
+    回傳 202 與 job_id；背景寫入 public.Exam_Answer（與 POST /rag/tab/quiz/grade 相同管線；寫入失敗則輪詢為 error）。輪詢 GET /exam/tab/quiz/grade-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 exam_answer_id。
     """
     exam_id_str = (body.exam_id or "").strip()
     exam_tab_id = (body.exam_tab_id or "").strip()
@@ -694,10 +694,10 @@ async def exam_grade_submission(request: Request, background_tasks: BackgroundTa
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
 
-@router.get("/grade-quiz-result/{job_id}", tags=["exam"])
+@router.get("/tab/quiz/grade-result/{job_id}", tags=["exam"])
 async def get_exam_grade_result(job_id: str):
     """
-    輪詢 Exam 評分結果（行為同 GET /rag/grade-quiz-result/{job_id}）。
+    輪詢 Exam 評分結果（行為同 GET /rag/tab/quiz/grade-result/{job_id}）。
     status: pending | ready | error；ready 時 result 含 quiz_grade、quiz_comments、exam_answer_id（已寫入 Exam_Answer）；
     error 時為 LLM／ZIP 例外，或 LLM 成功但寫入 Exam_Answer 失敗。
     """

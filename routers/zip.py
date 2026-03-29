@@ -1,13 +1,13 @@
 """
 ZIP 與 RAG 相關 API 模組。
 提供：
-- GET /rag/for-exam：依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id，回傳對應 Rag
-- GET /rag/rags：列出 Rag 表（含 quizzes、answers）；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新
-- POST /rag/create-unit：建立一筆 Rag（可傳 local）
-- PUT /rag/unit-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name；與 create-unit 回傳之 rag_id 相同）
-- POST /rag/upload-zip：上傳 ZIP
-- POST /rag/build-rag-zip：依 unit_list 打包並建 RAG
-- POST /rag/delete/{rag_tab_id}：軟刪除並刪除儲存
+- GET /rag/tabs：列出 Rag 表（含 quizzes、answers）；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新
+- GET /rag/tab/for-exam：依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id，回傳對應 Rag
+- POST /rag/tab/create：建立一筆 Rag（可傳 local）
+- PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name；與 tab/create 回傳之 rag_id 相同）
+- POST /rag/tab/upload-zip：上傳 ZIP
+- POST /rag/tab/build-rag-zip：依 unit_list 打包並建 RAG
+- POST /rag/tab/delete/{rag_tab_id}：軟刪除並刪除儲存
 """
 
 # 引入 io 用於 BytesIO 等
@@ -139,13 +139,13 @@ def _answers_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
 
 
 class ListRagResponse(BaseModel):
-    """GET /rag/rags 回應：Rag 表全部欄位，每筆另含關聯的 Rag_Quiz（quizzes，每題帶一筆 answer）、以及頂層 Rag_Answer（answers）。"""
+    """GET /rag/tabs 回應：Rag 表全部欄位，每筆另含關聯的 Rag_Quiz（quizzes，每題帶一筆 answer）、以及頂層 Rag_Answer（answers）。"""
     rags: list[dict]
     count: int
 
 
 class CreateRagRequest(BaseModel):
-    """POST /rag/create-unit：欄位順序同 public.Rag（rag_tab_id, tab_name, person_id, local；其餘欄位於 upload / build 寫入）。"""
+    """POST /rag/tab/create：欄位順序同 public.Rag（rag_tab_id, tab_name, person_id, local；其餘欄位於 tab/upload-zip、tab/build-rag-zip 寫入）。"""
     rag_tab_id: str = Field(..., description="Rag 的 tab 識別，對應 Rag 表 rag_tab_id 欄位")
     tab_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 tab_name 欄位")
     person_id: str = Field(..., description="使用者/路徑識別")
@@ -153,26 +153,86 @@ class CreateRagRequest(BaseModel):
 
 
 class UpdateRagUnitNameRequest(BaseModel):
-    """PUT /rag/unit-name：請求僅含 rag_id（主鍵）、tab_name；勿傳 rag_tab_id。"""
-    rag_id: int = Field(..., description="Rag 表主鍵（整數），與 POST /rag/create-unit 回傳之 rag_id 相同；辨識請用 rag_id，非 rag_tab_id")
+    """PUT /rag/tab/tab-name：請求僅含 rag_id（主鍵）、tab_name；勿傳 rag_tab_id。"""
+    rag_id: int = Field(..., description="Rag 表主鍵（整數），與 POST /rag/tab/create 回傳之 rag_id 相同；辨識請用 rag_id，非 rag_tab_id")
     tab_name: str = Field(..., description="新的顯示名稱，寫入 Rag 表 tab_name 欄位")
 
 
 class PackRequest(BaseModel):
     """欄位順序對應 public.Rag 中本請求會更新的區段：rag_tab_id, person_id, unit_list, system_prompt_instruction, chunk_size, chunk_overlap（另寫 rag_metadata；比對 person_id + rag_tab_id 更新）。"""
     rag_tab_id: str
-    person_id: str  # 與 upload-zip 一致，上傳 ZIP 所在路徑的 person_id
+    person_id: str  # 與 tab/upload-zip 一致，上傳 ZIP 所在路徑的 person_id
     unit_list: str  # 寫入 Rag 表 unit_list 欄位；例："220222+220301" 或 "220222,220301+220302"（逗號=多個 ZIP，加號=同一 ZIP 多資料夾）
     system_prompt_instruction: str = ""  # 出題系統指令，寫入 Rag 表 system_prompt_instruction 欄位
     chunk_size: int = 1000  # 寫入 Rag 表 chunk_size 欄位
     chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
 
 
-@router.get("/for-exam")
+@router.get("/tabs", response_model=ListRagResponse)
+def list_rag(
+    request: Request,
+    local: bool | None = Query(
+        None,
+        description="僅回傳 Rag.local 與此值相同的列。未傳時：連線來源為 127.0.0.1、localhost、::1 視為 true，否則 false（與前端在本機開發傳 true、正式環境傳 false 一致）",
+    ),
+):
+    """
+    列出 Rag 表內容，僅回傳 deleted=False 的資料，且 Rag.local 須與 query `local` 相符（未傳 `local` 時依連線是否本機自動判定）。
+    回傳列依 created_at 由舊到新排序。
+    每筆 Rag 含表上所有欄位，並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
+    關聯方式：quizzes 下每筆 quiz 帶 answers（依 rag_quiz_id 關聯，每題僅一筆）；頂層 answers 為該 rag 下全部答案的扁平列表。
+    LLM API Key 依 person_id 從 User 表取得。
+    """
+    try:
+        local_filter = local if local is not None else is_localhost_request(request)
+        data = _rag_table_select(RAG_SELECT_ALL, exclude_deleted=True, local_match=local_filter)
+        rag_ids = []
+        for row in data:
+            rid = row.get("rag_id")
+            if rid is not None:
+                try:
+                    rag_ids.append(int(rid))
+                except (TypeError, ValueError):
+                    pass
+        rag_ids = list(dict.fromkeys(rag_ids))  # 去重且保持順序
+        quizzes_by_rag = _quizzes_by_rag_id(rag_ids)
+        answers_by_rag = _answers_by_rag_id(rag_ids)
+        # 依 rag_quiz_id 彙總 answers，供每筆 quiz 帶關聯的 answers
+        answers_by_rag_quiz_id: dict[int, list[dict]] = {}
+        for rid in rag_ids:
+            for a in answers_by_rag.get(rid, []):
+                qid = a.get("rag_quiz_id")
+                if qid is not None:
+                    try:
+                        qid_int = int(qid)
+                        answers_by_rag_quiz_id.setdefault(qid_int, []).append(a)
+                    except (TypeError, ValueError):
+                        pass
+        for row in data:
+            rid = row.get("rag_id")
+            rid_int = int(rid) if rid is not None else None
+            row_quizzes = quizzes_by_rag.get(rid_int, []) if rid_int is not None else []
+            for quiz in row_quizzes:
+                qid = quiz.get("rag_quiz_id")
+                qid_int = int(qid) if qid is not None else None
+                # 每題 quiz 只帶一筆 answer（取第一筆）
+                raw_answers = (answers_by_rag_quiz_id.get(qid_int, []) or []) if qid_int is not None else []
+                quiz["answers"] = raw_answers[:1]
+            row["quizzes"] = row_quizzes
+            row["answers"] = answers_by_rag.get(rid_int, []) if rid_int is not None else []
+        # 轉成可 JSON 序列化（Supabase 的 datetime 等），避免 500
+        data = to_json_safe(data)
+        return ListRagResponse(rags=data, count=len(data))
+    except Exception as e:
+        logging.exception("GET /rag/tabs 錯誤")
+        raise HTTPException(status_code=500, detail=f"列出 Rag 失敗: {e!s}")
+
+
+@router.get("/tab/for-exam")
 def get_for_exam_rag(request: Request):
     """
     依連線讀取 System_Setting（本機：rag_localhost，否則 rag_deploy）的 value 作為 rag_id，取得該筆 Rag（deleted=false）。
-    回傳格式與 POST /rag/build-rag-zip 一致，並多帶 rag_id、rag_tab_id、llm_api_key、system_prompt_instruction。
+    回傳格式與 POST /rag/tab/build-rag-zip 一致，並多帶 rag_id、rag_tab_id、llm_api_key、system_prompt_instruction。
     """
     try:
         supabase = get_supabase()
@@ -234,77 +294,17 @@ def get_for_exam_rag(request: Request):
             **extra,
         })
     except Exception as e:
-        logging.exception("GET /rag/for-exam 錯誤")
+        logging.exception("GET /rag/tab/for-exam 錯誤")
         raise HTTPException(
             status_code=500,
             detail=f"取得供測驗 RAG 失敗: {e!s}",
         )
 
 
-@router.get("/rags", response_model=ListRagResponse)
-def list_rag(
-    request: Request,
-    local: bool | None = Query(
-        None,
-        description="僅回傳 Rag.local 與此值相同的列。未傳時：連線來源為 127.0.0.1、localhost、::1 視為 true，否則 false（與前端在本機開發傳 true、正式環境傳 false 一致）",
-    ),
-):
-    """
-    列出 Rag 表內容，僅回傳 deleted=False 的資料，且 Rag.local 須與 query `local` 相符（未傳 `local` 時依連線是否本機自動判定）。
-    回傳列依 created_at 由舊到新排序。
-    每筆 Rag 含表上所有欄位，並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
-    關聯方式：quizzes 下每筆 quiz 帶 answers（依 rag_quiz_id 關聯，每題僅一筆）；頂層 answers 為該 rag 下全部答案的扁平列表。
-    LLM API Key 依 person_id 從 User 表取得。
-    """
-    try:
-        local_filter = local if local is not None else is_localhost_request(request)
-        data = _rag_table_select(RAG_SELECT_ALL, exclude_deleted=True, local_match=local_filter)
-        rag_ids = []
-        for row in data:
-            rid = row.get("rag_id")
-            if rid is not None:
-                try:
-                    rag_ids.append(int(rid))
-                except (TypeError, ValueError):
-                    pass
-        rag_ids = list(dict.fromkeys(rag_ids))  # 去重且保持順序
-        quizzes_by_rag = _quizzes_by_rag_id(rag_ids)
-        answers_by_rag = _answers_by_rag_id(rag_ids)
-        # 依 rag_quiz_id 彙總 answers，供每筆 quiz 帶關聯的 answers
-        answers_by_rag_quiz_id: dict[int, list[dict]] = {}
-        for rid in rag_ids:
-            for a in answers_by_rag.get(rid, []):
-                qid = a.get("rag_quiz_id")
-                if qid is not None:
-                    try:
-                        qid_int = int(qid)
-                        answers_by_rag_quiz_id.setdefault(qid_int, []).append(a)
-                    except (TypeError, ValueError):
-                        pass
-        for row in data:
-            rid = row.get("rag_id")
-            rid_int = int(rid) if rid is not None else None
-            row_quizzes = quizzes_by_rag.get(rid_int, []) if rid_int is not None else []
-            for quiz in row_quizzes:
-                qid = quiz.get("rag_quiz_id")
-                qid_int = int(qid) if qid is not None else None
-                # 每題 quiz 只帶一筆 answer（取第一筆）
-                raw_answers = (answers_by_rag_quiz_id.get(qid_int, []) or []) if qid_int is not None else []
-                quiz["answers"] = raw_answers[:1]
-            row["quizzes"] = row_quizzes
-            row["answers"] = answers_by_rag.get(rid_int, []) if rid_int is not None else []
-        # 轉成可 JSON 序列化（Supabase 的 datetime 等），避免 500
-        data = to_json_safe(data)
-        return ListRagResponse(rags=data, count=len(data))
-    except Exception as e:
-        logging.exception("GET /rag/rags 錯誤")
-        raise HTTPException(status_code=500, detail=f"列出 Rag 失敗: {e!s}")
-
-
-@router.post("/create-unit")
+@router.post("/tab/create")
 def create_unit(body: CreateRagRequest):
     """
-    只建立一筆 Rag 資料，接受 rag_tab_id、person_id、tab_name（必填）、local（選填，預設 false）。system_prompt_instruction 請在 build-rag-zip 傳入。
+    只建立一筆 Rag 資料，接受 rag_tab_id、person_id、tab_name（必填）、local（選填，預設 false）。system_prompt_instruction 請在 POST /rag/tab/build-rag-zip 傳入。
     回傳新增的 rag_id、rag_tab_id、person_id、tab_name、local、created_at。
     """
     fid = (body.rag_tab_id or "").strip()
@@ -348,7 +348,7 @@ def create_unit(body: CreateRagRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/unit-name")
+@router.put("/tab/tab-name")
 def update_unit_tab_name(body: UpdateRagUnitNameRequest):
     """
     更新既有 Rag 的 tab_name。以 rag_id（Rag 主鍵）比對；僅更新 deleted=false 的列。
@@ -389,15 +389,15 @@ def update_unit_tab_name(body: UpdateRagUnitNameRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/upload-zip")
+@router.post("/tab/upload-zip")
 async def upload_zip(
     file: UploadFile = File(...),
-    rag_tab_id: str = Form(..., description="對應 create-unit 建立的 rag_tab_id（Rag 表 rag_tab_id），ZIP 會存於此路徑"),
-    person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 create-unit 一致"),
+    rag_tab_id: str = Form(..., description="對應 tab/create 建立的 rag_tab_id（Rag 表 rag_tab_id），ZIP 會存於此路徑"),
+    person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 tab/create 一致"),
 ):
     """
-    Upload Zip：只做上傳並寫入資料庫。需先以 create-unit 建立該 rag_tab_id 的 Rag 資料。
-    傳入 rag_tab_id（create-unit 的 rag_tab_id）、ZIP 檔案與 person_id（Form 必填）。
+    Upload Zip：只做上傳並寫入資料庫。需先以 tab/create 建立該 rag_tab_id 的 Rag 資料。
+    傳入 rag_tab_id（tab/create 的 rag_tab_id）、ZIP 檔案與 person_id（Form 必填）。
     出題/評分時由後端依 person_id 從 User 表取得 LLM API Key。
     會更新該筆 Rag 的 file_metadata（filename、second_folders 等）。
     回傳 file_metadata。
@@ -428,7 +428,7 @@ async def upload_zip(
         supabase = get_supabase()
         r = supabase.table("Rag").select("rag_id, created_at").eq("rag_tab_id", fid).eq("person_id", resolved_person_id).execute()
         if not r.data or len(r.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料，請先呼叫 create-unit 建立")
+            raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料，請先呼叫 POST /rag/tab/create 建立")
         row = r.data[0]
     except HTTPException:
         raise
@@ -465,11 +465,11 @@ async def upload_zip(
     return file_metadata
 
 
-@router.post("/build-rag-zip")
+@router.post("/tab/build-rag-zip")
 def build_rag_zip(body: PackRequest):
     """
     依先前上傳的 ZIP（rag_tab_id）與 unit_list 字串，抽出指定資料夾名稱（路徑上任一層目錄名皆可，含 6 位數週次）重新壓成 ZIP 並存到後端。
-    ZIP 檔位置為 {person_id}/{rag_tab_id}/upload（與 upload-zip 一致），body 需傳入 person_id。
+    ZIP 檔位置為 {person_id}/{rag_tab_id}/upload（與 tab/upload-zip 一致），body 需傳入 person_id。
     unit_list 寫入 Rag 表；格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
     一律做成 RAG（FAISS）ZIP；LLM API Key 依 person_id 從 User 表取得。回傳內容完整寫入 Rag 表 rag_metadata，並 update chunk_size、chunk_overlap。
     """
@@ -567,7 +567,7 @@ def build_rag_zip(body: PackRequest):
             "chunk_overlap": body.chunk_overlap,
             "updated_at": now_utc_iso(),
         }
-        # llm_api_key 不寫入 Rag 表（該表無此欄位）；create-quiz/grade-quiz 依 person_id 從 User 表取得
+        # llm_api_key 不寫入 Rag 表（該表無此欄位）；tab/quiz/create、tab/quiz/grade 依 person_id 從 User 表取得
         supabase.table("Rag").update(update_payload).eq("rag_tab_id", body.rag_tab_id).eq("person_id", pid).execute()
     except Exception:
         pass
@@ -588,13 +588,13 @@ def _do_delete_rag_file(pid: str, fid: str):
     return folder_deleted
 
 
-@router.post("/delete/{rag_tab_id}", status_code=200)
+@router.post("/tab/delete/{rag_tab_id}", status_code=200)
 def delete_rag_file(
     rag_tab_id: str = PathParam(..., description="要刪除的 rag_tab_id"),
     x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
-    POST /rag/delete/{rag_tab_id}，person_id 請帶 Header X-Person-Id。
+    POST /rag/tab/delete/{rag_tab_id}，person_id 請帶 Header X-Person-Id。
     軟刪除：將 Rag 表該筆 deleted 設為 true，並刪除 storage/{person_id}/{rag_tab_id}/ 整個資料夾。
     """
     pid = (x_person_id or "").strip()

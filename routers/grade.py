@@ -1,7 +1,7 @@
 """
 評分 API 模組。
 依 rag_id 自 rag_metadata.outputs 取得 repack stem，再以 {stem}_rag 載入 RAG ZIP 檢索講義後由 GPT-4o 評分。
-非同步：POST /rag/grade-quiz 回傳 202 + job_id，背景執行評分並寫入 Rag_Answer；前端以 GET /rag/grade-quiz-result/{job_id} 輪詢（寫入失敗時 status 為 error）。
+非同步：POST /rag/tab/quiz/grade 回傳 202 + job_id，背景執行評分並寫入 Rag_Answer；前端以 GET /rag/tab/quiz/grade-result/{job_id} 輪詢（寫入失敗時 status 為 error）。
 """
 
 # 引入 json 用於解析 GPT 回傳與序列化
@@ -107,7 +107,7 @@ def _quiz_comments_from_llm_json(llm_json: dict[str, Any]) -> list[str]:
 
 class GenerateQuizRequest(BaseModel):
     """
-    POST /rag/create-quiz 請求 body；欄位順序對齊 public.Rag_Quiz 中由客戶端提供的子集：
+    POST /rag/tab/quiz/create 請求 body；欄位順序對齊 public.Rag_Quiz 中由客戶端提供的子集：
     rag_id, rag_tab_id, person_id（後端自 Rag 帶入）, unit_name, file_name（後端帶入）, quiz_level, …
     """
 
@@ -115,7 +115,7 @@ class GenerateQuizRequest(BaseModel):
     rag_tab_id: str = Field("", description="選填；覆寫寫入 Rag_Quiz.rag_tab_id，預設沿用 Rag 列之 rag_tab_id")
     unit_name: str = Field(
         "",
-        description="選填；指定 rag_metadata.outputs 中某一上傳單元（與 POST /rag/build-rag-zip 的 outputs[].unit_name 一致）。未傳或空字串則使用第一筆輸出",
+        description="選填；指定 rag_metadata.outputs 中某一上傳單元（與 POST /rag/tab/build-rag-zip 的 outputs[].unit_name 一致）。未傳或空字串則使用第一筆輸出",
     )
     quiz_level: str = Field("", description="難度／層級（字串），寫入 Rag_Quiz.quiz_level")
 
@@ -129,7 +129,7 @@ class GenerateQuizRequest(BaseModel):
 
 class QuizGradeRequest(BaseModel):
     """
-    POST /rag/grade-quiz 請求 body。
+    POST /rag/tab/quiz/grade 請求 body。
     寫入 public.Rag_Answer 時對應：rag_id, rag_tab_id, rag_quiz_id, person_id（後端自 Rag 帶入）,
     quiz_answer（與舊欄位 answer 同義）；評分後寫入 quiz_grade、quiz_grade_metadata。
     """
@@ -389,11 +389,11 @@ def _insert_exam_answer(result_dict: dict, quiz_answer: str, *, exam_id: int, ex
     return _insert_answer_table_row("Exam_Answer", "exam_answer_id", row)
 
 
-@router.post("/create-quiz", summary="Rag Create Quiz", operation_id="rag_create_quiz")
+@router.post("/tab/quiz/create", summary="Rag Create Quiz", operation_id="rag_create_quiz")
 @router.post("/generate-quiz", include_in_schema=False)
 def rag_create_quiz(body: GenerateQuizRequest):
     """
-    傳入 rag_id（Rag 表主鍵）、rag_tab_id（選填）、quiz_level；可傳 unit_name 指定 outputs 中哪一個上傳單元（與 build-rag-zip 的 outputs[].unit_name 一致），未傳則用第一筆。
+    傳入 rag_id（Rag 表主鍵）、rag_tab_id（選填）、quiz_level；可傳 unit_name 指定 outputs 中哪一個上傳單元（與 tab/build-rag-zip 的 outputs[].unit_name 一致），未傳則用第一筆。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
     程式依 rag_id 對應的 rag_metadata.outputs 查找 RAG ZIP 出題；system_prompt_instruction 由 Rag 表取得。
     出題成功後寫入 public.Rag_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, quiz_reference_answer、rag_quiz_id 等。
@@ -433,7 +433,7 @@ def rag_create_quiz(body: GenerateQuizRequest):
     system_prompt_instruction = (row.get("system_prompt_instruction") or "").strip()
     # 若未設定，拋出 400
     if not system_prompt_instruction:
-        raise HTTPException(status_code=400, detail="該筆 Rag 的 system_prompt_instruction 未設定，請在 build-rag-zip 傳入出題系統指令")
+        raise HTTPException(status_code=400, detail="該筆 Rag 的 system_prompt_instruction 未設定，請在 POST /rag/tab/build-rag-zip 傳入出題系統指令")
 
     # 取得 RAG ZIP 的檔案路徑（下載至暫存檔）
     path = get_zip_path(rag_zip_tab_id)
@@ -506,12 +506,12 @@ def rag_create_quiz(body: GenerateQuizRequest):
             pass
 
 
-@router.post("/grade-quiz", summary="Rag Grade Quiz")
+@router.post("/tab/quiz/grade", summary="Rag Grade Quiz")
 async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest):
     """
     傳入 rag_id（字串）、rag_tab_id（選填）、rag_quiz_id、quiz_content、quiz_answer。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
-    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。驗證後回傳 202 與 job_id；背景寫入 public.Rag_Answer（寫入失敗則輪詢為 error）。輪詢 GET /rag/grade-quiz-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 rag_answer_id。
+    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。驗證後回傳 202 與 job_id；背景寫入 public.Rag_Answer（寫入失敗則輪詢為 error）。輪詢 GET /rag/tab/quiz/grade-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 rag_answer_id。
     """
     # 取得 rag_id 字串並去除空白
     rag_id_str = (body.rag_id or "").strip()
@@ -607,7 +607,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
 
-@router.get("/grade-quiz-result/{job_id}", tags=["rag"])
+@router.get("/tab/quiz/grade-result/{job_id}", tags=["rag"])
 async def get_grade_result(job_id: str):  # 路徑參數 job_id
     """
     輪詢評分結果。回傳 status: pending | ready | error；
