@@ -65,6 +65,11 @@ def get_supabase(use_service_role: bool = True):
             "應為 https://xxxxx.supabase.co（請檢查 .env，勿有多餘空格或換行）"
         )
 
+    # PostgREST / Storage 在 HTTP 500 時暫停後重試（見 utils.http_retry）
+    from utils.http_retry import install_supabase_500_retry_patches
+
+    install_supabase_500_retry_patches()
+
     # 動態引入 create_client（避免啟動時就依賴 supabase）
     from supabase import create_client
     # 建立客戶端

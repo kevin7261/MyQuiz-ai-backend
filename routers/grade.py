@@ -40,6 +40,7 @@ from langchain_community.vectorstores import FAISS
 from openai import OpenAI
 
 from utils.course_name_utils import get_course_name_for_prompt
+from utils.http_retry import call_with_500_retry
 # 依 person_id 從 User 表取得 LLM API Key
 from utils.llm_api_key_utils import get_llm_api_key_for_person
 # 從 ZIP 載入文件為 Document 列表
@@ -261,12 +262,14 @@ def _run_grade_job(
 
     # 建立 OpenAI 客戶端
     client = OpenAI(api_key=api_key)
-    # 呼叫 Chat Completions API，強制回傳 JSON
-    response = client.chat.completions.create(
-        model="gpt-4o",  # 使用 GPT-4o 模型
-        messages=[{"role": "user", "content": prompt}],  # 單一 user 訊息
-        response_format={"type": "json_object"},  # 強制 JSON 格式
-        temperature=0.3,  # 較低溫度以保持評分穩定
+    # 呼叫 Chat Completions API，強制回傳 JSON（HTTP 500 時暫停後重試）
+    response = call_with_500_retry(
+        lambda: client.chat.completions.create(
+            model="gpt-4o",  # 使用 GPT-4o 模型
+            messages=[{"role": "user", "content": prompt}],  # 單一 user 訊息
+            response_format={"type": "json_object"},  # 強制 JSON 格式
+            temperature=0.3,  # 較低溫度以保持評分穩定
+        )
     )
 
     llm_raw = response.choices[0].message.content or ""
