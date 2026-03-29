@@ -9,11 +9,6 @@ load_dotenv()
 # 設定 KMP_DUPLICATE_LIB_OK 為 TRUE，避免 FAISS/NumPy 載入時出現多份 OpenMP runtime 的 OMP Error #15（macOS 常見問題）
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-# Supabase PostgREST / Storage：HTTP 500 時暫停後重試（install 可重複呼叫，與 get_supabase 內相同）
-from utils.http_retry import install_supabase_500_retry_patches
-
-install_supabase_500_retry_patches()
-
 # 引入 FastAPI 框架，用於建立 Web API 服務
 from fastapi import FastAPI
 # 引入 CORS 中介軟體，用於處理跨域請求

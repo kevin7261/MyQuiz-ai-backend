@@ -24,7 +24,6 @@ from routers.exam import _answers_by_exam_quiz_ids, _exams_by_ids, _quizzes_by_p
 from utils.json_utils import to_json_safe
 # 引入系統 LLM API Key
 from utils.llm_api_key_utils import get_llm_api_key
-from utils.http_retry import call_with_500_retry
 
 # 建立路由
 router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
@@ -165,12 +164,10 @@ def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> str:
 """
     client = OpenAI(api_key=api_key)
     try:
-        r = call_with_500_retry(
-            lambda: client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-            )
+        r = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
         )
         out = (r.choices[0].message.content or "").strip()
         if out:

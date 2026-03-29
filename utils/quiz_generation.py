@@ -25,7 +25,7 @@ from langchain_community.vectorstores import FAISS
 from openai import OpenAI
 
 from utils.course_name_utils import get_course_name_for_prompt
-from utils.http_retry import call_with_500_retry
+
 
 def generate_quiz(
     zip_path: Path,
@@ -93,16 +93,14 @@ def generate_quiz(
         user_prompt_text = f"課程內容：\n{context_text}"
 
         client = OpenAI(api_key=api_key)
-        response = call_with_500_retry(
-            lambda: client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": final_system_prompt},
-                    {"role": "user", "content": user_prompt_text},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.7,
-            )
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": final_system_prompt},
+                {"role": "user", "content": user_prompt_text},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.7,
         )
 
         content = response.choices[0].message.content
