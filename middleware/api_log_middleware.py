@@ -1,5 +1,8 @@
 """
-每次 API 請求寫入 public.Log：person_id、api（路徑 URL）、api_metadata（api、method、parameters）。
+每次「實際業務」API 請求寫入 public.Log：person_id、api（路徑 URL）、api_metadata（api、method、parameters）。
+
+不記錄 OPTIONS／HEAD：瀏覽器跨域會先送 CORS preflight（OPTIONS），沒有 JSON body，
+若一併記錄會變成「前端呼叫 1 次卻出現 2 筆 log、且 parameters 只有 person_id」。
 寫入失敗不影響原請求回應。
 """
 
@@ -15,6 +18,9 @@ from starlette.requests import Request
 
 _logger = logging.getLogger(__name__)
 
+# 不寫入 Log 的 HTTP 方法（CORS preflight、探測用）
+_SKIP_HTTP_METHODS = frozenset({"OPTIONS", "HEAD"})
+
 # 不寫入 Log 的路徑（Swagger／OpenAPI）
 _SKIP_PATH_PREFIXES = (
     "/docs",
@@ -22,6 +28,18 @@ _SKIP_PATH_PREFIXES = (
     "/openapi.json",
     "/favicon.ico",
 )
+
+# 不寫入 Log 的「方法 + 路徑」（精確比對 path，不含 query）
+_SKIP_LOG_ROUTES = frozenset({
+    ("GET", "/system-settings/course-name"),
+    ("GET", "/rag/tab/for-exam"),
+})
+
+# 不寫入 Log 的路徑（任何 HTTP 方法；精確比對 path，不含 query）
+_SKIP_LOG_PATHS_ANY_METHOD = frozenset({
+    "/system-settings/rag-for-exam-localhost",
+    "/system-settings/rag-for-exam-deploy",
+})
 
 # parameters 內敏感欄位遮罩
 _REDACT_SUBSTRINGS = ("password", "secret", "token", "api_key", "apikey", "authorization")
@@ -31,6 +49,10 @@ _REDACT_EXACT = frozenset({"password", "llm_api_key", "llmapikey"})
 def _should_skip_path(path: str) -> bool:
     p = path or ""
     return any(p == x or p.startswith(x + "/") for x in _SKIP_PATH_PREFIXES)
+
+
+def _should_skip_route(method: str, path: str) -> bool:
+    return ((method or "").upper(), path or "") in _SKIP_LOG_ROUTES
 
 
 def _stringify_param_value(v: Any) -> str:
@@ -114,6 +136,14 @@ class APILogMiddleware(BaseHTTPMiddleware):
 
         path = request.url.path
         if _should_skip_path(path):
+            return await call_next(request)
+
+        method_upper = request.method.upper()
+        if method_upper in _SKIP_HTTP_METHODS:
+            return await call_next(request)
+        if _should_skip_route(method_upper, path):
+            return await call_next(request)
+        if (path or "") in _SKIP_LOG_PATHS_ANY_METHOD:
             return await call_next(request)
 
         query_params = dict(request.query_params)
