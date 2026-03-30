@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from utils.datetime_utils import TAIPEI_TZ
+
 
 # 子目錄名稱常數：上傳、重新壓縮、RAG
 FOLDER_UPLOAD = "upload"
@@ -39,7 +41,7 @@ def generate_tab_id(person_id: str | None = None) -> str:
     safe = (person_id or "").strip() or "_"
     if "/" in safe or "\\" in safe:
         safe = "_"
-    time_part = datetime.now().strftime("%y%m%d%H%M%S")
+    time_part = datetime.now(TAIPEI_TZ).strftime("%y%m%d%H%M%S")
     return f"{safe}_{time_part}"
 
 

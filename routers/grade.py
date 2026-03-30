@@ -41,6 +41,7 @@ from langchain_community.vectorstores import FAISS
 # OpenAI 客戶端
 from openai import OpenAI
 
+from utils.datetime_utils import now_taipei_iso
 from utils.course_name_utils import get_course_name_for_prompt
 # 依 person_id 從 User 表取得 LLM API Key
 from utils.llm_api_key_utils import get_llm_api_key_for_person
@@ -369,11 +370,14 @@ def _answer_row_payload(
 
 def _insert_rag_answer(result_dict: dict, quiz_answer: str, *, rag_id: int, rag_tab_id: str, person_id: str, rag_quiz_id: int) -> tuple[str, int] | None:
     """寫入 public.Rag_Answer，回傳 ("rag_answer_id", id) 或 None。rag_quiz_id<=0 時送 0（與 NOT NULL DEFAULT 0 之 schema 一致）。quiz_answer、quiz_grade、quiz_grade_metadata 與 Exam_Answer 欄位對齊。"""
+    ts = now_taipei_iso()
     row = {
         "rag_id": rag_id,
         "rag_tab_id": rag_tab_id or "",
         "rag_quiz_id": rag_quiz_id if rag_quiz_id > 0 else 0,
         "person_id": person_id or "",
+        "created_at": ts,
+        "updated_at": ts,
         **_answer_row_payload(result_dict, quiz_answer),
     }
     return _insert_answer_table_row("Rag_Answer", "rag_answer_id", row)
@@ -381,11 +385,14 @@ def _insert_rag_answer(result_dict: dict, quiz_answer: str, *, rag_id: int, rag_
 
 def _insert_exam_answer(result_dict: dict, quiz_answer: str, *, exam_id: int, exam_tab_id: str, person_id: str, exam_quiz_id: int) -> tuple[str, int] | None:
     """寫入 public.Exam_Answer，回傳 ("exam_answer_id", id) 或 None。exam_quiz_id<=0 時送 0（與 NOT NULL DEFAULT 0 之 schema 一致）。作答寫入 quiz_answer；分數與 LLM 結果寫入 quiz_grade、quiz_grade_metadata。"""
+    ts = now_taipei_iso()
     row = {
         "exam_id": exam_id,
         "exam_tab_id": exam_tab_id or "",
         "exam_quiz_id": exam_quiz_id if exam_quiz_id > 0 else 0,
         "person_id": person_id or "",
+        "created_at": ts,
+        "updated_at": ts,
         **_answer_row_payload(result_dict, quiz_answer),
     }
     return _insert_answer_table_row("Exam_Answer", "exam_answer_id", row)
@@ -468,7 +475,8 @@ def rag_create_quiz(body: GenerateQuizRequest, caller_person_id: PersonId):
         }
         # 取得 rag_id 用於寫入 Rag_Quiz
         rag_id = int(row.get("rag_id") or 0) if isinstance(row, dict) else 0
-        # 組裝 Rag_Quiz 表要寫入的列（鍵順序同 public.Rag_Quiz，不含 rag_quiz_id / 時間戳）
+        qts = now_taipei_iso()
+        # 組裝 Rag_Quiz 表要寫入的列（鍵順序同 public.Rag_Quiz，不含 rag_quiz_id；created_at／updated_at 為台北時間）
         quiz_row: dict[str, Any] = {
             "rag_id": rag_id,
             "rag_tab_id": quiz_rag_tab_id,
@@ -480,6 +488,8 @@ def rag_create_quiz(body: GenerateQuizRequest, caller_person_id: PersonId):
             "quiz_hint": result.get("quiz_hint") or "",
             "quiz_answer_reference": result.get("quiz_reference_answer") or "",
             "quiz_metadata": result,
+            "created_at": qts,
+            "updated_at": qts,
         }
         try:
             # 執行 insert 寫入 Rag_Quiz
@@ -489,7 +499,9 @@ def rag_create_quiz(body: GenerateQuizRequest, caller_person_id: PersonId):
                 # 將 rag_quiz_id 加入 result
                 result["rag_quiz_id"] = quiz_resp.data[0].get("rag_quiz_id")
                 # 更新 quiz_metadata 為含 rag_quiz_id 的完整 result
-                supabase.table("Rag_Quiz").update({"quiz_metadata": result}).eq("rag_quiz_id", result["rag_quiz_id"]).eq("rag_id", rag_id).eq("rag_tab_id", quiz_rag_tab_id).execute()
+                supabase.table("Rag_Quiz").update(
+                    {"quiz_metadata": result, "updated_at": now_taipei_iso()}
+                ).eq("rag_quiz_id", result["rag_quiz_id"]).eq("rag_id", rag_id).eq("rag_tab_id", quiz_rag_tab_id).execute()
         except Exception:
             pass  # 不因寫入 Rag_Quiz 失敗而影響回傳出題結果
         # 將 result 轉成 JSON bytes，以 UTF-8 編碼

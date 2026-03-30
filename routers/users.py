@@ -19,7 +19,7 @@ from pydantic import BaseModel
 # Supabase 客戶端
 from utils.supabase_client import get_supabase
 # API 回傳之時間戳改為台北時間
-from utils.datetime_utils import to_taipei_iso
+from utils.datetime_utils import now_taipei_iso, to_taipei_iso
 
 # 建立路由，前綴 /user
 router = APIRouter(prefix="/user", tags=["user"])
@@ -161,6 +161,7 @@ def update_profile(
         if not updates:
             return LoginResponse(user=UserListItem(**_user_public_dict(row)))
 
+        updates["updated_at"] = now_taipei_iso()
         supabase.table("User").update(updates).eq("user_id", user_id).eq("person_id", person_id).execute()
         resp2 = (
             supabase.table("User")
@@ -197,6 +198,7 @@ def update_profile(
                     updates["llm_api_key"] = (body.llm_api_key or "").strip() or None
                 if not updates:
                     return LoginResponse(user=UserListItem(**_user_public_dict(row)))
+                updates["updated_at"] = now_taipei_iso()
                 get_supabase().table("user").update(updates).eq("user_id", user_id).eq("person_id", person_id).execute()
                 resp2 = (
                     get_supabase()

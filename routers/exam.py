@@ -70,14 +70,16 @@ def _exam_default_row(
     person_id: str = "",
     local: bool = False,
 ) -> dict[str, Any]:
-    """Exam 表新增一筆時的預設欄位；鍵順序同 public.Exam（不含 exam_id/created_at）。"""
+    """Exam 表新增一筆時的預設欄位；鍵順序同 public.Exam（不含 exam_id；created_at／updated_at 為台北時間）。"""
+    ts = now_taipei_iso()
     return {
         "exam_tab_id": exam_tab_id,
         "tab_name": tab_name,
         "person_id": person_id,
         "local": local,
         "deleted": False,
-        "updated_at": now_taipei_iso(),
+        "created_at": ts,
+        "updated_at": ts,
     }
 
 
@@ -510,7 +512,8 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest, caller_per
         }
 
         file_name = f"{stem}.zip"
-        # 鍵順序同 public.Exam_Quiz（不含 exam_quiz_id / 時間戳）
+        qts = now_taipei_iso()
+        # 鍵順序同 public.Exam_Quiz（不含 exam_quiz_id；created_at／updated_at 為台北時間）
         quiz_row: dict[str, Any] = {
             "exam_id": exam_id,
             "exam_tab_id": exam_tab_id,
@@ -523,12 +526,16 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest, caller_per
             "quiz_answer_reference": result.get("quiz_reference_answer") or "",
             "quiz_rate": int(body.quiz_rate),
             "quiz_metadata": result,
+            "created_at": qts,
+            "updated_at": qts,
         }
         try:
             quiz_resp = supabase.table("Exam_Quiz").insert(quiz_row).execute()
             if quiz_resp.data and len(quiz_resp.data) > 0:
                 result["exam_quiz_id"] = quiz_resp.data[0].get("exam_quiz_id")
-                supabase.table("Exam_Quiz").update({"quiz_metadata": result}).eq("exam_quiz_id", result["exam_quiz_id"]).eq("exam_id", exam_id).eq("exam_tab_id", exam_tab_id).execute()
+                supabase.table("Exam_Quiz").update(
+                    {"quiz_metadata": result, "updated_at": now_taipei_iso()}
+                ).eq("exam_quiz_id", result["exam_quiz_id"]).eq("exam_id", exam_id).eq("exam_tab_id", exam_tab_id).execute()
         except Exception:
             pass  # 與 POST /rag/tab/quiz/create 相同：寫入題庫失敗仍回傳出題 JSON
         body_bytes = json.dumps(result, ensure_ascii=False).encode("utf-8")

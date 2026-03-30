@@ -73,7 +73,8 @@ def _rag_default_row(
     file_metadata: Any = None,
     local: bool = False,
 ) -> dict[str, Any]:
-    """Rag 表一筆新增時的預設欄位；鍵順序同 public.Rag（rag_tab_id→…→updated_at，不含 rag_id/created_at）。"""
+    """Rag 表一筆新增時的預設欄位；鍵順序同 public.Rag（rag_tab_id→…；不含 rag_id；created_at／updated_at 為台北時間）。"""
+    ts = now_taipei_iso()
     row: dict[str, Any] = {
         "rag_tab_id": rag_tab_id,
         "tab_name": tab_name if tab_name is not None else "",
@@ -88,7 +89,8 @@ def _rag_default_row(
     row["chunk_overlap"] = 200
     row["local"] = local
     row["deleted"] = False
-    row["updated_at"] = now_taipei_iso()
+    row["created_at"] = ts
+    row["updated_at"] = ts
     return row
 
 

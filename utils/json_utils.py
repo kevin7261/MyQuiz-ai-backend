@@ -20,9 +20,9 @@ def to_json_safe(obj: Any) -> Any:
     # 若為 None，直接回傳 None
     if obj is None:  # None 直接回傳
         return None
-    # 若為 datetime 或 date，轉成 ISO 字串
-    if isinstance(obj, (datetime, date)):  # 日期時間轉 ISO 字串
-        return obj.isoformat()
+    # 若為 datetime 或 date，統一轉成台北時間 ISO 字串
+    if isinstance(obj, (datetime, date)):
+        return to_taipei_iso(obj)
     # 若為 dict，遞迴處理每個鍵值；created_at / updated_at 轉台北時間
     if isinstance(obj, dict):  # dict 遞迴處理每個值
         return {
