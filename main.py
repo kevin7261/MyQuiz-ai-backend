@@ -16,6 +16,8 @@ from fastapi import FastAPI
 from dependencies.person_id import PersonId
 # 引入 CORS 中介軟體，用於處理跨域請求
 from fastapi.middleware.cors import CORSMiddleware
+# 每次請求寫入 public.Log
+from middleware.api_log_middleware import APILogMiddleware
 
 # 引入各子模組的路由器，並以別名區分（zip_router 等）
 from routers.zip import router as zip_router
@@ -55,6 +57,8 @@ app.add_middleware(
     # 允許所有 HTTP 標頭
     allow_headers=["*"],
 )
+
+app.add_middleware(APILogMiddleware)
 
 # 依序掛載各路由至 app；順序影響 Swagger API 文件顯示
 # zip_router 先掛載，使 tab/quiz/create / tab/quiz/grade / tab/quiz/grade-result 出現在 rag 群組最下面
