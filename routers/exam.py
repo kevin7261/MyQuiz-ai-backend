@@ -6,7 +6,7 @@ Exam API 模組。對應 public.Exam / Exam_Quiz / Exam_Answer 表。
 - POST /exam/tab/quiz/create：依 exam_tab_id 與 rag_id 查找 RAG ZIP 出題，寫入 Exam_Quiz。
 - POST /exam/tab/quiz/rate：依 exam_quiz_id 更新 Exam_Quiz.quiz_rate（僅 -1、0、1；quiz_rate 未傳預設 0）。
 - POST /exam/tab/quiz/grade：非同步評分並寫入 Exam_Answer（與 /rag 評分流程一致；寫入失敗時輪詢 status 為 error）；輪詢 GET /exam/tab/quiz/grade-result/{job_id}。
-- POST /exam/tab/delete/{exam_tab_id}：軟刪除該筆 Exam（deleted=true）。
+- POST /exam/tab/delete/{exam_tab_id}：依 exam_tab_id 軟刪除 Exam（deleted=true；無需 X-Person-Id）。
 """
 
 # 引入 json 用於序列化回傳
@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 # 引入 FastAPI 相關
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Path as PathParam, Query, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Path as PathParam, Query, Request
 # 引入 JSONResponse、Response
 from fastapi.responses import JSONResponse, Response
 # 引入 Pydantic 的 BaseModel、Field
@@ -399,23 +399,20 @@ def update_exam_unit_tab_name(body: UpdateExamUnitNameRequest):
 @router.post("/tab/delete/{exam_tab_id}", status_code=200)
 def delete_exam(
     exam_tab_id: str = PathParam(..., description="要刪除的 Exam 的 exam_tab_id"),
-    x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
-    POST /exam/tab/delete/{exam_tab_id}，person_id 請帶 Header X-Person-Id。
-    軟刪除：將 Exam 表該筆 deleted 設為 true。
+    POST /exam/tab/delete/{exam_tab_id}。
+    軟刪除：將 Exam 表該 exam_tab_id 之未刪除列 deleted 設為 true。
     """
-    pid = (x_person_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="請傳入 Header X-Person-Id（person_id）")
     fid = (exam_tab_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
         raise HTTPException(status_code=400, detail="無效的 exam_tab_id")
     supabase = get_supabase()
-    r = supabase.table("Exam").select("exam_id").eq("exam_tab_id", fid).eq("person_id", pid).eq("deleted", False).execute()
+    r = supabase.table("Exam").select("exam_id, person_id").eq("exam_tab_id", fid).eq("deleted", False).execute()
     if not r.data or len(r.data) == 0:
-        raise HTTPException(status_code=404, detail="找不到該 exam_tab_id 的 Exam 資料")
-    supabase.table("Exam").update({"deleted": True, "updated_at": now_utc_iso()}).eq("exam_tab_id", fid).eq("person_id", pid).execute()
+        raise HTTPException(status_code=404, detail="找不到該 exam_tab_id 的 Exam 資料，或已刪除")
+    pid = (r.data[0].get("person_id") or "").strip()
+    supabase.table("Exam").update({"deleted": True, "updated_at": now_utc_iso()}).eq("exam_tab_id", fid).eq("deleted", False).execute()
     return {
         "message": "已將 Exam 標記為刪除",
         "exam_tab_id": fid,

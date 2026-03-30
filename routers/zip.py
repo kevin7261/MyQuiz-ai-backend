@@ -7,7 +7,7 @@ ZIP 與 RAG 相關 API 模組。
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name；與 tab/create 回傳之 rag_id 相同）
 - POST /rag/tab/upload-zip：上傳 ZIP
 - POST /rag/tab/build-rag-zip：依 unit_list 打包並建 RAG
-- POST /rag/tab/delete/{rag_tab_id}：軟刪除並刪除儲存
+- POST /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除並刪除儲存（無需 X-Person-Id）
 """
 
 # 引入 io 用於 BytesIO 等
@@ -23,8 +23,8 @@ from pathlib import Path
 # 引入 Any 型別
 from typing import Any
 
-# 引入 FastAPI 的 APIRouter、HTTPException、UploadFile、File、Form、Header、PathParam、Query、Request
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header, Path as PathParam, Query, Request
+# 引入 FastAPI 的 APIRouter、HTTPException、UploadFile、File、Form、PathParam、Query、Request
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Path as PathParam, Query, Request
 # 引入 Pydantic 的 BaseModel、Field
 from pydantic import BaseModel, Field
 
@@ -574,36 +574,47 @@ def build_rag_zip(body: PackRequest):
     return response
 
 
-def _do_delete_rag_file(pid: str, fid: str):
-    """共用：將 Rag 表該筆 deleted 設為 true 並刪除 storage 資料夾。"""
+def _do_delete_rag_file_by_tab_id(fid: str) -> tuple[bool, str]:
+    """依 rag_tab_id 將 Rag 未刪除列軟刪除，並對各 person_id 刪除 Supabase storage 資料夾。回傳 (folder_deleted, 回傳用 person_id)。"""
+    supabase = get_supabase()
+    sel = supabase.table("Rag").select("person_id").eq("rag_tab_id", fid).eq("deleted", False).execute()
+    if not sel.data:
+        raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料，或已刪除")
+    pids_ordered: list[str] = []
+    seen: set[str] = set()
+    for row in sel.data:
+        pid = (row.get("person_id") or "").strip()
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        pids_ordered.append(pid)
+    primary_pid = pids_ordered[0] if pids_ordered else ""
     try:
-        supabase = get_supabase()
-        supabase.table("Rag").update({"deleted": True, "updated_at": now_utc_iso()}).eq("rag_tab_id", fid).eq("person_id", pid).execute()
+        supabase.table("Rag").update({"deleted": True, "updated_at": now_utc_iso()}).eq("rag_tab_id", fid).eq("deleted", False).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新 Rag 表失敗: {e}")
-    try:
-        folder_deleted = delete_tab_folder(pid, fid)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return folder_deleted
+    folder_deleted = False
+    for pid in pids_ordered:
+        try:
+            if delete_tab_folder(pid, fid):
+                folder_deleted = True
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    return folder_deleted, primary_pid
 
 
 @router.post("/tab/delete/{rag_tab_id}", status_code=200)
 def delete_rag_file(
     rag_tab_id: str = PathParam(..., description="要刪除的 rag_tab_id"),
-    x_person_id: str | None = Header(None, alias="X-Person-Id"),
 ):
     """
-    POST /rag/tab/delete/{rag_tab_id}，person_id 請帶 Header X-Person-Id。
-    軟刪除：將 Rag 表該筆 deleted 設為 true，並刪除 storage/{person_id}/{rag_tab_id}/ 整個資料夾。
+    POST /rag/tab/delete/{rag_tab_id}。
+    軟刪除：將 Rag 表該 rag_tab_id 之未刪除列 deleted 設為 true，並刪除各 person_id 下 storage/{person_id}/{rag_tab_id}/ 對應之資料夾。
     """
-    pid = (x_person_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="請傳入 Header X-Person-Id（person_id）")
     fid = (rag_tab_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
         raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
-    folder_deleted = _do_delete_rag_file(pid, fid)
+    folder_deleted, pid = _do_delete_rag_file_by_tab_id(fid)
     return {
         "message": "已將 RAG 資料標記為刪除並刪除儲存資料夾",
         "rag_tab_id": fid,
