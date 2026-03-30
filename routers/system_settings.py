@@ -16,8 +16,8 @@ from fastapi import APIRouter, HTTPException
 # 引入 Pydantic 的 BaseModel、Field
 from pydantic import BaseModel, Field
 
-# 引入 UTC 時間工具
-from utils.datetime_utils import now_utc_iso
+# 引入台北時間工具
+from utils.datetime_utils import now_taipei_iso, to_taipei_iso
 # 引入 Supabase 客戶端
 from utils.supabase_client import get_supabase
 # 供測驗 RAG：System_Setting 固定 key
@@ -96,8 +96,8 @@ def get_course_name_setting():
         return CourseNameResponse(
             system_setting_id=row.get("system_setting_id"),
             course_name=row.get("value"),
-            updated_at=row.get("updated_at"),
-            created_at=row.get("created_at"),
+            updated_at=to_taipei_iso(row.get("updated_at")),
+            created_at=to_taipei_iso(row.get("created_at")),
         )
     except HTTPException:
         raise
@@ -126,8 +126,8 @@ def get_llm_api_key():
         return LlmApiKeyResponse(
             llm_api_key_id=row.get("system_setting_id"),
             llm_api_key=row.get("value"),
-            updated_at=row.get("updated_at"),
-            created_at=row.get("created_at"),
+            updated_at=to_taipei_iso(row.get("updated_at")),
+            created_at=to_taipei_iso(row.get("created_at")),
         )
     except HTTPException:
         raise
@@ -137,7 +137,7 @@ def get_llm_api_key():
 
 def _upsert_setting_and_get_row(supabase, key: str, value: str):
     """依 key 新增或更新一筆 System_Setting，回傳該筆 row（dict）。"""
-    now = now_utc_iso()
+    now = now_taipei_iso()
     resp = (
         supabase.table("System_Setting")
         .select("system_setting_id")
@@ -185,8 +185,8 @@ def put_course_name_setting(body: PutCourseNameRequest):
         return CourseNameResponse(
             system_setting_id=row.get("system_setting_id"),
             course_name=row.get("value"),
-            updated_at=row.get("updated_at"),
-            created_at=row.get("created_at"),
+            updated_at=to_taipei_iso(row.get("updated_at")),
+            created_at=to_taipei_iso(row.get("created_at")),
         )
     except HTTPException:
         raise
@@ -209,8 +209,8 @@ def put_llm_api_key(body: PutLlmApiKeyRequest):
         return LlmApiKeyResponse(
             llm_api_key_id=row.get("system_setting_id"),
             llm_api_key=row.get("value"),
-            updated_at=row.get("updated_at"),
-            created_at=row.get("created_at"),
+            updated_at=to_taipei_iso(row.get("updated_at")),
+            created_at=to_taipei_iso(row.get("created_at")),
         )
     except HTTPException:
         raise
@@ -240,8 +240,8 @@ def _get_rag_for_exam_setting_row(supabase, key: str) -> RagForExamSettingRespon
         key=key,
         rag_id=rid,
         system_setting_id=row.get("system_setting_id"),
-        updated_at=row.get("updated_at"),
-        created_at=row.get("created_at"),
+        updated_at=to_taipei_iso(row.get("updated_at")),
+        created_at=to_taipei_iso(row.get("created_at")),
     )
 
 
@@ -275,8 +275,8 @@ def _put_rag_for_exam_for_key(key: str, body: PutRagForExamRequest) -> RagForExa
                 key=key,
                 rag_id=None,
                 system_setting_id=row.get("system_setting_id"),
-                updated_at=row.get("updated_at"),
-                created_at=row.get("created_at"),
+                updated_at=to_taipei_iso(row.get("updated_at")),
+                created_at=to_taipei_iso(row.get("created_at")),
             )
         value_to_save = str(parsed)
         chk = (
@@ -296,8 +296,8 @@ def _put_rag_for_exam_for_key(key: str, body: PutRagForExamRequest) -> RagForExa
             key=key,
             rag_id=parsed,
             system_setting_id=row.get("system_setting_id"),
-            updated_at=row.get("updated_at"),
-            created_at=row.get("created_at"),
+            updated_at=to_taipei_iso(row.get("updated_at")),
+            created_at=to_taipei_iso(row.get("created_at")),
         )
     except HTTPException:
         raise

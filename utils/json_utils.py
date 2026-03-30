@@ -8,6 +8,9 @@ from datetime import date, datetime
 # 引入 Any 型別，表示任意型別
 from typing import Any
 
+# 將 API 中的 created_at / updated_at 統一為台北時間字串
+from utils.datetime_utils import to_taipei_iso
+
 
 def to_json_safe(obj: Any) -> Any:
     """
@@ -20,9 +23,12 @@ def to_json_safe(obj: Any) -> Any:
     # 若為 datetime 或 date，轉成 ISO 字串
     if isinstance(obj, (datetime, date)):  # 日期時間轉 ISO 字串
         return obj.isoformat()
-    # 若為 dict，遞迴處理每個鍵值
+    # 若為 dict，遞迴處理每個鍵值；created_at / updated_at 轉台北時間
     if isinstance(obj, dict):  # dict 遞迴處理每個值
-        return {k: to_json_safe(v) for k, v in obj.items()}
+        return {
+            k: to_taipei_iso(v) if k in ("created_at", "updated_at") else to_json_safe(v)
+            for k, v in obj.items()
+        }
     # 若為 list，遞迴處理每個元素
     if isinstance(obj, list):  # list 遞迴處理每個元素
         return [to_json_safe(v) for v in obj]

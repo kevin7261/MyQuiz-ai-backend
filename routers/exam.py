@@ -34,7 +34,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 # UTC 時間
-from utils.datetime_utils import now_utc_iso
+from utils.datetime_utils import now_taipei_iso, to_taipei_iso
 # 轉成可 JSON 序列化（與 GET /rag/tabs 一致）
 from utils.json_utils import to_json_safe
 # 系統 LLM API Key（Exam 使用系統設定，非個人）
@@ -75,7 +75,7 @@ def _exam_default_row(
         "person_id": person_id,
         "local": local,
         "deleted": False,
-        "updated_at": now_utc_iso(),
+        "updated_at": now_taipei_iso(),
     }
 
 
@@ -351,7 +351,7 @@ def create_exam(body: CreateExamRequest):
         "tab_name": row.get("tab_name", tab_name),
         "person_id": row.get("person_id", person_id),
         "local": row.get("local", body.local),
-        "created_at": row.get("created_at"),
+        "created_at": to_taipei_iso(row.get("created_at")),
     }
 
 
@@ -381,7 +381,7 @@ def update_exam_unit_tab_name(body: UpdateExamUnitNameRequest):
         row = sel.data[0]
         fid = row.get("exam_tab_id")
         pid = row.get("person_id")
-        ts = now_utc_iso()
+        ts = now_taipei_iso()
         supabase.table("Exam").update({"tab_name": tab_name, "updated_at": ts}).eq("exam_id", body.exam_id).eq("deleted", False).execute()
         return {
             "exam_id": body.exam_id,
@@ -412,7 +412,7 @@ def delete_exam(
     if not r.data or len(r.data) == 0:
         raise HTTPException(status_code=404, detail="找不到該 exam_tab_id 的 Exam 資料，或已刪除")
     pid = (r.data[0].get("person_id") or "").strip()
-    supabase.table("Exam").update({"deleted": True, "updated_at": now_utc_iso()}).eq("exam_tab_id", fid).eq("deleted", False).execute()
+    supabase.table("Exam").update({"deleted": True, "updated_at": now_taipei_iso()}).eq("exam_tab_id", fid).eq("deleted", False).execute()
     return {
         "message": "已將 Exam 標記為刪除",
         "exam_tab_id": fid,
@@ -553,7 +553,7 @@ def update_exam_quiz_rate(body: ExamQuizRateRequest):
     if not r.data or len(r.data) == 0:
         raise HTTPException(status_code=404, detail=f"找不到 exam_quiz_id={exam_quiz_id} 的 Exam_Quiz")
     supabase.table("Exam_Quiz").update(
-        {"quiz_rate": quiz_rate, "updated_at": now_utc_iso()}
+        {"quiz_rate": quiz_rate, "updated_at": now_taipei_iso()}
     ).eq("exam_quiz_id", exam_quiz_id).execute()
     after = (
         supabase.table("Exam_Quiz")

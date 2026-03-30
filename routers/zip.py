@@ -28,8 +28,8 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Path as Pa
 # 引入 Pydantic 的 BaseModel、Field
 from pydantic import BaseModel, Field
 
-# 引入 UTC 時間工具
-from utils.datetime_utils import now_utc_iso
+# 引入台北時間工具
+from utils.datetime_utils import now_taipei_iso, to_taipei_iso
 # 引入 to_json_safe 轉換 datetime 等
 from utils.json_utils import to_json_safe
 # 依 person_id 取得 LLM API Key
@@ -86,7 +86,7 @@ def _rag_default_row(
     row["chunk_overlap"] = 200
     row["local"] = local
     row["deleted"] = False
-    row["updated_at"] = now_utc_iso()
+    row["updated_at"] = now_taipei_iso()
     return row
 
 
@@ -340,7 +340,7 @@ def create_unit(body: CreateRagRequest):
             "tab_name": row.get("tab_name"),
             "person_id": row.get("person_id"),
             "local": row.get("local"),
-            "created_at": row.get("created_at"),
+            "created_at": to_taipei_iso(row.get("created_at")),
         }
     except HTTPException:
         raise
@@ -374,7 +374,7 @@ def update_unit_tab_name(body: UpdateRagUnitNameRequest):
         row = sel.data[0]
         fid = row.get("rag_tab_id")
         pid = row.get("person_id")
-        ts = now_utc_iso()
+        ts = now_taipei_iso()
         supabase.table("Rag").update({"tab_name": tab_name, "updated_at": ts}).eq("rag_id", body.rag_id).eq("deleted", False).execute()
         return {
             "rag_id": body.rag_id,
@@ -449,13 +449,13 @@ async def upload_zip(
     file_metadata = {
         "rag_id": row["rag_id"],
         "rag_tab_id": fid,
-        "created_at": row["created_at"],
+        "created_at": to_taipei_iso(row["created_at"]),
         "filename": file.filename,
         "second_folders": folders,
     }
     update_payload: dict[str, Any] = {
         "file_metadata": file_metadata,
-        "updated_at": now_utc_iso(),
+        "updated_at": now_taipei_iso(),
     }
     # llm_api_key 不寫入 Rag 表（該表無此欄位）；依 person_id 從 User 表取得
     try:
@@ -565,7 +565,7 @@ def build_rag_zip(body: PackRequest):
             "rag_metadata": response,
             "chunk_size": body.chunk_size,
             "chunk_overlap": body.chunk_overlap,
-            "updated_at": now_utc_iso(),
+            "updated_at": now_taipei_iso(),
         }
         # llm_api_key 不寫入 Rag 表（該表無此欄位）；tab/quiz/create、tab/quiz/grade 依 person_id 從 User 表取得
         supabase.table("Rag").update(update_payload).eq("rag_tab_id", body.rag_tab_id).eq("person_id", pid).execute()
@@ -590,7 +590,7 @@ def _do_delete_rag_file_by_tab_id(fid: str) -> tuple[bool, str]:
         pids_ordered.append(pid)
     primary_pid = pids_ordered[0] if pids_ordered else ""
     try:
-        supabase.table("Rag").update({"deleted": True, "updated_at": now_utc_iso()}).eq("rag_tab_id", fid).eq("deleted", False).execute()
+        supabase.table("Rag").update({"deleted": True, "updated_at": now_taipei_iso()}).eq("rag_tab_id", fid).eq("deleted", False).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新 Rag 表失敗: {e}")
     folder_deleted = False

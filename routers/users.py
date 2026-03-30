@@ -16,12 +16,33 @@ from pydantic import BaseModel
 
 # Supabase 客戶端
 from utils.supabase_client import get_supabase
+# API 回傳之時間戳改為台北時間
+from utils.datetime_utils import to_taipei_iso
 
 # 建立路由，前綴 /user
 router = APIRouter(prefix="/user", tags=["user"])
 
 # 與 DB 表一致（User 表）：user_id, person_id, name, user_type, llm_api_key, user_metadata, updated_at, created_at；不含 password。
 USER_PUBLIC_COLUMNS = "user_id, person_id, name, user_type, llm_api_key, user_metadata, updated_at, created_at"
+
+USER_OUT_KEYS = (
+    "user_id",
+    "person_id",
+    "name",
+    "user_type",
+    "llm_api_key",
+    "user_metadata",
+    "updated_at",
+    "created_at",
+)
+
+
+def _user_public_dict(row: dict) -> dict:
+    """組出對外使用者 dict，updated_at / created_at 為台北時間 ISO 字串。"""
+    out = {k: row.get(k) for k in USER_OUT_KEYS}
+    out["updated_at"] = to_taipei_iso(out.get("updated_at"))
+    out["created_at"] = to_taipei_iso(out.get("created_at"))
+    return out
 
 
 class UserListItem(BaseModel):
@@ -73,7 +94,10 @@ def list_users():
             .select(USER_PUBLIC_COLUMNS)
             .execute()
         )
-        return ListUsersResponse(users=resp.data, count=len(resp.data))
+        return ListUsersResponse(
+            users=[UserListItem(**_user_public_dict(r)) for r in resp.data],
+            count=len(resp.data),
+        )
     except Exception as e:
         err = str(e).lower()
         if "nodename" in err or "errno 8" in err or "name or service not known" in err:
@@ -89,7 +113,10 @@ def list_users():
                     .select(USER_PUBLIC_COLUMNS)
                     .execute()
                 )
-                return ListUsersResponse(users=resp.data, count=len(resp.data))
+                return ListUsersResponse(
+                    users=[UserListItem(**_user_public_dict(r)) for r in resp.data],
+                    count=len(resp.data),
+                )
             except Exception as e2:
                 raise HTTPException(status_code=500, detail=str(e2))
         raise HTTPException(status_code=500, detail=str(e))
@@ -110,7 +137,6 @@ def update_profile(
     if body.name is None and body.user_type is None and body.llm_api_key is None:
         raise HTTPException(status_code=400, detail="請傳入 name、user_type 或 llm_api_key 以進行修改")
 
-    out_keys = ("user_id", "person_id", "name", "user_type", "llm_api_key", "user_metadata", "updated_at", "created_at")
     try:
         supabase = get_supabase()
         resp = (
@@ -132,8 +158,7 @@ def update_profile(
         if body.llm_api_key is not None:
             updates["llm_api_key"] = (body.llm_api_key or "").strip() or None
         if not updates:
-            out = {k: row.get(k) for k in out_keys}
-            return LoginResponse(user=out)
+            return LoginResponse(user=UserListItem(**_user_public_dict(row)))
 
         supabase.table("User").update(updates).eq("user_id", user_id).eq("person_id", person_id).execute()
         resp2 = (
@@ -144,8 +169,7 @@ def update_profile(
             .execute()
         )
         out_row = resp2.data[0] if resp2.data else row
-        out = {k: out_row.get(k) for k in out_keys}
-        return LoginResponse(user=out)
+        return LoginResponse(user=UserListItem(**_user_public_dict(out_row)))
     except HTTPException:
         raise
     except Exception as e:
@@ -171,8 +195,7 @@ def update_profile(
                 if body.llm_api_key is not None:
                     updates["llm_api_key"] = (body.llm_api_key or "").strip() or None
                 if not updates:
-                    out = {k: row.get(k) for k in out_keys}
-                    return LoginResponse(user=out)
+                    return LoginResponse(user=UserListItem(**_user_public_dict(row)))
                 get_supabase().table("user").update(updates).eq("user_id", user_id).eq("person_id", person_id).execute()
                 resp2 = (
                     get_supabase()
@@ -183,8 +206,7 @@ def update_profile(
                     .execute()
                 )
                 out_row = resp2.data[0] if resp2.data else row
-                out = {k: out_row.get(k) for k in out_keys}
-                return LoginResponse(user=out)
+                return LoginResponse(user=UserListItem(**_user_public_dict(out_row)))
             except HTTPException:
                 raise
             except Exception as e2:
@@ -200,7 +222,6 @@ def login(body: LoginRequest):
     person_id = (body.person_id or "").strip()
     pwd = (body.password or "").strip()
     cols = f"{USER_PUBLIC_COLUMNS}, password"
-    out_keys = ("user_id", "person_id", "name", "user_type", "llm_api_key", "user_metadata", "updated_at", "created_at")
     try:
         supabase = get_supabase()
         resp = (
@@ -214,8 +235,7 @@ def login(body: LoginRequest):
         row = resp.data[0]
         if (row.get("password") or "").strip() != pwd:
             raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
-        out = {k: row.get(k) for k in out_keys}
-        return LoginResponse(user=out)
+        return LoginResponse(user=UserListItem(**_user_public_dict(row)))
     except HTTPException:
         raise
     except Exception as e:
@@ -234,8 +254,7 @@ def login(body: LoginRequest):
                 row = resp.data[0]
                 if (row.get("password") or "").strip() != pwd:
                     raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
-                out = {k: row.get(k) for k in out_keys}
-                return LoginResponse(user=out)
+                return LoginResponse(user=UserListItem(**_user_public_dict(row)))
             except HTTPException:
                 raise
             except Exception as e2:
