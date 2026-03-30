@@ -9,6 +9,8 @@ from typing import Optional
 
 # 引入 FastAPI 的 APIRouter、HTTPException
 from fastapi import APIRouter, HTTPException
+
+from dependencies.person_id import PersonId
 # 引入 Pydantic 的 BaseModel、Field
 from pydantic import BaseModel, Field
 
@@ -29,7 +31,7 @@ class ListQuizzesResponse(BaseModel):
 
 
 @router.get("/quizzes", response_model=ListQuizzesResponse)
-def list_exam_quizzes():
+def list_exam_quizzes(_person_id: PersonId):
     """
     回傳 Exam_Quiz 全部內容，格式與 List Quizzes By Person 相同。
     exams 陣列，每筆含 quizzes、answers；每題 quiz 帶關聯的 answers（Exam_Answer）。

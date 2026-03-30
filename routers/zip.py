@@ -7,7 +7,7 @@ ZIP 與 RAG 相關 API 模組。
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name；與 tab/create 回傳之 rag_id 相同）
 - POST /rag/tab/upload-zip：上傳 ZIP
 - POST /rag/tab/build-rag-zip：依 unit_list 打包並建 RAG
-- POST /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除並刪除儲存（無需 X-Person-Id）
+- POST /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除並刪除儲存（須傳 query person_id）
 """
 
 # 引入 io 用於 BytesIO 等
@@ -25,6 +25,8 @@ from typing import Any
 
 # 引入 FastAPI 的 APIRouter、HTTPException、UploadFile、File、Form、PathParam、Query、Request
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Path as PathParam, Query, Request
+
+from dependencies.person_id import PersonId
 # 引入 Pydantic 的 BaseModel、Field
 from pydantic import BaseModel, Field
 
@@ -171,6 +173,7 @@ class PackRequest(BaseModel):
 @router.get("/tabs", response_model=ListRagResponse)
 def list_rag(
     request: Request,
+    _person_id: PersonId,
     local: bool | None = Query(
         None,
         description="僅回傳 Rag.local 與此值相同的列。未傳時：連線來源為 127.0.0.1、localhost、::1 視為 true，否則 false（與前端在本機開發傳 true、正式環境傳 false 一致）",
@@ -229,7 +232,7 @@ def list_rag(
 
 
 @router.get("/tab/for-exam")
-def get_for_exam_rag(request: Request):
+def get_for_exam_rag(request: Request, _person_id: PersonId):
     """
     依連線讀取 System_Setting（本機：rag_localhost，否則 rag_deploy）的 value 作為 rag_id，取得該筆 Rag（deleted=false）。
     回傳格式與 POST /rag/tab/build-rag-zip 一致，並多帶 rag_id、rag_tab_id、llm_api_key、system_prompt_instruction。
@@ -302,7 +305,7 @@ def get_for_exam_rag(request: Request):
 
 
 @router.post("/tab/create")
-def create_unit(body: CreateRagRequest):
+def create_unit(body: CreateRagRequest, caller_person_id: PersonId):
     """
     只建立一筆 Rag 資料，接受 rag_tab_id、person_id、tab_name（必填）、local（選填，預設 false）。system_prompt_instruction 請在 POST /rag/tab/build-rag-zip 傳入。
     回傳新增的 rag_id、rag_tab_id、person_id、tab_name、local、created_at。
@@ -313,6 +316,8 @@ def create_unit(body: CreateRagRequest):
     pid = (body.person_id or "").strip()
     if not pid:
         raise HTTPException(status_code=400, detail="請傳入 person_id")
+    if pid != caller_person_id:
+        raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
     tab_name = (body.tab_name or "").strip()
     if not tab_name:
         raise HTTPException(status_code=400, detail="請傳入 tab_name")
@@ -349,7 +354,7 @@ def create_unit(body: CreateRagRequest):
 
 
 @router.put("/tab/tab-name")
-def update_unit_tab_name(body: UpdateRagUnitNameRequest):
+def update_unit_tab_name(body: UpdateRagUnitNameRequest, caller_person_id: PersonId):
     """
     更新既有 Rag 的 tab_name。以 rag_id（Rag 主鍵）比對；僅更新 deleted=false 的列。
     回傳 rag_id、rag_tab_id、person_id、tab_name、updated_at。
@@ -374,6 +379,8 @@ def update_unit_tab_name(body: UpdateRagUnitNameRequest):
         row = sel.data[0]
         fid = row.get("rag_tab_id")
         pid = row.get("person_id")
+        if ((pid or "").strip() != caller_person_id):
+            raise HTTPException(status_code=403, detail="無權修改該 Rag")
         ts = now_taipei_iso()
         supabase.table("Rag").update({"tab_name": tab_name, "updated_at": ts}).eq("rag_id", body.rag_id).eq("deleted", False).execute()
         return {
@@ -391,6 +398,7 @@ def update_unit_tab_name(body: UpdateRagUnitNameRequest):
 
 @router.post("/tab/upload-zip")
 async def upload_zip(
+    caller_person_id: PersonId,
     file: UploadFile = File(...),
     rag_tab_id: str = Form(..., description="對應 tab/create 建立的 rag_tab_id（Rag 表 rag_tab_id），ZIP 會存於此路徑"),
     person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 tab/create 一致"),
@@ -423,6 +431,8 @@ async def upload_zip(
     resolved_person_id = (person_id or "").strip()
     if not resolved_person_id:
         raise HTTPException(status_code=400, detail="請傳入 person_id")
+    if resolved_person_id != caller_person_id:
+        raise HTTPException(status_code=400, detail="Form 的 person_id 與 query 不一致")
 
     try:
         supabase = get_supabase()
@@ -466,7 +476,7 @@ async def upload_zip(
 
 
 @router.post("/tab/build-rag-zip")
-def build_rag_zip(body: PackRequest):
+def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
     """
     依先前上傳的 ZIP（rag_tab_id）與 unit_list 字串，抽出指定資料夾名稱（路徑上任一層目錄名皆可，含 6 位數週次）重新壓成 ZIP 並存到後端。
     ZIP 檔位置為 {person_id}/{rag_tab_id}/upload（與 tab/upload-zip 一致），body 需傳入 person_id。
@@ -476,6 +486,8 @@ def build_rag_zip(body: PackRequest):
     pid = (body.person_id or "").strip()
     if not pid:
         raise HTTPException(status_code=400, detail="請傳入 person_id")
+    if pid != caller_person_id:
+        raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
 
     path = get_zip_path(body.rag_tab_id) or get_zip_path_by_person(pid, body.rag_tab_id)
     if not path or not path.exists():
@@ -605,6 +617,7 @@ def _do_delete_rag_file_by_tab_id(fid: str) -> tuple[bool, str]:
 
 @router.post("/tab/delete/{rag_tab_id}", status_code=200)
 def delete_rag_file(
+    _person_id: PersonId,
     rag_tab_id: str = PathParam(..., description="要刪除的 rag_tab_id"),
 ):
     """

@@ -13,6 +13,8 @@ from typing import Optional, Union
 
 # 引入 FastAPI 與 HTTPException
 from fastapi import APIRouter, HTTPException
+
+from dependencies.person_id import PersonId
 # 引入 Pydantic 的 BaseModel、Field
 from pydantic import BaseModel, Field
 
@@ -76,7 +78,7 @@ class RagForExamSettingResponse(BaseModel):
 
 
 @router.get("/course-name", response_model=CourseNameResponse)
-def get_course_name_setting():
+def get_course_name_setting(_person_id: PersonId):
     """
     取得 course_name 設定（System_Setting 表 key=course_name）。直接取值，無參數。
     回傳 course_name 欄位（對應該 key 的 value）。若尚無資料，皆為 null。
@@ -106,7 +108,7 @@ def get_course_name_setting():
 
 
 @router.get("/llm-api-key", response_model=LlmApiKeyResponse)
-def get_llm_api_key():
+def get_llm_api_key(_person_id: PersonId):
     """
     取得系統預設的 LLM API Key（System_Setting 表 key=llm_api_key）。
     若尚無資料，回傳 llm_api_key_id 等皆為 null。
@@ -171,7 +173,7 @@ def _upsert_setting_and_get_row(supabase, key: str, value: str):
 
 
 @router.put("/course-name", response_model=CourseNameResponse)
-def put_course_name_setting(body: PutCourseNameRequest):
+def put_course_name_setting(body: PutCourseNameRequest, _person_id: PersonId):
     """
     寫入 course_name 設定（System_Setting 表 key=course_name，value=body.course_name）。
     已有則更新，否則新增。回傳 course_name 欄位。
@@ -195,7 +197,7 @@ def put_course_name_setting(body: PutCourseNameRequest):
 
 
 @router.put("/llm-api-key", response_model=LlmApiKeyResponse)
-def put_llm_api_key(body: PutLlmApiKeyRequest):
+def put_llm_api_key(body: PutLlmApiKeyRequest, _person_id: PersonId):
     """
     寫入或更新系統預設的 LLM API Key（System_Setting 表 key=llm_api_key）。
     已有則更新，否則新增。llm_api_key 可傳空字串表示清除。
@@ -306,7 +308,7 @@ def _put_rag_for_exam_for_key(key: str, body: PutRagForExamRequest) -> RagForExa
 
 
 @router.get("/rag-for-exam-localhost", response_model=RagForExamSettingResponse)
-def get_rag_for_exam_localhost():
+def get_rag_for_exam_localhost(_person_id: PersonId):
     """讀取 key=rag_localhost 的供測驗 RAG rag_id（value 轉 int）。無資料則 rag_id 為 null。"""
     try:
         supabase = get_supabase()
@@ -318,7 +320,7 @@ def get_rag_for_exam_localhost():
 
 
 @router.get("/rag-for-exam-deploy", response_model=RagForExamSettingResponse)
-def get_rag_for_exam_deploy():
+def get_rag_for_exam_deploy(_person_id: PersonId):
     """讀取 key=rag_deploy 的供測驗 RAG rag_id（value 轉 int）。無資料則 rag_id 為 null。"""
     try:
         supabase = get_supabase()
@@ -334,7 +336,7 @@ def get_rag_for_exam_deploy():
     response_model=RagForExamSettingResponse,
     summary="Put Rag For Exam Localhost",
 )
-def put_rag_for_exam_localhost(body: PutRagForExamRequest):
+def put_rag_for_exam_localhost(body: PutRagForExamRequest, _person_id: PersonId):
     """
     寫入供測驗 RAG（System_Setting key=rag_localhost，value=str(rag_id)）。
     該 key 已存在則更新，否則新增。rag_id 為正整數時需存在 Rag 且 deleted=false。
@@ -348,7 +350,7 @@ def put_rag_for_exam_localhost(body: PutRagForExamRequest):
     response_model=RagForExamSettingResponse,
     summary="Put Rag For Exam Deploy",
 )
-def put_rag_for_exam_deploy(body: PutRagForExamRequest):
+def put_rag_for_exam_deploy(body: PutRagForExamRequest, _person_id: PersonId):
     """
     寫入供測驗 RAG（System_Setting key=rag_deploy，value=str(rag_id)）。
     行為同 rag-for-exam-localhost，僅 key 不同。

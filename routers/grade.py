@@ -25,6 +25,8 @@ from typing import Any, Callable
 
 # 引入 FastAPI 的 APIRouter、BackgroundTasks、HTTPException
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+
+from dependencies.person_id import PersonId
 # 引入 JSONResponse、Response 用於回傳
 from fastapi.responses import JSONResponse, Response
 # 引入 Pydantic 的 BaseModel、ConfigDict、Field
@@ -391,7 +393,7 @@ def _insert_exam_answer(result_dict: dict, quiz_answer: str, *, exam_id: int, ex
 
 @router.post("/tab/quiz/create", summary="Rag Create Quiz", operation_id="rag_create_quiz")
 @router.post("/generate-quiz", include_in_schema=False)
-def rag_create_quiz(body: GenerateQuizRequest):
+def rag_create_quiz(body: GenerateQuizRequest, caller_person_id: PersonId):
     """
     傳入 rag_id（Rag 表主鍵）、rag_tab_id（選填）、quiz_level；可傳 unit_name 指定 outputs 中哪一個上傳單元（與 tab/build-rag-zip 的 outputs[].unit_name 一致），未傳則用第一筆。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
@@ -417,6 +419,8 @@ def rag_create_quiz(body: GenerateQuizRequest):
             status_code=400,
             detail="該筆 Rag 的 person_id 為空，無法取得 LLM API Key",
         )
+    if person_id != caller_person_id:
+        raise HTTPException(status_code=403, detail="無權對該 Rag 出題")
     # 依 person_id 從 User 表取得 LLM API Key
     api_key = get_llm_api_key_for_person(person_id)
     # 若無 API Key，拋出 400
@@ -507,7 +511,7 @@ def rag_create_quiz(body: GenerateQuizRequest):
 
 
 @router.post("/tab/quiz/grade", summary="Rag Grade Quiz")
-async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest):
+async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest, caller_person_id: PersonId):
     """
     傳入 rag_id（字串）、rag_tab_id（選填）、rag_quiz_id、quiz_content、quiz_answer。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
@@ -542,6 +546,8 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
             status_code=400,
             content={"error": "該筆 Rag 的 person_id 為空，無法取得 LLM API Key"},
         )
+    if person_id != caller_person_id:
+        return JSONResponse(status_code=403, content={"error": "無權對該 Rag 評分"})
     # 依 person_id 取得 LLM API Key
     api_key = get_llm_api_key_for_person(person_id)
     if not api_key:
@@ -608,7 +614,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
 
 
 @router.get("/tab/quiz/grade-result/{job_id}", tags=["rag"])
-async def get_grade_result(job_id: str):  # 路徑參數 job_id
+async def get_grade_result(job_id: str, _person_id: PersonId):  # 路徑參數 job_id
     """
     輪詢評分結果。回傳 status: pending | ready | error；
     ready 時 result 為 quiz_grade、quiz_comments（與評分 prompt 之 JSON）及 rag_answer_id（已寫入 Rag_Answer）；

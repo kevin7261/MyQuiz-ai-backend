@@ -6,7 +6,7 @@ Exam API 模組。對應 public.Exam / Exam_Quiz / Exam_Answer 表。
 - POST /exam/tab/quiz/create：依 exam_tab_id 與 rag_id 查找 RAG ZIP 出題，寫入 Exam_Quiz。
 - POST /exam/tab/quiz/rate：依 exam_quiz_id 更新 Exam_Quiz.quiz_rate（僅 -1、0、1；quiz_rate 未傳預設 0）。
 - POST /exam/tab/quiz/grade：非同步評分並寫入 Exam_Answer（與 /rag 評分流程一致；寫入失敗時輪詢 status 為 error）；輪詢 GET /exam/tab/quiz/grade-result/{job_id}。
-- POST /exam/tab/delete/{exam_tab_id}：依 exam_tab_id 軟刪除 Exam（deleted=true；無需 X-Person-Id）。
+- POST /exam/tab/delete/{exam_tab_id}：依 exam_tab_id 軟刪除 Exam（deleted=true；須傳 query person_id）。
 """
 
 # 引入 json 用於序列化回傳
@@ -23,11 +23,13 @@ import uuid
 import zipfile
 # 引入 Path 用於路徑
 from pathlib import Path
-# 引入 Any、Literal、Optional 型別
-from typing import Any, Literal, Optional
+# 引入 Any、Literal 型別
+from typing import Any, Literal
 
 # 引入 FastAPI 相關
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path as PathParam, Query, Request
+
+from dependencies.person_id import PersonId
 # 引入 JSONResponse、Response
 from fastapi.responses import JSONResponse, Response
 # 引入 Pydantic 的 BaseModel、Field
@@ -188,7 +190,7 @@ class ListExamResponse(BaseModel):
 @router.get("/tabs", response_model=ListExamResponse)
 def list_exams(
     request: Request,
-    person_id: Optional[str] = Query(None, description="選填，篩選 person_id；未傳則回傳全部"),
+    person_id: PersonId,
     local: bool | None = Query(
         None,
         description="僅回傳 Exam.local 與此值相同的列。未傳時：連線來源為 127.0.0.1、localhost、::1 視為 true，否則 false（與 GET /rag/tabs 一致）",
@@ -196,6 +198,7 @@ def list_exams(
 ):
     """
     列出 Exam 表內容，僅回傳 deleted=False 的資料，且 Exam.local 須與 query `local` 相符（未傳 `local` 時依連線是否本機自動判定）。
+    僅回傳 query 所傳 person_id 之 Exam（與呼叫者身分一致）。
     回傳列依 created_at 由舊到新排序。
     每筆 Exam 含表上所有欄位，並帶關聯的 Exam_Quiz（quizzes：含 quiz_rate 等表欄位，每題帶一筆 answer）與頂層 answers。
     格式同 GET /rag/tabs。
@@ -203,9 +206,8 @@ def list_exams(
     try:
         local_filter = local if local is not None else is_localhost_request(request)
         data = _exams_table_select(exclude_deleted=True, local_match=local_filter)
-        if person_id is not None and str(person_id).strip():
-            pid = str(person_id).strip()
-            data = [r for r in data if (r.get("person_id") or "").strip() == pid]
+        pid = person_id.strip()
+        data = [r for r in data if (r.get("person_id") or "").strip() == pid]
         exam_ids = []
         for row in data:
             eid = row.get("exam_id")
@@ -314,18 +316,20 @@ _exam_grade_job_results: dict[str, dict[str, Any]] = {}
 
 
 @router.post("/tab/create")
-def create_exam(body: CreateExamRequest):
+def create_exam(body: CreateExamRequest, caller_person_id: PersonId):
     """
     建立一筆 Exam 資料。exam_tab_id 可選，未傳則由後端產生；local 選填，預設 false（與 POST /rag/tab/create 一致）。
     回傳 exam_id、exam_tab_id、person_id、tab_name、local、created_at。
     """
     fid = (body.exam_tab_id or "").strip()
+    body_pid = (body.person_id or "").strip()
+    person_id = body_pid if body_pid else caller_person_id
+    if body_pid and body_pid != caller_person_id:
+        raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
     if not fid:
-        fid = generate_tab_id(body.person_id or None)
+        fid = generate_tab_id(person_id or None)
     if "/" in fid or "\\" in fid:
         raise HTTPException(status_code=400, detail="無效的 exam_tab_id")
-
-    person_id = (body.person_id or "").strip()
     tab_name = (body.tab_name or "").strip()
 
     supabase = get_supabase()
@@ -356,7 +360,7 @@ def create_exam(body: CreateExamRequest):
 
 
 @router.put("/tab/tab-name", summary="Update Exam Tab Name")
-def update_exam_unit_tab_name(body: UpdateExamUnitNameRequest):
+def update_exam_unit_tab_name(body: UpdateExamUnitNameRequest, caller_person_id: PersonId):
     """
     更新既有 Exam 的 tab_name。以 exam_id（Exam 主鍵）比對；僅更新 deleted=false 的列。
     回傳 exam_id、exam_tab_id、person_id、tab_name、updated_at。
@@ -381,6 +385,8 @@ def update_exam_unit_tab_name(body: UpdateExamUnitNameRequest):
         row = sel.data[0]
         fid = row.get("exam_tab_id")
         pid = row.get("person_id")
+        if ((pid or "").strip() != caller_person_id):
+            raise HTTPException(status_code=403, detail="無權修改該 Exam")
         ts = now_taipei_iso()
         supabase.table("Exam").update({"tab_name": tab_name, "updated_at": ts}).eq("exam_id", body.exam_id).eq("deleted", False).execute()
         return {
@@ -398,6 +404,7 @@ def update_exam_unit_tab_name(body: UpdateExamUnitNameRequest):
 
 @router.post("/tab/delete/{exam_tab_id}", status_code=200)
 def delete_exam(
+    caller_person_id: PersonId,
     exam_tab_id: str = PathParam(..., description="要刪除的 Exam 的 exam_tab_id"),
 ):
     """
@@ -412,6 +419,8 @@ def delete_exam(
     if not r.data or len(r.data) == 0:
         raise HTTPException(status_code=404, detail="找不到該 exam_tab_id 的 Exam 資料，或已刪除")
     pid = (r.data[0].get("person_id") or "").strip()
+    if pid != caller_person_id:
+        raise HTTPException(status_code=403, detail="無權刪除該 Exam")
     supabase.table("Exam").update({"deleted": True, "updated_at": now_taipei_iso()}).eq("exam_tab_id", fid).eq("deleted", False).execute()
     return {
         "message": "已將 Exam 標記為刪除",
@@ -422,7 +431,7 @@ def delete_exam(
 
 @router.post("/tab/quiz/create", summary="Exam Create Quiz", operation_id="exam_create_quiz")
 @router.post("/generate-quiz", include_in_schema=False)
-def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest):
+def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest, caller_person_id: PersonId):
     """
     傳入 exam_id 或 exam_tab_id（二擇一）、quiz_level；可傳 unit_name 指定 outputs 中哪一個上傳單元（與 tab/build-rag-zip 的 outputs[].unit_name 一致），未傳則用第一筆。
     LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
@@ -447,6 +456,8 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest):
     person_id = (row.get("person_id") or "").strip()
     if not person_id:
         raise HTTPException(status_code=400, detail="該 Exam 的 person_id 為空")
+    if person_id != caller_person_id:
+        raise HTTPException(status_code=403, detail="無權對該 Exam 出題")
     api_key = get_llm_api_key()
     if not api_key:
         raise HTTPException(
@@ -535,7 +546,7 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest):
 
 
 @router.post("/tab/quiz/rate", summary="Exam Rate Quiz", status_code=200)
-def update_exam_quiz_rate(body: ExamQuizRateRequest):
+def update_exam_quiz_rate(body: ExamQuizRateRequest, caller_person_id: PersonId):
     """
     依 body 的 exam_quiz_id 更新該筆 Exam_Quiz 的 quiz_rate（**僅 -1、0、1**；未傳 quiz_rate 時視為 **0**）。
     成功後回傳 exam_quiz_id、quiz_rate、updated_at 與提示訊息。
@@ -545,13 +556,16 @@ def update_exam_quiz_rate(body: ExamQuizRateRequest):
     supabase = get_supabase()
     r = (
         supabase.table("Exam_Quiz")
-        .select("exam_quiz_id")
+        .select("exam_quiz_id, person_id")
         .eq("exam_quiz_id", exam_quiz_id)
         .limit(1)
         .execute()
     )
     if not r.data or len(r.data) == 0:
         raise HTTPException(status_code=404, detail=f"找不到 exam_quiz_id={exam_quiz_id} 的 Exam_Quiz")
+    qpid = (r.data[0].get("person_id") or "").strip()
+    if qpid != caller_person_id:
+        raise HTTPException(status_code=403, detail="無權更新該題 quiz_rate")
     supabase.table("Exam_Quiz").update(
         {"quiz_rate": quiz_rate, "updated_at": now_taipei_iso()}
     ).eq("exam_quiz_id", exam_quiz_id).execute()
@@ -570,7 +584,12 @@ def update_exam_quiz_rate(body: ExamQuizRateRequest):
 
 
 @router.post("/tab/quiz/grade", summary="Exam Grade Quiz")
-async def exam_grade_submission(request: Request, background_tasks: BackgroundTasks, body: ExamQuizGradeRequest):
+async def exam_grade_submission(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    body: ExamQuizGradeRequest,
+    caller_person_id: PersonId,
+):
     """
     傳入 exam_id 或 exam_tab_id、exam_quiz_id、quiz_content、quiz_answer。
     LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
@@ -597,6 +616,8 @@ async def exam_grade_submission(request: Request, background_tasks: BackgroundTa
     person_id = (row.get("person_id") or "").strip()
     exam_id = int(row.get("exam_id") or 0)
     exam_tab_id = (row.get("exam_tab_id") or "").strip()
+    if person_id != caller_person_id:
+        return JSONResponse(status_code=403, content={"error": "無權對該 Exam 評分"})
     api_key = get_llm_api_key()
     if not api_key:
         return JSONResponse(
@@ -692,7 +713,7 @@ async def exam_grade_submission(request: Request, background_tasks: BackgroundTa
 
 
 @router.get("/tab/quiz/grade-result/{job_id}", tags=["exam"])
-async def get_exam_grade_result(job_id: str):
+async def get_exam_grade_result(job_id: str, _person_id: PersonId):
     """
     輪詢 Exam 評分結果（行為同 GET /rag/tab/quiz/grade-result/{job_id}）。
     status: pending | ready | error；ready 時 result 含 quiz_grade、quiz_comments、exam_answer_id（已寫入 Exam_Answer）；

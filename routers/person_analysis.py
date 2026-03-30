@@ -13,6 +13,8 @@ from typing import Any, Optional
 
 # 引入 FastAPI 的 APIRouter、HTTPException、PathParam
 from fastapi import APIRouter, HTTPException, Path as PathParam
+
+from dependencies.person_id import PersonId
 # 引入 OpenAI 客戶端
 from openai import OpenAI
 # 引入 Pydantic 的 BaseModel、Field
@@ -179,14 +181,19 @@ def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> str:
 
 @router.get("/quizzes/{person_id}", response_model=ListQuizzesByPersonResponse)
 def list_quizzes_by_person(
+    caller_person_id: PersonId,
     person_id: str = PathParam(..., description="要查詢的 person_id"),
 ):
     """
     依 person_id 取得該使用者在 Exam_Quiz 的資料，**僅回傳在 Exam_Answer 有對應答案的 quiz**。
     回傳格式與 GET /rag/tabs、GET /exam/tabs 完全一致；另帶 weakness_report（系統有設定 LLM API Key 時由 AI 產生）。
+    query 的 person_id 須與路徑 {person_id} 一致。
     """
     try:
-        quizzes = _quizzes_by_person_id(person_id)
+        path_pid = (person_id or "").strip()
+        if path_pid != caller_person_id:
+            raise HTTPException(status_code=403, detail="路徑 person_id 與 query 不一致")
+        quizzes = _quizzes_by_person_id(path_pid)
         quiz_ids = []
         for row in quizzes:
             qid = row.get("exam_quiz_id")
@@ -236,5 +243,7 @@ def list_quizzes_by_person(
         if api_key:
             weakness_report = _generate_weakness_report_md(to_json_safe(quizzes_with_answers), api_key)
         return ListQuizzesByPersonResponse(exams=data, count=len(data), weakness_report=weakness_report)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

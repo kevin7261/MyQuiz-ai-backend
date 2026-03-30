@@ -11,6 +11,9 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 # 引入 FastAPI 框架，用於建立 Web API 服務
 from fastapi import FastAPI
+
+# 所有端點必填 query 參數 person_id
+from dependencies.person_id import PersonId
 # 引入 CORS 中介軟體，用於處理跨域請求
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -72,6 +75,6 @@ app.include_router(system_settings_router)
 
 # 定義根路徑 / 的 GET 端點，用於健康檢查
 @app.get("/")
-def read_root():  # 處理根路徑請求
+def read_root(_person_id: PersonId):
     # 回傳 JSON 物件，表示伺服器運行中
     return {"status": "Server is running"}

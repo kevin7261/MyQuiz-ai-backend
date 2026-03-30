@@ -9,8 +9,10 @@
 # 引入 Any、Optional 型別
 from typing import Any, Optional
 
-# 引入 FastAPI 的 APIRouter、Header、HTTPException
-from fastapi import APIRouter, Header, HTTPException
+# 引入 FastAPI 的 APIRouter、HTTPException
+from fastapi import APIRouter, HTTPException
+
+from dependencies.person_id import PersonId
 # 引入 Pydantic 的 BaseModel
 from pydantic import BaseModel
 
@@ -75,7 +77,7 @@ class LoginResponse(BaseModel):
 
 
 class UpdateProfileRequest(BaseModel):
-    """PATCH /user/profile 請求：person_id 可放 body 或 Header X-Person-Id；可更新 name、user_type、llm_api_key。"""
+    """PATCH /user/profile 請求：身分以 query person_id 為準；可選 body.person_id 須與之一致；可更新 name、user_type、llm_api_key。"""
     person_id: Optional[str] = None
     name: Optional[str] = None
     user_type: Optional[int] = None
@@ -83,7 +85,7 @@ class UpdateProfileRequest(BaseModel):
 
 
 @router.get("/users", response_model=ListUsersResponse)
-def list_users():
+def list_users(_person_id: PersonId):
     """
     列出 User 表全部內容（不含 password 欄位）。使用者管理請讀此 API。
     """
@@ -125,15 +127,14 @@ def list_users():
 @router.patch("/profile", response_model=LoginResponse)
 def update_profile(
     body: UpdateProfileRequest,
-    x_person_id: Optional[str] = Header(None, alias="X-Person-Id", description="person_id，可取代 body 中的 person_id"),
+    person_id: PersonId,
 ):
     """
-    修改個資：以 person_id 識別使用者（body 或 Header X-Person-Id），可更新 name、user_type、llm_api_key。
+    修改個資：以 query person_id 識別使用者，可更新 name、user_type、llm_api_key。
     LLM API Key 可於 body 傳入 llm_api_key 更新（空字串表示清除）。回傳更新後的使用者資訊（不含 password）。
     """
-    person_id = (body.person_id or x_person_id or "").strip()
-    if not person_id:
-        raise HTTPException(status_code=400, detail="請傳入 person_id（body 或 Header X-Person-Id）")
+    if (body.person_id or "").strip() and (body.person_id or "").strip() != person_id:
+        raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
     if body.name is None and body.user_type is None and body.llm_api_key is None:
         raise HTTPException(status_code=400, detail="請傳入 name、user_type 或 llm_api_key 以進行修改")
 
@@ -215,11 +216,14 @@ def update_profile(
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(body: LoginRequest):
+def login(body: LoginRequest, person_id: PersonId):
     """
     以 person_id 與 password 驗證登入；成功回傳該使用者資訊（不含 password）。
+    query 的 person_id 須與 body.person_id 一致。
     """
-    person_id = (body.person_id or "").strip()
+    body_pid = (body.person_id or "").strip()
+    if body_pid != person_id:
+        raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
     pwd = (body.password or "").strip()
     cols = f"{USER_PUBLIC_COLUMNS}, password"
     try:
