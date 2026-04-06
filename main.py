@@ -33,6 +33,8 @@ from routers.course_analysis import router as course_analysis_router
 from routers.users import router as users_router
 # 系統設定路由（LLM API Key 的 GET/PUT）
 from routers.system_settings import router as system_settings_router
+# Log 表查詢路由
+from routers.log import router as log_router
 
 # 建立 FastAPI 應用程式實例
 app = FastAPI()
@@ -75,6 +77,8 @@ app.include_router(course_analysis_router)
 app.include_router(users_router)
 # 系統設定 API
 app.include_router(system_settings_router)
+# Log 查詢 API
+app.include_router(log_router)
 
 
 # 定義根路徑 / 的 GET 端點，用於健康檢查
