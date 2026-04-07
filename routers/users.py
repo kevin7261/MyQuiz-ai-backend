@@ -2,6 +2,8 @@
 使用者相關 API 模組。
 提供：
 - GET /user/users：列出 User 表（不含 password）
+- POST /user/users：新增單一使用者（person_id、name、user_type）
+- POST /user/users/batch：批次新增使用者（每筆僅 person_id、name；user_type 固定為 3）
 - POST /user/login：以 person_id + password 登入
 - PATCH /user/profile：更新個人資料（name、user_type、llm_api_key）
 """
@@ -84,10 +86,75 @@ class UpdateProfileRequest(BaseModel):
     llm_api_key: Optional[str] = None
 
 
+class UploadUserRequest(BaseModel):
+    """POST /user/users 請求：新增使用者；query person_id 須與 body.person_id 一致。password 由 DB 寫入空字串（可日後另行更新）。"""
+    person_id: str
+    name: str
+    user_type: int
+
+
+# 批次新增 API 固定寫入之 user_type
+BATCH_UPLOAD_USER_TYPE = 3
+
+
+class BatchUserRow(BaseModel):
+    """批次新增單筆：僅 person_id、name。"""
+    person_id: str
+    name: str
+
+
+class BatchUserFailure(BaseModel):
+    person_id: str
+    detail: str
+
+
+class BatchCreateUsersResponse(BaseModel):
+    """POST /user/users/batch 回應。"""
+    created: list[UserListItem]
+    failed: list[BatchUserFailure]
+    created_count: int
+    failed_count: int
+
+
+def _insert_user_upload(supabase, table: str, person_id: str, name: str, user_type: int) -> UserListItem:
+    exist = (
+        supabase.table(table)
+        .select("user_id")
+        .eq("person_id", person_id)
+        .limit(1)
+        .execute()
+    )
+    if exist.data:
+        raise HTTPException(status_code=409, detail="person_id 已存在")
+    ts = now_taipei_iso()
+    row_in = {
+        "person_id": person_id,
+        "name": (name or "").strip() or None,
+        "user_type": user_type,
+        "password": "",
+        "updated_at": ts,
+        "created_at": ts,
+    }
+    # supabase-py 2.x：insert 後不可再 .select()；預設 returning=representation，execute() 即回傳插入列
+    ins = supabase.table(table).insert(row_in).execute()
+    if ins.data and len(ins.data) > 0:
+        return UserListItem(**_user_public_dict(ins.data[0]))
+    resp = (
+        supabase.table(table)
+        .select(USER_PUBLIC_COLUMNS)
+        .eq("person_id", person_id)
+        .limit(1)
+        .execute()
+    )
+    if resp.data and len(resp.data) > 0:
+        return UserListItem(**_user_public_dict(resp.data[0]))
+    raise HTTPException(status_code=500, detail="新增使用者成功但未回傳資料")
+
+
 @router.get("/users", response_model=ListUsersResponse)
 def list_users(_person_id: PersonId):
     """
-    列出 User 表全部內容（不含 password 欄位）。使用者管理請讀此 API。
+    列出 User 表全部內容（不含 password 欄位）。新增請用 POST /user/users 或 POST /user/users/batch。
     """
     try:
         supabase = get_supabase()
@@ -119,6 +186,91 @@ def list_users(_person_id: PersonId):
                     users=[UserListItem(**_user_public_dict(r)) for r in resp.data],
                     count=len(resp.data),
                 )
+            except Exception as e2:
+                raise HTTPException(status_code=500, detail=str(e2))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/users", response_model=LoginResponse)
+def upload_user(body: UploadUserRequest, person_id: PersonId):
+    """
+    新增單一使用者：body 傳入 person_id、name、user_type。
+    query 的 person_id 須與 body.person_id 一致。
+    """
+    body_pid = (body.person_id or "").strip()
+    if body_pid != person_id:
+        raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
+
+    try:
+        supabase = get_supabase()
+        user = _insert_user_upload(supabase, "User", person_id, body.name, body.user_type)
+        return LoginResponse(user=user)
+    except HTTPException:
+        raise
+    except Exception as e:
+        err = str(e).lower()
+        if "relation" in err or "does not exist" in err:
+            try:
+                supabase = get_supabase()
+                user = _insert_user_upload(supabase, "user", person_id, body.name, body.user_type)
+                return LoginResponse(user=user)
+            except HTTPException:
+                raise
+            except Exception as e2:
+                raise HTTPException(status_code=500, detail=str(e2))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _batch_upload_users_with_table(
+    supabase,
+    table: str,
+    rows: list[BatchUserRow],
+) -> BatchCreateUsersResponse:
+    created: list[UserListItem] = []
+    failed: list[BatchUserFailure] = []
+    for row in rows:
+        pid = (row.person_id or "").strip()
+        if not pid:
+            failed.append(
+                BatchUserFailure(
+                    person_id=row.person_id if row.person_id is not None else "",
+                    detail="person_id 不可為空",
+                )
+            )
+            continue
+        try:
+            u = _insert_user_upload(supabase, table, pid, row.name, BATCH_UPLOAD_USER_TYPE)
+            created.append(u)
+        except HTTPException as he:
+            failed.append(BatchUserFailure(person_id=pid, detail=str(he.detail)))
+        except Exception as e:
+            failed.append(BatchUserFailure(person_id=pid, detail=str(e)))
+    return BatchCreateUsersResponse(
+        created=created,
+        failed=failed,
+        created_count=len(created),
+        failed_count=len(failed),
+    )
+
+
+@router.post("/users/batch", response_model=BatchCreateUsersResponse)
+def batch_upload_users(body: list[BatchUserRow], _person_id: PersonId):
+    """
+    批次新增使用者：body 為陣列，每筆僅 person_id、name；user_type 固定為 3。
+    已存在之 person_id 會列入 failed，其餘仍會繼續寫入。
+    """
+    if not body:
+        raise HTTPException(status_code=400, detail="請至少傳入一筆使用者")
+
+    try:
+        supabase = get_supabase()
+        return _batch_upload_users_with_table(supabase, "User", body)
+    except Exception as e:
+        err = str(e).lower()
+        if "relation" in err or "does not exist" in err:
+            try:
+                supabase = get_supabase()
+                return _batch_upload_users_with_table(supabase, "user", body)
             except Exception as e2:
                 raise HTTPException(status_code=500, detail=str(e2))
         raise HTTPException(status_code=500, detail=str(e))
