@@ -1,7 +1,7 @@
 """
 ZIP 與 RAG 相關 API 模組。
 提供：
-- GET /rag/tabs：列出 Rag 表（含 quizzes、answers）；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新
+- GET /rag/tabs：列出 Rag 表（含 quizzes、answers）；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新
 - GET /rag/tab/for-exam：依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id，回傳對應 Rag
 - POST /rag/tab/create：建立一筆 Rag（可傳 local）
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name；與 tab/create 回傳之 rag_id 相同）
@@ -143,7 +143,7 @@ def _answers_by_rag_id(rag_ids: list[int]) -> dict[int, list[dict]]:
 
 
 class ListRagResponse(BaseModel):
-    """GET /rag/tabs 回應：Rag 表全部欄位，每筆另含關聯的 Rag_Quiz（quizzes，每題帶一筆 answer）、以及頂層 Rag_Answer（answers）。"""
+    """GET /rag/tabs 回應：僅含 query person_id 與 Rag.person_id 相符之 Rag；每筆另含關聯的 Rag_Quiz（quizzes，每題帶一筆 answer）、以及頂層 Rag_Answer（answers）。"""
     rags: list[dict]
     count: int
 
@@ -175,7 +175,7 @@ class PackRequest(BaseModel):
 @router.get("/tabs", response_model=ListRagResponse)
 def list_rag(
     request: Request,
-    _person_id: PersonId,
+    person_id: PersonId,
     local: bool | None = Query(
         None,
         description="僅回傳 Rag.local 與此值相同的列。未傳時：連線來源為 127.0.0.1、localhost、::1 視為 true，否則 false（與前端在本機開發傳 true、正式環境傳 false 一致）",
@@ -183,6 +183,7 @@ def list_rag(
 ):
     """
     列出 Rag 表內容，僅回傳 deleted=False 的資料，且 Rag.local 須與 query `local` 相符（未傳 `local` 時依連線是否本機自動判定）。
+    僅回傳 query 所傳 person_id 與 Rag.person_id 相同之列（與 GET /exam/tabs 一致）。
     回傳列依 created_at 由舊到新排序。
     每筆 Rag 含表上所有欄位，並帶關聯的 Rag_Quiz（quizzes）與 Rag_Answer（answers）。
     關聯方式：quizzes 下每筆 quiz 帶 answers（依 rag_quiz_id 關聯，每題僅一筆）；頂層 answers 為該 rag 下全部答案的扁平列表。
@@ -191,6 +192,8 @@ def list_rag(
     try:
         local_filter = local if local is not None else is_localhost_request(request)
         data = _rag_table_select(RAG_SELECT_ALL, exclude_deleted=True, local_match=local_filter)
+        pid = person_id.strip()
+        data = [r for r in data if (r.get("person_id") or "").strip() == pid]
         rag_ids = []
         for row in data:
             rid = row.get("rag_id")
