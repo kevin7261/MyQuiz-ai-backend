@@ -19,6 +19,7 @@ from dependencies.person_id import PersonId
 # 引入 Pydantic 的 BaseModel
 from pydantic import BaseModel
 
+from utils.db_tables import USER_TABLE
 # Supabase 客戶端
 from utils.supabase_client import get_supabase
 # API 回傳之時間戳改為台北時間
@@ -125,9 +126,9 @@ class DeleteUserRequest(BaseModel):
     person_id: str
 
 
-def _insert_user_upload(supabase, table: str, person_id: str, name: str, user_type: int) -> UserListItem:
+def _insert_user_upload(supabase, person_id: str, name: str, user_type: int) -> UserListItem:
     exist = (
-        supabase.table(table)
+        supabase.table(USER_TABLE)
         .select("user_id")
         .eq("person_id", person_id)
         .or_(ACTIVE_USER_DELETED_FILTER)
@@ -147,11 +148,11 @@ def _insert_user_upload(supabase, table: str, person_id: str, name: str, user_ty
         "created_at": ts,
     }
     # supabase-py 2.x：insert 後不可再 .select()；預設 returning=representation，execute() 即回傳插入列
-    ins = supabase.table(table).insert(row_in).execute()
+    ins = supabase.table(USER_TABLE).insert(row_in).execute()
     if ins.data and len(ins.data) > 0:
         return UserListItem(**_user_public_dict(ins.data[0]))
     resp = (
-        supabase.table(table)
+        supabase.table(USER_TABLE)
         .select(USER_PUBLIC_COLUMNS)
         .eq("person_id", person_id)
         .limit(1)
@@ -170,7 +171,7 @@ def list_users(_person_id: PersonId):
     try:
         supabase = get_supabase()
         resp = (
-            supabase.table("User")
+            supabase.table(USER_TABLE)
             .select(USER_PUBLIC_COLUMNS)
             .eq("deleted", False)
             .execute()
@@ -186,27 +187,12 @@ def list_users(_person_id: PersonId):
                 status_code=503,
                 detail="無法連線至 Supabase，請確認 .env 的 SUPABASE_URL 正確且網路可連線。",
             )
-        if "relation" in err or "does not exist" in err:
-            try:
-                resp = (
-                    get_supabase()
-                    .table("user")
-                    .select(USER_PUBLIC_COLUMNS)
-                    .eq("deleted", False)
-                    .execute()
-                )
-                return ListUsersResponse(
-                    users=[UserListItem(**_user_public_dict(r)) for r in resp.data],
-                    count=len(resp.data),
-                )
-            except Exception as e2:
-                raise HTTPException(status_code=500, detail=str(e2))
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _soft_delete_user(supabase, table: str, target_person_id: str) -> LoginResponse:
+def _soft_delete_user(supabase, target_person_id: str) -> LoginResponse:
     resp = (
-        supabase.table(table)
+        supabase.table(USER_TABLE)
         .select(USER_PUBLIC_COLUMNS)
         .eq("person_id", target_person_id)
         .or_(ACTIVE_USER_DELETED_FILTER)
@@ -218,7 +204,7 @@ def _soft_delete_user(supabase, table: str, target_person_id: str) -> LoginRespo
     row = resp.data[0]
     user_id = row.get("user_id")
     pid = row.get("person_id")
-    supabase.table(table).update({"deleted": True, "updated_at": now_taipei_iso()}).eq("user_id", user_id).eq("person_id", pid).execute()
+    supabase.table(USER_TABLE).update({"deleted": True, "updated_at": now_taipei_iso()}).eq("user_id", user_id).eq("person_id", pid).execute()
     row_out = {**row, "deleted": True}
     return LoginResponse(user=UserListItem(**_user_public_dict(row_out)))
 
@@ -234,19 +220,10 @@ def soft_delete_user(body: DeleteUserRequest, _person_id: PersonId):
 
     try:
         supabase = get_supabase()
-        return _soft_delete_user(supabase, "User", target)
+        return _soft_delete_user(supabase, target)
     except HTTPException:
         raise
     except Exception as e:
-        err = str(e).lower()
-        if "relation" in err or "does not exist" in err:
-            try:
-                supabase = get_supabase()
-                return _soft_delete_user(supabase, "user", target)
-            except HTTPException:
-                raise
-            except Exception as e2:
-                raise HTTPException(status_code=500, detail=str(e2))
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -262,29 +239,15 @@ def upload_user(body: UploadUserRequest, person_id: PersonId):
 
     try:
         supabase = get_supabase()
-        user = _insert_user_upload(supabase, "User", person_id, body.name, body.user_type)
+        user = _insert_user_upload(supabase, person_id, body.name, body.user_type)
         return LoginResponse(user=user)
     except HTTPException:
         raise
     except Exception as e:
-        err = str(e).lower()
-        if "relation" in err or "does not exist" in err:
-            try:
-                supabase = get_supabase()
-                user = _insert_user_upload(supabase, "user", person_id, body.name, body.user_type)
-                return LoginResponse(user=user)
-            except HTTPException:
-                raise
-            except Exception as e2:
-                raise HTTPException(status_code=500, detail=str(e2))
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _batch_upload_users_with_table(
-    supabase,
-    table: str,
-    rows: list[BatchUserRow],
-) -> BatchCreateUsersResponse:
+def _batch_upload_users(supabase, rows: list[BatchUserRow]) -> BatchCreateUsersResponse:
     created: list[UserListItem] = []
     failed: list[BatchUserFailure] = []
     for row in rows:
@@ -298,7 +261,7 @@ def _batch_upload_users_with_table(
             )
             continue
         try:
-            u = _insert_user_upload(supabase, table, pid, row.name, BATCH_UPLOAD_USER_TYPE)
+            u = _insert_user_upload(supabase, pid, row.name, BATCH_UPLOAD_USER_TYPE)
             created.append(u)
         except HTTPException as he:
             failed.append(BatchUserFailure(person_id=pid, detail=str(he.detail)))
@@ -323,15 +286,8 @@ def batch_upload_users(body: list[BatchUserRow], _person_id: PersonId):
 
     try:
         supabase = get_supabase()
-        return _batch_upload_users_with_table(supabase, "User", body)
+        return _batch_upload_users(supabase, body)
     except Exception as e:
-        err = str(e).lower()
-        if "relation" in err or "does not exist" in err:
-            try:
-                supabase = get_supabase()
-                return _batch_upload_users_with_table(supabase, "user", body)
-            except Exception as e2:
-                raise HTTPException(status_code=500, detail=str(e2))
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -352,7 +308,7 @@ def update_profile(
     try:
         supabase = get_supabase()
         resp = (
-            supabase.table("User")
+            supabase.table(USER_TABLE)
             .select(USER_PUBLIC_COLUMNS)
             .eq("person_id", person_id)
             .or_(ACTIVE_USER_DELETED_FILTER)
@@ -374,9 +330,9 @@ def update_profile(
             return LoginResponse(user=UserListItem(**_user_public_dict(row)))
 
         updates["updated_at"] = now_taipei_iso()
-        supabase.table("User").update(updates).eq("user_id", user_id).eq("person_id", person_id).execute()
+        supabase.table(USER_TABLE).update(updates).eq("user_id", user_id).eq("person_id", person_id).execute()
         resp2 = (
-            supabase.table("User")
+            supabase.table(USER_TABLE)
             .select(USER_PUBLIC_COLUMNS)
             .eq("user_id", user_id)
             .eq("person_id", person_id)
@@ -388,47 +344,6 @@ def update_profile(
     except HTTPException:
         raise
     except Exception as e:
-        err = str(e).lower()
-        if "relation" in err or "does not exist" in err:
-            try:
-                resp = (
-                    get_supabase()
-                    .table("user")
-                    .select(USER_PUBLIC_COLUMNS)
-                    .eq("person_id", person_id)
-                    .or_(ACTIVE_USER_DELETED_FILTER)
-                    .execute()
-                )
-                if not resp.data or len(resp.data) == 0:
-                    raise HTTPException(status_code=404, detail="找不到該使用者")
-                row = resp.data[0]
-                user_id = row.get("user_id")
-                updates = {}
-                if body.name is not None:
-                    updates["name"] = (body.name or "").strip() or None
-                if body.user_type is not None:
-                    updates["user_type"] = body.user_type
-                if body.llm_api_key is not None:
-                    updates["llm_api_key"] = (body.llm_api_key or "").strip() or None
-                if not updates:
-                    return LoginResponse(user=UserListItem(**_user_public_dict(row)))
-                updates["updated_at"] = now_taipei_iso()
-                get_supabase().table("user").update(updates).eq("user_id", user_id).eq("person_id", person_id).execute()
-                resp2 = (
-                    get_supabase()
-                    .table("user")
-                    .select(USER_PUBLIC_COLUMNS)
-                    .eq("user_id", user_id)
-                    .eq("person_id", person_id)
-                    .or_(ACTIVE_USER_DELETED_FILTER)
-                    .execute()
-                )
-                out_row = resp2.data[0] if resp2.data else row
-                return LoginResponse(user=UserListItem(**_user_public_dict(out_row)))
-            except HTTPException:
-                raise
-            except Exception as e2:
-                raise HTTPException(status_code=500, detail=str(e2))
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -446,7 +361,7 @@ def login(body: LoginRequest, person_id: PersonId):
     try:
         supabase = get_supabase()
         resp = (
-            supabase.table("User")
+            supabase.table(USER_TABLE)
             .select(cols)
             .eq("person_id", person_id)
             .or_(ACTIVE_USER_DELETED_FILTER)
@@ -461,25 +376,4 @@ def login(body: LoginRequest, person_id: PersonId):
     except HTTPException:
         raise
     except Exception as e:
-        err = str(e).lower()
-        if "relation" in err or "does not exist" in err:
-            try:
-                resp = (
-                    get_supabase()
-                    .table("user")
-                    .select(cols)
-                    .eq("person_id", person_id)
-                    .or_(ACTIVE_USER_DELETED_FILTER)
-                    .execute()
-                )
-                if not resp.data or len(resp.data) == 0:
-                    raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
-                row = resp.data[0]
-                if (row.get("password") or "").strip() != pwd:
-                    raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
-                return LoginResponse(user=UserListItem(**_user_public_dict(row)))
-            except HTTPException:
-                raise
-            except Exception as e2:
-                raise HTTPException(status_code=500, detail=str(e2))
         raise HTTPException(status_code=500, detail=str(e))

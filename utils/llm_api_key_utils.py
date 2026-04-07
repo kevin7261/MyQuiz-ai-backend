@@ -7,6 +7,7 @@ LLM API Key 工具模組。
 from typing import Optional
 
 # 引入 Supabase 客戶端取得函數
+from utils.db_tables import USER_TABLE
 from utils.supabase_client import get_supabase
 
 # System_Setting 表：key = 'llm_api_key' 存系統 LLM API Key
@@ -50,7 +51,7 @@ def get_llm_api_key_for_person(person_id: str) -> Optional[str]:
         supabase = get_supabase()
         # 查詢 User 表中 person_id 符合的 llm_api_key
         resp = (
-            supabase.table("User")
+            supabase.table(USER_TABLE)
             .select("llm_api_key")
             .eq("person_id", pid)
             .limit(1)
