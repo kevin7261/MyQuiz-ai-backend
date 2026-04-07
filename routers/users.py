@@ -4,6 +4,7 @@
 - GET /user/users：列出 User 表（不含 password）
 - POST /user/users：新增單一使用者（person_id、name、user_type）
 - POST /user/users/batch：批次新增使用者（每筆僅 person_id、name；user_type 固定為 3）
+- POST /user/users/delete：軟刪除（body.person_id 指定對象，將 deleted 設為 true）
 - POST /user/login：以 person_id + password 登入
 - PATCH /user/profile：更新個人資料（name、user_type、llm_api_key）
 """
@@ -26,8 +27,11 @@ from utils.datetime_utils import now_taipei_iso, to_taipei_iso
 # 建立路由，前綴 /user
 router = APIRouter(prefix="/user", tags=["user"])
 
-# 與 DB 表一致（User 表）：user_id, person_id, name, user_type, llm_api_key, user_metadata, updated_at, created_at；不含 password。
-USER_PUBLIC_COLUMNS = "user_id, person_id, name, user_type, llm_api_key, user_metadata, updated_at, created_at"
+# 與 DB 表一致（User 表）：user_id, person_id, name, user_type, llm_api_key, user_metadata, deleted, updated_at, created_at；不含 password。
+USER_PUBLIC_COLUMNS = "user_id, person_id, name, user_type, llm_api_key, user_metadata, deleted, updated_at, created_at"
+
+# 登入／改個資／軟刪除對象：未標記刪除（deleted 為 false 或 null 視為仍有效，相容舊列）
+ACTIVE_USER_DELETED_FILTER = "deleted.eq.false,deleted.is.null"
 
 USER_OUT_KEYS = (
     "user_id",
@@ -116,11 +120,17 @@ class BatchCreateUsersResponse(BaseModel):
     failed_count: int
 
 
+class DeleteUserRequest(BaseModel):
+    """POST /user/users/delete：要軟刪除的使用者 person_id。"""
+    person_id: str
+
+
 def _insert_user_upload(supabase, table: str, person_id: str, name: str, user_type: int) -> UserListItem:
     exist = (
         supabase.table(table)
         .select("user_id")
         .eq("person_id", person_id)
+        .or_(ACTIVE_USER_DELETED_FILTER)
         .limit(1)
         .execute()
     )
@@ -132,6 +142,7 @@ def _insert_user_upload(supabase, table: str, person_id: str, name: str, user_ty
         "name": (name or "").strip() or None,
         "user_type": user_type,
         "password": "",
+        "deleted": False,
         "updated_at": ts,
         "created_at": ts,
     }
@@ -154,13 +165,14 @@ def _insert_user_upload(supabase, table: str, person_id: str, name: str, user_ty
 @router.get("/users", response_model=ListUsersResponse)
 def list_users(_person_id: PersonId):
     """
-    列出 User 表全部內容（不含 password 欄位）。新增請用 POST /user/users 或 POST /user/users/batch。
+    列出 User 表內容（不含 password）；僅 deleted = false。新增請用 POST /user/users 或 POST /user/users/batch。
     """
     try:
         supabase = get_supabase()
         resp = (
             supabase.table("User")
             .select(USER_PUBLIC_COLUMNS)
+            .eq("deleted", False)
             .execute()
         )
         return ListUsersResponse(
@@ -180,12 +192,59 @@ def list_users(_person_id: PersonId):
                     get_supabase()
                     .table("user")
                     .select(USER_PUBLIC_COLUMNS)
+                    .eq("deleted", False)
                     .execute()
                 )
                 return ListUsersResponse(
                     users=[UserListItem(**_user_public_dict(r)) for r in resp.data],
                     count=len(resp.data),
                 )
+            except Exception as e2:
+                raise HTTPException(status_code=500, detail=str(e2))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _soft_delete_user(supabase, table: str, target_person_id: str) -> LoginResponse:
+    resp = (
+        supabase.table(table)
+        .select(USER_PUBLIC_COLUMNS)
+        .eq("person_id", target_person_id)
+        .or_(ACTIVE_USER_DELETED_FILTER)
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="找不到該使用者或已刪除")
+    row = resp.data[0]
+    user_id = row.get("user_id")
+    pid = row.get("person_id")
+    supabase.table(table).update({"deleted": True, "updated_at": now_taipei_iso()}).eq("user_id", user_id).eq("person_id", pid).execute()
+    row_out = {**row, "deleted": True}
+    return LoginResponse(user=UserListItem(**_user_public_dict(row_out)))
+
+
+@router.post("/users/delete", response_model=LoginResponse)
+def soft_delete_user(body: DeleteUserRequest, _person_id: PersonId):
+    """
+    軟刪除：將指定 person_id 之使用者 deleted 設為 true（需帶 query person_id）。
+    """
+    target = (body.person_id or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="person_id 不可為空")
+
+    try:
+        supabase = get_supabase()
+        return _soft_delete_user(supabase, "User", target)
+    except HTTPException:
+        raise
+    except Exception as e:
+        err = str(e).lower()
+        if "relation" in err or "does not exist" in err:
+            try:
+                supabase = get_supabase()
+                return _soft_delete_user(supabase, "user", target)
+            except HTTPException:
+                raise
             except Exception as e2:
                 raise HTTPException(status_code=500, detail=str(e2))
         raise HTTPException(status_code=500, detail=str(e))
@@ -296,6 +355,7 @@ def update_profile(
             supabase.table("User")
             .select(USER_PUBLIC_COLUMNS)
             .eq("person_id", person_id)
+            .or_(ACTIVE_USER_DELETED_FILTER)
             .execute()
         )
         if not resp.data or len(resp.data) == 0:
@@ -320,6 +380,7 @@ def update_profile(
             .select(USER_PUBLIC_COLUMNS)
             .eq("user_id", user_id)
             .eq("person_id", person_id)
+            .or_(ACTIVE_USER_DELETED_FILTER)
             .execute()
         )
         out_row = resp2.data[0] if resp2.data else row
@@ -335,6 +396,7 @@ def update_profile(
                     .table("user")
                     .select(USER_PUBLIC_COLUMNS)
                     .eq("person_id", person_id)
+                    .or_(ACTIVE_USER_DELETED_FILTER)
                     .execute()
                 )
                 if not resp.data or len(resp.data) == 0:
@@ -358,6 +420,7 @@ def update_profile(
                     .select(USER_PUBLIC_COLUMNS)
                     .eq("user_id", user_id)
                     .eq("person_id", person_id)
+                    .or_(ACTIVE_USER_DELETED_FILTER)
                     .execute()
                 )
                 out_row = resp2.data[0] if resp2.data else row
@@ -386,6 +449,7 @@ def login(body: LoginRequest, person_id: PersonId):
             supabase.table("User")
             .select(cols)
             .eq("person_id", person_id)
+            .or_(ACTIVE_USER_DELETED_FILTER)
             .execute()
         )
         if not resp.data or len(resp.data) == 0:
@@ -405,6 +469,7 @@ def login(body: LoginRequest, person_id: PersonId):
                     .table("user")
                     .select(cols)
                     .eq("person_id", person_id)
+                    .or_(ACTIVE_USER_DELETED_FILTER)
                     .execute()
                 )
                 if not resp.data or len(resp.data) == 0:
