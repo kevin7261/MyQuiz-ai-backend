@@ -63,6 +63,13 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 # Rag 表列出全部資料時選取欄位（用 * 回傳全部欄位）
 RAG_SELECT_ALL = "*"
 
+# Rag.file_size 與 file_metadata["file_size"] 單位：二進位 MB（MiB，bytes / 1024²）
+BYTES_PER_MB = 1024 * 1024
+
+
+def _bytes_to_mb(size_bytes: int) -> float:
+    return size_bytes / BYTES_PER_MB
+
 
 def _rag_default_row(
     rag_tab_id: str,
@@ -240,7 +247,7 @@ def list_rag(
 def get_for_exam_rag(request: Request, _person_id: PersonId):
     """
     依連線讀取 System_Setting（本機：rag_localhost，否則 rag_deploy）的 value 作為 rag_id，取得該筆 Rag（deleted=false）。
-    回傳格式與 POST /rag/tab/build-rag-zip 一致，並多帶 rag_id、rag_tab_id、llm_api_key、system_prompt_instruction。
+    回傳格式與 POST /rag/tab/build-rag-zip 一致，並多帶 rag_id、rag_tab_id、llm_api_key、system_prompt_instruction、file_size、file_metadata（與 Rag 表欄位一致；file_size 為上傳 ZIP 之 MB）。
     """
     try:
         supabase = get_supabase()
@@ -273,6 +280,8 @@ def get_for_exam_rag(request: Request, _person_id: PersonId):
                 "rag_tab_id": None,
                 "llm_api_key": None,
                 "system_prompt_instruction": None,
+                "file_size": None,
+                "file_metadata": None,
             }
         row = data[0]
         meta = row.get("rag_metadata")
@@ -281,6 +290,8 @@ def get_for_exam_rag(request: Request, _person_id: PersonId):
             "rag_tab_id": row.get("rag_tab_id"),
             "llm_api_key": row.get("llm_api_key"),
             "system_prompt_instruction": row.get("system_prompt_instruction"),
+            "file_size": row.get("file_size"),
+            "file_metadata": row.get("file_metadata"),
         }
         if isinstance(meta, dict) and "source_rag_tab_id" in meta and "outputs" in meta:
             ul = meta.get("unit_list")
@@ -412,7 +423,7 @@ async def upload_zip(
     Upload Zip：只做上傳並寫入資料庫。需先以 tab/create 建立該 rag_tab_id 的 Rag 資料。
     傳入 rag_tab_id（tab/create 的 rag_tab_id）、ZIP 檔案與 person_id（Form 必填）。
     出題/評分時由後端依 person_id 從 User 表取得 LLM API Key。
-    會更新該筆 Rag 的 file_metadata（filename、second_folders 等）。
+    會更新該筆 Rag 的 file_metadata（filename、second_folders、file_size 等）與 file_size 欄位（皆為 MB）。
     回傳 file_metadata。
     """
     if not file.filename or not file.filename.lower().endswith(".zip"):
@@ -461,15 +472,18 @@ async def upload_zip(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    file_size_mb = _bytes_to_mb(len(contents))
     file_metadata = {
         "rag_id": row["rag_id"],
         "rag_tab_id": fid,
         "created_at": to_taipei_iso(row["created_at"]),
         "filename": file.filename,
         "second_folders": folders,
+        "file_size": file_size_mb,
     }
     update_payload: dict[str, Any] = {
         "file_metadata": file_metadata,
+        "file_size": file_size_mb,
         "updated_at": now_taipei_iso(),
     }
     # llm_api_key 不寫入 Rag 表（該表無此欄位）；依 person_id 從 User 表取得
@@ -486,7 +500,7 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
     依先前上傳的 ZIP（rag_tab_id）與 unit_list 字串，抽出指定資料夾名稱（路徑上任一層目錄名皆可，含 6 位數週次）重新壓成 ZIP 並存到後端。
     ZIP 檔位置為 {person_id}/{rag_tab_id}/upload（與 tab/upload-zip 一致），body 需傳入 person_id。
     unit_list 寫入 Rag 表；格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
-    一律做成 RAG（FAISS）ZIP；LLM API Key 依 person_id 從 User 表取得。回傳內容完整寫入 Rag 表 rag_metadata，並 update chunk_size、chunk_overlap。
+    一律做成 RAG（FAISS）ZIP；LLM API Key 依 person_id 從 User 表取得。回傳內容完整寫入 Rag 表 rag_metadata（outputs 每項含 file_size，MB），並 update chunk_size、chunk_overlap。
     """
     pid = (body.person_id or "").strip()
     if not pid:
@@ -534,12 +548,13 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
                 "unit_name": tab_id,
                 "filename": filename,
             }
+            rag_bytes_out: bytes | None = None
             try:
                 from utils.rag_faiss_zip import make_rag_zip_from_zip_path
                 rag_path = get_zip_path(tab_id)
                 if rag_path and rag_path.exists():
                     try:
-                        rag_bytes = make_rag_zip_from_zip_path(
+                        rag_bytes_out = make_rag_zip_from_zip_path(
                             rag_path,
                             api_key,
                             chunk_size=body.chunk_size,
@@ -553,7 +568,7 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
                     # rag 檔名也依 unit_list，tab_id 加 _rag 以區分 repack
                     rag_tab_id = f"{tab_id}_rag"
                     save_zip(
-                        rag_bytes,
+                        rag_bytes_out,
                         f"{tab_id}.zip",
                         folder=FOLDER_RAG,
                         person_id=pid,
@@ -566,6 +581,8 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
                 item["rag_error"] = str(e)
             except Exception as e:
                 item["rag_error"] = str(e)
+            # MB：成功建出 RAG ZIP 時為該檔大小，否則為 repack ZIP 大小
+            item["file_size"] = _bytes_to_mb(len(rag_bytes_out) if rag_bytes_out is not None else len(zip_bytes))
             outputs.append(item)
     finally:
         try:
