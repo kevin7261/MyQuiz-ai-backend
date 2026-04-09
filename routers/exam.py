@@ -683,7 +683,7 @@ async def exam_grade_submission(
     if not rag_zip_path or not rag_zip_path.exists():
         return JSONResponse(status_code=404, content={"error": f"找不到 RAG ZIP（tab_id={rag_zip_tab_id}）"})
 
-    work_dir = Path(tempfile.mkdtemp(prefix="aiquiz_exam_grade_"))
+    work_dir = Path(tempfile.mkdtemp(prefix="myquizai_exam_grade_"))
     zip_source_path = work_dir / "ref.zip"
     extract_folder = work_dir / "extract"
     extract_folder.mkdir(parents=True, exist_ok=True)

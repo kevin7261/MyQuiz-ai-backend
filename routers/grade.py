@@ -575,7 +575,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
         return JSONResponse(status_code=404, content={"error": f"找不到 RAG ZIP，請確認 rag_id={rag_id_str}（tab_id={rag_zip_tab_id}）"})
 
     # 建立暫存工作目錄
-    work_dir = Path(tempfile.mkdtemp(prefix="aiquiz_grade_"))
+    work_dir = Path(tempfile.mkdtemp(prefix="myquizai_grade_"))
     # 複製後 ZIP 的路徑
     zip_source_path = work_dir / "ref.zip"
     # 解壓目錄路徑

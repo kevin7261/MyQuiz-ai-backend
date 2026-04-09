@@ -1,6 +1,6 @@
-# AI Quiz Backend
+# MyQuiz.ai-backend
 
-FastAPI 後端：使用者登入（Supabase）、ZIP RAG、出題、評分。
+FastAPI 後端（MyQuiz.ai）：使用者登入（Supabase）、ZIP RAG、出題、評分。
 
 ## 本機設定
 
@@ -29,4 +29,4 @@ LLM API key 由使用者於系統設定（`GET/PUT /system-settings/llm-api-key`
 - `SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
 
-前端網址 `https://aiquizfrontend.vercel.app` 已加入 CORS 允許清單。
+預設前端網址 `https://aiquizfrontend.vercel.app` 已加入 CORS 允許清單（若改網域請同步更新 `main.py`）。

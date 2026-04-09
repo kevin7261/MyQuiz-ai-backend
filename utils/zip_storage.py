@@ -171,7 +171,7 @@ def _download_to_temp(storage_path: str) -> Optional[Path]:
         data = _get_storage().download(storage_path)
         if not data:
             return None
-        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="aiquiz_dl_")
+        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="myquizai_dl_")
         os.close(fd)
         Path(tmp_path).write_bytes(data)
         return Path(tmp_path)

@@ -36,8 +36,8 @@ from routers.system_settings import router as system_settings_router
 # Log 表查詢路由
 from routers.log import router as log_router
 
-# 建立 FastAPI 應用程式實例
-app = FastAPI()
+# 建立 FastAPI 應用程式實例（OpenAPI /docs 標題）
+app = FastAPI(title="MyQuiz.ai-backend")
 
 # 註冊 CORS 中介軟體，允許前端跨域呼叫 API，避免瀏覽器 CORS 或 "Failed to fetch" 錯誤
 # 若出現 502，回應來自 Render 代理（逾時約 30 秒），不會帶 CORS 標頭
@@ -50,7 +50,7 @@ app.add_middleware(
         "http://localhost:8080",           # 本地開發（localhost）
         "http://127.0.0.1:8080",           # 本地開發（127.0.0.1）
         "https://kevin7261.github.io",     # GitHub Pages 前端
-        "https://aiquizfrontend.vercel.app",  # Vercel 前端
+        "https://aiquizfrontend.vercel.app",  # MyQuiz.ai 前端（Vercel，網址依部署為準）
     ],
     # 允許攜帶 cookie、認證等憑證
     allow_credentials=True,
