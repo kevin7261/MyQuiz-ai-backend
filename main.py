@@ -37,21 +37,30 @@ from routers.system_settings import router as system_settings_router
 from routers.log import router as log_router
 
 # 建立 FastAPI 應用程式實例（OpenAPI /docs 標題）
-app = FastAPI(title="MyQuiz.ai-backend")
+app = FastAPI(title="MyQuiz.ai_backend")
 
 # 註冊 CORS 中介軟體，允許前端跨域呼叫 API，避免瀏覽器 CORS 或 "Failed to fetch" 錯誤
 # 若出現 502，回應來自 Render 代理（逾時約 30 秒），不會帶 CORS 標頭
 # 評分已改為非同步：POST /rag/tab/quiz/grade 回傳 202 + job_id，請用 GET /rag/tab/quiz/grade-result/{job_id} 輪詢結果
+_cors_base = [
+    "http://localhost:8080",           # 本地開發（localhost）
+    "http://127.0.0.1:8080",           # 本地開發（127.0.0.1）
+    "https://kevin7261.github.io",     # GitHub Pages 前端
+    "https://aiquizfrontend.vercel.app",  # MyQuiz.ai 前端（Vercel，網址依部署為準）
+]
+# Vercel／改專案名後網址會變，可在 .env 或部署平台設定 CORS_EXTRA_ORIGINS（逗號分隔）追加，無需改程式
+_extra = (os.environ.get("CORS_EXTRA_ORIGINS") or "").strip()
+if _extra:
+    _more = [x.strip() for x in _extra.split(",") if x.strip()]
+    _cors_allow = list(dict.fromkeys(_cors_base + _more))
+else:
+    _cors_allow = _cors_base
+
 app.add_middleware(
     # 使用 CORSMiddleware 中介軟體
     CORSMiddleware,
     # 允許的來源網域列表，前端可由此發送請求
-    allow_origins=[
-        "http://localhost:8080",           # 本地開發（localhost）
-        "http://127.0.0.1:8080",           # 本地開發（127.0.0.1）
-        "https://kevin7261.github.io",     # GitHub Pages 前端
-        "https://aiquizfrontend.vercel.app",  # MyQuiz.ai 前端（Vercel，網址依部署為準）
-    ],
+    allow_origins=_cors_allow,
     # 允許攜帶 cookie、認證等憑證
     allow_credentials=True,
     # 允許所有 HTTP 方法（GET、POST、PUT、PATCH、DELETE 等）
