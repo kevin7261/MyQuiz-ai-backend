@@ -3,7 +3,7 @@
 提供：
 - GET /user/users：列出 User 表（不含 password）
 - POST /user/users：新增單一使用者（person_id、name、user_type）
-- POST /user/users/batch：批次新增使用者（每筆僅 person_id、name；user_type 固定為 3）
+- POST /user/users/batch：批次新增使用者（每筆僅 person_id、name；user_type 固定為 3；password 預設 0000）
 - POST /user/users/delete：軟刪除（body.person_id 指定對象，將 deleted 設為 true）
 - POST /user/login：以 person_id + password 登入
 - PATCH /user/profile：更新個人資料（name、user_type、llm_api_key）
@@ -98,12 +98,13 @@ class UploadUserRequest(BaseModel):
     user_type: int
 
 
-# 批次新增 API 固定寫入之 user_type
+# 批次新增 API 固定寫入之 user_type、預設密碼（登入時與 DB 同為純文字比對）
 BATCH_UPLOAD_USER_TYPE = 3
+BATCH_UPLOAD_DEFAULT_PASSWORD = "0000"
 
 
 class BatchUserRow(BaseModel):
-    """批次新增單筆：僅 person_id、name。"""
+    """批次新增單筆：僅 person_id、name；密碼固定寫入 BATCH_UPLOAD_DEFAULT_PASSWORD（0000）。"""
     person_id: str
     name: str
 
@@ -126,7 +127,14 @@ class DeleteUserRequest(BaseModel):
     person_id: str
 
 
-def _insert_user_upload(supabase, person_id: str, name: str, user_type: int) -> UserListItem:
+def _insert_user_upload(
+    supabase,
+    person_id: str,
+    name: str,
+    user_type: int,
+    *,
+    password: str = "",
+) -> UserListItem:
     exist = (
         supabase.table(USER_TABLE)
         .select("user_id")
@@ -142,7 +150,7 @@ def _insert_user_upload(supabase, person_id: str, name: str, user_type: int) -> 
         "person_id": person_id,
         "name": (name or "").strip() or None,
         "user_type": user_type,
-        "password": "",
+        "password": password,
         "deleted": False,
         "updated_at": ts,
         "created_at": ts,
@@ -261,7 +269,13 @@ def _batch_upload_users(supabase, rows: list[BatchUserRow]) -> BatchCreateUsersR
             )
             continue
         try:
-            u = _insert_user_upload(supabase, pid, row.name, BATCH_UPLOAD_USER_TYPE)
+            u = _insert_user_upload(
+                supabase,
+                pid,
+                row.name,
+                BATCH_UPLOAD_USER_TYPE,
+                password=BATCH_UPLOAD_DEFAULT_PASSWORD,
+            )
             created.append(u)
         except HTTPException as he:
             failed.append(BatchUserFailure(person_id=pid, detail=str(he.detail)))
@@ -278,7 +292,8 @@ def _batch_upload_users(supabase, rows: list[BatchUserRow]) -> BatchCreateUsersR
 @router.post("/users/batch", response_model=BatchCreateUsersResponse)
 def batch_upload_users(body: list[BatchUserRow], _person_id: PersonId):
     """
-    批次新增使用者：body 為陣列，每筆僅 person_id、name；user_type 固定為 3。
+    批次新增使用者：body 為陣列，每筆僅 person_id、name；user_type 固定為 3；
+    密碼預設為 0000（與登入 API 相同之純文字儲存）。
     已存在之 person_id 會列入 failed，其餘仍會繼續寫入。
     """
     if not body:
