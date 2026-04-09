@@ -29,4 +29,4 @@ LLM API key 由使用者於系統設定（`GET/PUT /system-settings/llm-api-key`
 - `SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
 
-預設前端網址 `https://aiquizfrontend.vercel.app` 已加入 CORS 允許清單（若改網域請同步更新 `main.py`）。
+預設前端網址 `https://myquiz-ai.vercel.app` 已加入 CORS 允許清單（若再改網域請同步更新 `main.py` 或設定 `CORS_EXTRA_ORIGINS`）。

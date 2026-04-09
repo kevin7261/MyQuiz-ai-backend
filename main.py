@@ -46,7 +46,8 @@ _cors_base = [
     "http://localhost:8080",           # 本地開發（localhost）
     "http://127.0.0.1:8080",           # 本地開發（127.0.0.1）
     "https://kevin7261.github.io",     # GitHub Pages 前端
-    "https://aiquizfrontend.vercel.app",  # MyQuiz.ai 前端（Vercel，網址依部署為準）
+    "https://myquiz-ai.vercel.app",    # MyQuiz.ai 前端（Vercel）
+    "https://aiquizfrontend.vercel.app",  # 舊 Vercel 網域（無流量後可刪）
 ]
 # Vercel／改專案名後網址會變，可在 .env 或部署平台設定 CORS_EXTRA_ORIGINS（逗號分隔）追加，無需改程式
 _extra = (os.environ.get("CORS_EXTRA_ORIGINS") or "").strip()
