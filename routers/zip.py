@@ -14,10 +14,14 @@ ZIP 與 RAG 相關 API 模組。
 import io
 # 引入 json 用於 NDJSON 串流事件
 import json
+# 引入 os 用於 tempfile mkstemp 後 close fd
+import os
 # 引入 logging 用於記錄錯誤
 import logging
 # 引入 uuid 用於產生 repack tab_id
 import uuid
+# 引入 tempfile：repack 建 RAG 時寫入暫存，避免依賴上傳後立刻從 Storage 下載
+import tempfile
 # 引入 zipfile 用於讀取 ZIP
 import zipfile
 # 引入 Path 用於路徑操作
@@ -214,8 +218,9 @@ def _build_one_rag_zip_output_item(
     filename: str,
 ) -> dict[str, Any]:
     """
-    將單一 repack 單元上傳至 repack、建 RAG ZIP 上傳至 rag；上傳後會讀回驗證。
-    回傳與 build-rag-zip outputs[] 單筆相同結構（含 repack_filename、rag_filename）；失敗時含 rag_error。
+    將單一 repack 單元上傳至 repack、建 RAG ZIP 上傳至 rag；建庫使用記憶體 repack bytes（暫存檔），
+    不依賴上傳後立刻 get_zip_path，以避免遠端 metadata 競態／下載失敗誤報「找不到 repack ZIP 路徑」。
+    RAG 上傳後仍會讀回驗證。回傳與 build-rag-zip outputs[] 單筆相同結構；失敗時含 rag_error。
     """
     repack_tab_id = Path(filename).stem if filename else None
     if not repack_tab_id or "/" in repack_tab_id or "\\" in repack_tab_id:
@@ -241,36 +246,37 @@ def _build_one_rag_zip_output_item(
     try:
         from utils.rag_faiss_zip import make_rag_zip_from_zip_path
 
-        rag_path = get_zip_path(tab_id)
-        if rag_path and rag_path.exists():
+        fd, repack_tmp = tempfile.mkstemp(suffix=".zip", prefix="myquizai_repack_")
+        os.close(fd)
+        repack_local = Path(repack_tmp)
+        try:
+            repack_local.write_bytes(zip_bytes)
+            rag_bytes_out = make_rag_zip_from_zip_path(
+                repack_local,
+                api_key,
+                chunk_size=body.chunk_size,
+                chunk_overlap=body.chunk_overlap,
+            )
+        finally:
             try:
-                rag_bytes_out = make_rag_zip_from_zip_path(
-                    rag_path,
-                    api_key,
-                    chunk_size=body.chunk_size,
-                    chunk_overlap=body.chunk_overlap,
-                )
-            finally:
-                try:
-                    rag_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-            if not rag_bytes_out or len(rag_bytes_out) < _MIN_RAG_ZIP_BYTES:
-                item["rag_error"] = "RAG ZIP 產物無效或過小（未產生可用向量庫 ZIP）"
-            else:
-                save_zip(
-                    rag_bytes_out,
-                    f"{tab_id}.zip",
-                    folder=FOLDER_RAG,
-                    person_id=pid,
-                    parent_tab_id=body.rag_tab_id,
-                    tab_id=rag_zip_tab_id,
-                )
-                verify_err = _verify_saved_rag_zip_readable(rag_zip_tab_id)
-                if verify_err:
-                    item["rag_error"] = verify_err
+                repack_local.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        if not rag_bytes_out or len(rag_bytes_out) < _MIN_RAG_ZIP_BYTES:
+            item["rag_error"] = "RAG ZIP 產物無效或過小（未產生可用向量庫 ZIP）"
         else:
-            item["rag_error"] = "找不到 repack ZIP 路徑"
+            save_zip(
+                rag_bytes_out,
+                f"{tab_id}.zip",
+                folder=FOLDER_RAG,
+                person_id=pid,
+                parent_tab_id=body.rag_tab_id,
+                tab_id=rag_zip_tab_id,
+            )
+            verify_err = _verify_saved_rag_zip_readable(rag_zip_tab_id)
+            if verify_err:
+                item["rag_error"] = verify_err
     except ValueError as e:
         item["rag_error"] = str(e)
     except Exception as e:
