@@ -501,6 +501,7 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
     ZIP 檔位置為 {person_id}/{rag_tab_id}/upload（與 tab/upload-zip 一致），body 需傳入 person_id。
     unit_list 寫入 Rag 表；格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
     一律做成 RAG（FAISS）ZIP；LLM API Key 依 person_id 從 User 表取得。回傳內容完整寫入 Rag 表 rag_metadata（outputs 每項含 file_size，MB），並 update chunk_size、chunk_overlap。
+    若任一回傳單元未能成功建立 RAG ZIP，回傳 HTTP 400，detail 含完整 outputs（各項可含 rag_error）；成功時仍為 200。
     """
     pid = (body.person_id or "").strip()
     if not pid:
@@ -589,6 +590,17 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
             path.unlink(missing_ok=True)
         except Exception:
             pass
+
+    if any(o.get("rag_error") for o in outputs):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "RAG ZIP 建立失敗（請修正後重試）",
+                "source_rag_tab_id": body.rag_tab_id,
+                "unit_list": body.unit_list,
+                "outputs": outputs,
+            },
+        )
 
     response = {"source_rag_tab_id": body.rag_tab_id, "unit_list": body.unit_list, "outputs": outputs}
     try:
