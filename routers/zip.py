@@ -6,12 +6,14 @@ ZIP 與 RAG 相關 API 模組。
 - POST /rag/tab/create：建立一筆 Rag（可傳 local）
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name；與 tab/create 回傳之 rag_id 相同）
 - POST /rag/tab/upload-zip：上傳 ZIP
-- POST /rag/tab/build-rag-zip：依 unit_list 打包並建 RAG
+- POST /rag/tab/build-rag-zip：依 unit_list 打包並建 RAG；回應為 NDJSON 串流（start／building／unit／complete）。POST /rag/tab/build-rag-zip-stream 為同行為之別名
 - POST /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除並刪除儲存（須傳 query person_id）
 """
 
 # 引入 io 用於 BytesIO 等
 import io
+# 引入 json 用於 NDJSON 串流事件
+import json
 # 引入 logging 用於記錄錯誤
 import logging
 # 引入 uuid 用於產生 repack tab_id
@@ -25,6 +27,8 @@ from typing import Any
 
 # 引入 FastAPI 的 APIRouter、HTTPException、UploadFile、File、Form、PathParam、Query、Request
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Path as PathParam, Query, Request
+# 串流回應（RAG 建置進度）
+from fastapi.responses import StreamingResponse
 
 from dependencies.person_id import PersonId
 # 引入 Pydantic 的 BaseModel、Field
@@ -177,6 +181,92 @@ class PackRequest(BaseModel):
     system_prompt_instruction: str = ""  # 出題系統指令，寫入 Rag 表 system_prompt_instruction 欄位
     chunk_size: int = 1000  # 寫入 Rag 表 chunk_size 欄位
     chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
+
+
+def _build_one_rag_zip_output_item(
+    body: PackRequest,
+    pid: str,
+    api_key: str,
+    zip_bytes: bytes,
+    filename: str,
+) -> dict[str, Any]:
+    """
+    將單一 repack 單元上傳至 repack、建 RAG ZIP 上傳至 rag；回傳與 build-rag-zip outputs[] 單筆相同結構。
+    """
+    repack_tab_id = Path(filename).stem if filename else None
+    if not repack_tab_id or "/" in repack_tab_id or "\\" in repack_tab_id:
+        repack_tab_id = str(uuid.uuid4())
+    tab_id = save_zip(
+        zip_bytes,
+        filename,
+        folder=FOLDER_REPACK,
+        person_id=pid,
+        parent_tab_id=body.rag_tab_id,
+        tab_id=repack_tab_id,
+    )
+    item: dict[str, Any] = {
+        "unit_name": tab_id,
+        "filename": filename,
+    }
+    rag_bytes_out: bytes | None = None
+    try:
+        from utils.rag_faiss_zip import make_rag_zip_from_zip_path
+
+        rag_path = get_zip_path(tab_id)
+        if rag_path and rag_path.exists():
+            try:
+                rag_bytes_out = make_rag_zip_from_zip_path(
+                    rag_path,
+                    api_key,
+                    chunk_size=body.chunk_size,
+                    chunk_overlap=body.chunk_overlap,
+                )
+            finally:
+                try:
+                    rag_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            rag_zip_tab_id = f"{tab_id}_rag"
+            save_zip(
+                rag_bytes_out,
+                f"{tab_id}.zip",
+                folder=FOLDER_RAG,
+                person_id=pid,
+                parent_tab_id=body.rag_tab_id,
+                tab_id=rag_zip_tab_id,
+            )
+        else:
+            item["rag_error"] = "找不到 repack ZIP 路徑"
+    except ValueError as e:
+        item["rag_error"] = str(e)
+    except Exception as e:
+        item["rag_error"] = str(e)
+    item["file_size"] = _bytes_to_mb(len(rag_bytes_out) if rag_bytes_out is not None else len(zip_bytes))
+    return item
+
+
+def _rag_zip_build_counts(outputs: list[dict[str, Any]]) -> dict[str, int]:
+    """供 build-rag-zip 串流 complete 事件使用：總筆數、成功／失敗筆數。"""
+    total = len(outputs)
+    failed = sum(1 for o in outputs if o.get("rag_error"))
+    return {"total": total, "built_ok": total - failed, "built_failed": failed}
+
+
+def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str, Any]) -> None:
+    """成功建置後寫入 Rag 表（失敗時靜默略過，與 build_rag_zip 成功路徑一致）。"""
+    try:
+        supabase = get_supabase()
+        update_payload = {
+            "unit_list": body.unit_list,
+            "system_prompt_instruction": body.system_prompt_instruction or "",
+            "rag_metadata": response,
+            "chunk_size": body.chunk_size,
+            "chunk_overlap": body.chunk_overlap,
+            "updated_at": now_taipei_iso(),
+        }
+        supabase.table("Rag").update(update_payload).eq("rag_tab_id", body.rag_tab_id).eq("person_id", pid).execute()
+    except Exception:
+        pass
 
 
 @router.get("/tabs", response_model=ListRagResponse)
@@ -494,14 +584,22 @@ async def upload_zip(
     return file_metadata
 
 
+@router.post("/tab/build-rag-zip-stream", include_in_schema=False)
 @router.post("/tab/build-rag-zip")
 def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
     """
-    依先前上傳的 ZIP（rag_tab_id）與 unit_list 字串，抽出指定資料夾名稱（路徑上任一層目錄名皆可，含 6 位數週次）重新壓成 ZIP 並存到後端。
-    ZIP 檔位置為 {person_id}/{rag_tab_id}/upload（與 tab/upload-zip 一致），body 需傳入 person_id。
-    unit_list 寫入 Rag 表；格式：逗號分隔多個輸出檔，加號為同一檔內多個資料夾。
-    一律做成 RAG（FAISS）ZIP；LLM API Key 依 person_id 從 User 表取得。回傳內容完整寫入 Rag 表 rag_metadata（outputs 每項含 file_size，MB），並 update chunk_size、chunk_overlap。
-    若任一回傳單元未能成功建立 RAG ZIP，回傳 HTTP 400，detail 含完整 outputs（各項可含 rag_error）；成功時仍為 200。
+    依先前上傳的 ZIP（rag_tab_id）與 unit_list 打包並建 RAG（FAISS）ZIP；LLM API Key 依 person_id 從 User 表取得。
+    **回應為 NDJSON 串流**（`application/x-ndjson`），請以 `fetch` 讀取 `response.body`，勿使用單次 `response.json()`。
+
+    事件列舉（每行一個物件）：
+    - `{"type":"start","total":N,"source_rag_tab_id":"...","unit_list":"..."}`：即將處理 N 個輸出單元
+    - `{"type":"building","index":i,"total":N,"completed_before":i-1,"filename":"..."}`：即將開始建第 i 個 RAG ZIP（`completed_before` 為已跑完筆數；`filename` 為 repack 檔名）
+    - `{"type":"unit","index":i,"total":N,"output":{...}}`：第 i 個單元完成（`output` 同原 API 的 outputs[] 單筆，可含 `rag_error`）
+    - `{"type":"complete","success":bool,"total","built_ok","built_failed","source_rag_tab_id","unit_list","outputs"}`：全部結束；`success` 為 false 時另有 `message` 說明，且**不會**更新 Rag 表（與原 API 整批失敗行為一致）
+
+    串流階段 HTTP 狀態碼固定 **200**（需先送出標頭）；請以最後一則 `type===complete` 的 `success` 判斷整批成敗；成功時寫入 Rag 表 rag_metadata。驗證失敗（無 ZIP、BadZip、無 API Key 等）仍回 **400/404** 與一般 JSON `detail`。
+
+    `POST /rag/tab/build-rag-zip-stream` 與本端點相同，僅自 OpenAPI 隱藏，供舊客戶端相容。
     """
     pid = (body.person_id or "").strip()
     if not pid:
@@ -514,110 +612,109 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
         raise HTTPException(status_code=404, detail="找不到該上傳的 ZIP，請先上傳或確認 rag_tab_id、person_id")
 
     try:
-        try:
-            with zipfile.ZipFile(path, "r") as z:
-                folder_map = build_folder_map(z)
-        except zipfile.BadZipFile:
-            raise HTTPException(status_code=400, detail="無法讀取該 ZIP 檔案")
-
-        packed = repack_tasks_to_zips(path, folder_map, body.unit_list)
-        if not packed:
-            raise HTTPException(status_code=400, detail="unit_list 為空或格式錯誤，例：220222+220301")
-
-        api_key = get_llm_api_key_for_person(pid)
-        if not api_key:
-            raise HTTPException(
-                status_code=400,
-                detail="該使用者（person_id）尚未於個人設定填寫 LLM API Key，請至 User 設定",
-            )
-
-        outputs = []
-        for zip_bytes, filename in packed:
-            # 用 unit_list 衍生的檔名做 tab_id（如 220222_220301.zip -> 220222_220301），不再生成 UUID
-            repack_tab_id = Path(filename).stem if filename else None
-            if not repack_tab_id or "/" in repack_tab_id or "\\" in repack_tab_id:
-                repack_tab_id = str(uuid.uuid4())
-            tab_id = save_zip(
-                zip_bytes,
-                filename,
-                folder=FOLDER_REPACK,
-                person_id=pid,
-                parent_tab_id=body.rag_tab_id,
-                tab_id=repack_tab_id,
-            )
-            item = {
-                "unit_name": tab_id,
-                "filename": filename,
-            }
-            rag_bytes_out: bytes | None = None
-            try:
-                from utils.rag_faiss_zip import make_rag_zip_from_zip_path
-                rag_path = get_zip_path(tab_id)
-                if rag_path and rag_path.exists():
-                    try:
-                        rag_bytes_out = make_rag_zip_from_zip_path(
-                            rag_path,
-                            api_key,
-                            chunk_size=body.chunk_size,
-                            chunk_overlap=body.chunk_overlap,
-                        )
-                    finally:
-                        try:
-                            rag_path.unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                    # rag 檔名也依 unit_list，tab_id 加 _rag 以區分 repack
-                    rag_tab_id = f"{tab_id}_rag"
-                    save_zip(
-                        rag_bytes_out,
-                        f"{tab_id}.zip",
-                        folder=FOLDER_RAG,
-                        person_id=pid,
-                        parent_tab_id=body.rag_tab_id,
-                        tab_id=rag_tab_id,
-                    )
-                else:
-                    item["rag_error"] = "找不到 repack ZIP 路徑"
-            except ValueError as e:
-                item["rag_error"] = str(e)
-            except Exception as e:
-                item["rag_error"] = str(e)
-            # MB：成功建出 RAG ZIP 時為該檔大小，否則為 repack ZIP 大小
-            item["file_size"] = _bytes_to_mb(len(rag_bytes_out) if rag_bytes_out is not None else len(zip_bytes))
-            outputs.append(item)
-    finally:
+        with zipfile.ZipFile(path, "r") as z:
+            folder_map = build_folder_map(z)
+    except zipfile.BadZipFile:
         try:
             path.unlink(missing_ok=True)
         except Exception:
             pass
+        raise HTTPException(status_code=400, detail="無法讀取該 ZIP 檔案")
 
-    if any(o.get("rag_error") for o in outputs):
+    packed = repack_tasks_to_zips(path, folder_map, body.unit_list)
+    if not packed:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail="unit_list 為空或格式錯誤，例：220222+220301")
+
+    api_key = get_llm_api_key_for_person(pid)
+    if not api_key:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
         raise HTTPException(
             status_code=400,
-            detail={
-                "message": "RAG ZIP 建立失敗（請修正後重試）",
+            detail="該使用者（person_id）尚未於個人設定填寫 LLM API Key，請至 User 設定",
+        )
+
+    total = len(packed)
+
+    def ndjson_events():
+        outputs: list[dict[str, Any]] = []
+        try:
+            yield (
+                json.dumps(
+                    {
+                        "type": "start",
+                        "total": total,
+                        "source_rag_tab_id": body.rag_tab_id,
+                        "unit_list": body.unit_list,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            for idx, (zip_bytes, filename) in enumerate(packed):
+                yield (
+                    json.dumps(
+                        {
+                            "type": "building",
+                            "index": idx + 1,
+                            "total": total,
+                            "completed_before": idx,
+                            "filename": filename,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+                item = _build_one_rag_zip_output_item(body, pid, api_key, zip_bytes, filename)
+                outputs.append(item)
+                yield (
+                    json.dumps(
+                        {"type": "unit", "index": idx + 1, "total": total, "output": item},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+            success = not any(o.get("rag_error") for o in outputs)
+            counts = _rag_zip_build_counts(outputs)
+            response = {
                 "source_rag_tab_id": body.rag_tab_id,
                 "unit_list": body.unit_list,
                 "outputs": outputs,
-            },
-        )
+                **counts,
+            }
+            if success:
+                _persist_rag_build_metadata(body, pid, response)
+            complete_ev: dict[str, Any] = {
+                "type": "complete",
+                "success": success,
+                "source_rag_tab_id": body.rag_tab_id,
+                "unit_list": body.unit_list,
+                "outputs": outputs,
+                **counts,
+            }
+            if not success:
+                complete_ev["message"] = "RAG ZIP 建立失敗（請修正後重試）"
+            yield json.dumps(complete_ev, ensure_ascii=False) + "\n"
+        finally:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
-    response = {"source_rag_tab_id": body.rag_tab_id, "unit_list": body.unit_list, "outputs": outputs}
-    try:
-        supabase = get_supabase()
-        update_payload = {
-            "unit_list": body.unit_list,
-            "system_prompt_instruction": body.system_prompt_instruction or "",
-            "rag_metadata": response,
-            "chunk_size": body.chunk_size,
-            "chunk_overlap": body.chunk_overlap,
-            "updated_at": now_taipei_iso(),
-        }
-        # llm_api_key 不寫入 Rag 表（該表無此欄位）；tab/quiz/create、tab/quiz/grade 依 person_id 從 User 表取得
-        supabase.table("Rag").update(update_payload).eq("rag_tab_id", body.rag_tab_id).eq("person_id", pid).execute()
-    except Exception:
-        pass
-    return response
+    return StreamingResponse(
+        ndjson_events(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _do_delete_rag_file_by_tab_id(fid: str) -> tuple[bool, str]:
