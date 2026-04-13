@@ -183,6 +183,29 @@ class PackRequest(BaseModel):
     chunk_overlap: int = 200  # 寫入 Rag 表 chunk_overlap 欄位
 
 
+# 空 ZIP 檔最小約 22 bytes；低於此視為無效產物
+_MIN_RAG_ZIP_BYTES = 22
+
+
+def _verify_saved_rag_zip_readable(rag_zip_tab_id: str) -> str | None:
+    """
+    確認 RAG ZIP 已寫入儲存且可下載為非空檔案。
+    成功回傳 None；失敗回傳錯誤說明（並盡力刪除暫存下載檔）。
+    """
+    verify_path = get_zip_path(rag_zip_tab_id)
+    if not verify_path or not verify_path.exists():
+        return "RAG ZIP 上傳後無法從儲存讀回驗證"
+    try:
+        if verify_path.stat().st_size < _MIN_RAG_ZIP_BYTES:
+            return "RAG ZIP 驗證失敗（讀回檔案過小或損毀）"
+    finally:
+        try:
+            verify_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+    return None
+
+
 def _build_one_rag_zip_output_item(
     body: PackRequest,
     pid: str,
@@ -191,7 +214,8 @@ def _build_one_rag_zip_output_item(
     filename: str,
 ) -> dict[str, Any]:
     """
-    將單一 repack 單元上傳至 repack、建 RAG ZIP 上傳至 rag；回傳與 build-rag-zip outputs[] 單筆相同結構。
+    將單一 repack 單元上傳至 repack、建 RAG ZIP 上傳至 rag；上傳後會讀回驗證。
+    回傳與 build-rag-zip outputs[] 單筆相同結構（含 repack_filename、rag_filename）；失敗時含 rag_error。
     """
     repack_tab_id = Path(filename).stem if filename else None
     if not repack_tab_id or "/" in repack_tab_id or "\\" in repack_tab_id:
@@ -204,9 +228,14 @@ def _build_one_rag_zip_output_item(
         parent_tab_id=body.rag_tab_id,
         tab_id=repack_tab_id,
     )
+    rag_zip_tab_id = f"{tab_id}_rag"
+    repack_stored_name = f"{tab_id}.zip"
+    rag_stored_name = f"{rag_zip_tab_id}.zip"
     item: dict[str, Any] = {
         "unit_name": tab_id,
         "filename": filename,
+        "repack_filename": repack_stored_name,
+        "rag_filename": rag_stored_name,
     }
     rag_bytes_out: bytes | None = None
     try:
@@ -226,15 +255,20 @@ def _build_one_rag_zip_output_item(
                     rag_path.unlink(missing_ok=True)
                 except Exception:
                     pass
-            rag_zip_tab_id = f"{tab_id}_rag"
-            save_zip(
-                rag_bytes_out,
-                f"{tab_id}.zip",
-                folder=FOLDER_RAG,
-                person_id=pid,
-                parent_tab_id=body.rag_tab_id,
-                tab_id=rag_zip_tab_id,
-            )
+            if not rag_bytes_out or len(rag_bytes_out) < _MIN_RAG_ZIP_BYTES:
+                item["rag_error"] = "RAG ZIP 產物無效或過小（未產生可用向量庫 ZIP）"
+            else:
+                save_zip(
+                    rag_bytes_out,
+                    f"{tab_id}.zip",
+                    folder=FOLDER_RAG,
+                    person_id=pid,
+                    parent_tab_id=body.rag_tab_id,
+                    tab_id=rag_zip_tab_id,
+                )
+                verify_err = _verify_saved_rag_zip_readable(rag_zip_tab_id)
+                if verify_err:
+                    item["rag_error"] = verify_err
         else:
             item["rag_error"] = "找不到 repack ZIP 路徑"
     except ValueError as e:
@@ -590,11 +624,12 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
     """
     依先前上傳的 ZIP（rag_tab_id）與 unit_list 打包並建 RAG（FAISS）ZIP；LLM API Key 依 person_id 從 User 表取得。
     **回應為 NDJSON 串流**（`application/x-ndjson`），請以 `fetch` 讀取 `response.body`，勿使用單次 `response.json()`。
+    每一輸出單元須：**產出有效 RAG ZIP bytes**、**成功上傳至 rag 儲存**，且**上傳後能自儲存讀回非空檔**；任一環節失敗則該筆帶 `rag_error`，且整批 `complete.success` 為 false（不寫入 Rag 表）。
 
     事件列舉（每行一個物件）：
     - `{"type":"start","total":N,"source_rag_tab_id":"...","unit_list":"..."}`：即將處理 N 個輸出單元
     - `{"type":"building","index":i,"total":N,"completed_before":i-1,"filename":"..."}`：即將開始建第 i 個 RAG ZIP（`completed_before` 為已跑完筆數；`filename` 為 repack 檔名）
-    - `{"type":"unit","index":i,"total":N,"output":{...}}`：第 i 個單元完成（`output` 同原 API 的 outputs[] 單筆，可含 `rag_error`）
+    - `{"type":"unit","index":i,"total":N,"output":{...}}`：第 i 個單元完成（`output` 含 `unit_name`、`filename`（repack 工作檔名）、`repack_filename`／`rag_filename`（bucket 內 `{tab_id}.zip`／`{tab_id}_rag.zip`）、`file_size`，可含 `rag_error`）
     - `{"type":"complete","success":bool,"total","built_ok","built_failed","source_rag_tab_id","unit_list","outputs"}`：全部結束；`success` 為 false 時另有 `message` 說明，且**不會**更新 Rag 表（與原 API 整批失敗行為一致）
 
     串流階段 HTTP 狀態碼固定 **200**（需先送出標頭）；請以最後一則 `type===complete` 的 `success` 判斷整批成敗；成功時寫入 Rag 表 rag_metadata。驗證失敗（無 ZIP、BadZip、無 API Key 等）仍回 **400/404** 與一般 JSON `detail`。
