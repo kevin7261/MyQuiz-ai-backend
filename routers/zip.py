@@ -16,6 +16,8 @@ import io
 import json
 # 引入 os 用於 tempfile mkstemp 後 close fd
 import os
+# 引入 time：重試間隔
+import time
 # 引入 logging 用於記錄錯誤
 import logging
 # 引入 uuid 用於產生 repack tab_id
@@ -190,24 +192,92 @@ class PackRequest(BaseModel):
 # 空 ZIP 檔最小約 22 bytes；低於此視為無效產物
 _MIN_RAG_ZIP_BYTES = 22
 
+# 讀取「上傳 ZIP」：遠端 metadata／下載可能延遲，重試直到成功（有上限避免無限等待）
+_SOURCE_UPLOAD_ZIP_MAX_ATTEMPTS = 80
+_SOURCE_UPLOAD_ZIP_SLEEP_SEC = 0.45
+
+# RAG ZIP 上傳後讀回驗證（單次建置流程內多次嘗試）
+_RAG_ZIP_VERIFY_MAX_ATTEMPTS = 18
+_RAG_ZIP_VERIFY_SLEEP_INITIAL = 0.35
+_RAG_ZIP_VERIFY_SLEEP_MAX = 3.0
+
+# 單一輸出單元：整段建 RAG（含上傳與驗證）失敗時重試次數
+_RAG_UNIT_FULL_BUILD_ATTEMPTS = 3
+_RAG_UNIT_FULL_BUILD_RETRY_SLEEP_BASE = 0.65
+
+
+def _try_read_upload_zip_once(pid: str, rag_tab_id: str) -> Path | None:
+    """嘗試下載並開啟上傳 ZIP；成功回傳暫存 Path（呼叫端負責 unlink），失敗回傳 None。"""
+    path = get_zip_path(rag_tab_id) or get_zip_path_by_person(pid, rag_tab_id)
+    if not path or not path.exists():
+        return None
+    try:
+        with zipfile.ZipFile(path, "r") as z:
+            z.namelist()
+        return path
+    except zipfile.BadZipFile:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+    except Exception:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+
+
+def _fetch_source_upload_zip_with_retries(pid: str, rag_tab_id: str) -> Path:
+    """
+    直到能從儲存讀回並以 ZipFile 開啟上傳 ZIP，或超過重試上限。
+    回傳本機暫存路徑（與原本 get_zip_path 相同語意，由 finally 刪除）。
+    """
+    last_fail = "無法取得路徑或下載失敗"
+    for attempt in range(_SOURCE_UPLOAD_ZIP_MAX_ATTEMPTS):
+        path = _try_read_upload_zip_once(pid, rag_tab_id)
+        if path is not None:
+            return path
+        last_fail = f"第 {attempt + 1}/{_SOURCE_UPLOAD_ZIP_MAX_ATTEMPTS} 次仍無法讀取上傳 ZIP"
+        time.sleep(_SOURCE_UPLOAD_ZIP_SLEEP_SEC)
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            f"多次重試後仍無法讀取上傳的 ZIP（rag_tab_id={rag_tab_id}）。"
+            f"若剛上傳完請稍後再試；{last_fail}"
+        ),
+    )
+
 
 def _verify_saved_rag_zip_readable(rag_zip_tab_id: str) -> str | None:
     """
-    確認 RAG ZIP 已寫入儲存且可下載為非空檔案。
-    成功回傳 None；失敗回傳錯誤說明（並盡力刪除暫存下載檔）。
+    確認 RAG ZIP 已寫入儲存且可下載為非空檔案；失敗時間隔重試（應對 metadata／下載延遲）。
+    成功回傳 None；全數失敗回傳最後一則錯誤說明。
     """
-    verify_path = get_zip_path(rag_zip_tab_id)
-    if not verify_path or not verify_path.exists():
-        return "RAG ZIP 上傳後無法從儲存讀回驗證"
-    try:
-        if verify_path.stat().st_size < _MIN_RAG_ZIP_BYTES:
-            return "RAG ZIP 驗證失敗（讀回檔案過小或損毀）"
-    finally:
+    delay = _RAG_ZIP_VERIFY_SLEEP_INITIAL
+    last_err = "RAG ZIP 上傳後無法從儲存讀回驗證"
+    for _ in range(_RAG_ZIP_VERIFY_MAX_ATTEMPTS):
+        verify_path = get_zip_path(rag_zip_tab_id)
+        if not verify_path or not verify_path.exists():
+            last_err = "RAG ZIP 上傳後無法從儲存讀回驗證"
+            time.sleep(delay)
+            delay = min(delay * 1.3, _RAG_ZIP_VERIFY_SLEEP_MAX)
+            continue
         try:
-            verify_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-    return None
+            sz = verify_path.stat().st_size
+            if sz < _MIN_RAG_ZIP_BYTES:
+                last_err = "RAG ZIP 驗證失敗（讀回檔案過小或損毀）"
+            else:
+                return None
+        finally:
+            try:
+                verify_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        time.sleep(delay)
+        delay = min(delay * 1.3, _RAG_ZIP_VERIFY_SLEEP_MAX)
+    return last_err
 
 
 def _build_one_rag_zip_output_item(
@@ -218,71 +288,86 @@ def _build_one_rag_zip_output_item(
     filename: str,
 ) -> dict[str, Any]:
     """
-    將單一 repack 單元上傳至 repack、建 RAG ZIP 上傳至 rag；建庫使用記憶體 repack bytes（暫存檔），
-    不依賴上傳後立刻 get_zip_path，以避免遠端 metadata 競態／下載失敗誤報「找不到 repack ZIP 路徑」。
-    RAG 上傳後仍會讀回驗證。回傳與 build-rag-zip outputs[] 單筆相同結構；失敗時含 rag_error。
+    將單一 repack 單元上傳至 repack、建 RAG ZIP 上傳至 rag；建庫使用記憶體 repack bytes（暫存檔）。
+    RAG 上傳後會多次重試讀回驗證；若該單元仍失敗則整段流程最多重試 _RAG_UNIT_FULL_BUILD_ATTEMPTS 次。
+    回傳與 build-rag-zip outputs[] 單筆相同結構；失敗時含 rag_error（最終失敗會附「已重試 N 次」）。
     """
     repack_tab_id = Path(filename).stem if filename else None
     if not repack_tab_id or "/" in repack_tab_id or "\\" in repack_tab_id:
         repack_tab_id = str(uuid.uuid4())
-    tab_id = save_zip(
-        zip_bytes,
-        filename,
-        folder=FOLDER_REPACK,
-        person_id=pid,
-        parent_tab_id=body.rag_tab_id,
-        tab_id=repack_tab_id,
-    )
-    rag_zip_tab_id = f"{tab_id}_rag"
-    repack_stored_name = f"{tab_id}.zip"
-    rag_stored_name = f"{rag_zip_tab_id}.zip"
-    item: dict[str, Any] = {
-        "unit_name": tab_id,
-        "filename": filename,
-        "repack_filename": repack_stored_name,
-        "rag_filename": rag_stored_name,
-    }
-    rag_bytes_out: bytes | None = None
-    try:
-        from utils.rag_faiss_zip import make_rag_zip_from_zip_path
 
-        fd, repack_tmp = tempfile.mkstemp(suffix=".zip", prefix="myquizai_repack_")
-        os.close(fd)
-        repack_local = Path(repack_tmp)
+    last_item: dict[str, Any] = {}
+    for attempt in range(_RAG_UNIT_FULL_BUILD_ATTEMPTS):
+        item: dict[str, Any] = {
+            "filename": filename,
+            "unit_name": repack_tab_id,
+            "repack_filename": f"{repack_tab_id}.zip",
+            "rag_filename": f"{repack_tab_id}_rag.zip",
+        }
+        rag_bytes_out: bytes | None = None
         try:
-            repack_local.write_bytes(zip_bytes)
-            rag_bytes_out = make_rag_zip_from_zip_path(
-                repack_local,
-                api_key,
-                chunk_size=body.chunk_size,
-                chunk_overlap=body.chunk_overlap,
-            )
-        finally:
-            try:
-                repack_local.unlink(missing_ok=True)
-            except Exception:
-                pass
+            from utils.rag_faiss_zip import make_rag_zip_from_zip_path
 
-        if not rag_bytes_out or len(rag_bytes_out) < _MIN_RAG_ZIP_BYTES:
-            item["rag_error"] = "RAG ZIP 產物無效或過小（未產生可用向量庫 ZIP）"
-        else:
-            save_zip(
-                rag_bytes_out,
-                f"{tab_id}.zip",
-                folder=FOLDER_RAG,
+            tab_id = save_zip(
+                zip_bytes,
+                filename,
+                folder=FOLDER_REPACK,
                 person_id=pid,
                 parent_tab_id=body.rag_tab_id,
-                tab_id=rag_zip_tab_id,
+                tab_id=repack_tab_id,
             )
-            verify_err = _verify_saved_rag_zip_readable(rag_zip_tab_id)
-            if verify_err:
-                item["rag_error"] = verify_err
-    except ValueError as e:
-        item["rag_error"] = str(e)
-    except Exception as e:
-        item["rag_error"] = str(e)
-    item["file_size"] = _bytes_to_mb(len(rag_bytes_out) if rag_bytes_out is not None else len(zip_bytes))
-    return item
+            rag_zip_tab_id = f"{tab_id}_rag"
+            item["unit_name"] = tab_id
+            item["repack_filename"] = f"{tab_id}.zip"
+            item["rag_filename"] = f"{rag_zip_tab_id}.zip"
+
+            fd, repack_tmp = tempfile.mkstemp(suffix=".zip", prefix="myquizai_repack_")
+            os.close(fd)
+            repack_local = Path(repack_tmp)
+            try:
+                repack_local.write_bytes(zip_bytes)
+                rag_bytes_out = make_rag_zip_from_zip_path(
+                    repack_local,
+                    api_key,
+                    chunk_size=body.chunk_size,
+                    chunk_overlap=body.chunk_overlap,
+                )
+            finally:
+                try:
+                    repack_local.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            if not rag_bytes_out or len(rag_bytes_out) < _MIN_RAG_ZIP_BYTES:
+                item["rag_error"] = "RAG ZIP 產物無效或過小（未產生可用向量庫 ZIP）"
+            else:
+                save_zip(
+                    rag_bytes_out,
+                    f"{tab_id}.zip",
+                    folder=FOLDER_RAG,
+                    person_id=pid,
+                    parent_tab_id=body.rag_tab_id,
+                    tab_id=rag_zip_tab_id,
+                )
+                verify_err = _verify_saved_rag_zip_readable(rag_zip_tab_id)
+                if verify_err:
+                    item["rag_error"] = verify_err
+        except ValueError as e:
+            item["rag_error"] = str(e)
+        except Exception as e:
+            item["rag_error"] = str(e)
+
+        item["file_size"] = _bytes_to_mb(len(rag_bytes_out) if rag_bytes_out is not None else len(zip_bytes))
+
+        if not item.get("rag_error"):
+            return item
+        last_item = item
+        if attempt < _RAG_UNIT_FULL_BUILD_ATTEMPTS - 1:
+            time.sleep(_RAG_UNIT_FULL_BUILD_RETRY_SLEEP_BASE * (attempt + 1))
+
+    err = (last_item.get("rag_error") or "未知錯誤").strip()
+    last_item["rag_error"] = f"{err}（已重試 {_RAG_UNIT_FULL_BUILD_ATTEMPTS} 次）"
+    return last_item
 
 
 def _rag_zip_build_counts(outputs: list[dict[str, Any]]) -> dict[str, int]:
@@ -630,7 +715,9 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
     """
     依先前上傳的 ZIP（rag_tab_id）與 unit_list 打包並建 RAG（FAISS）ZIP；LLM API Key 依 person_id 從 User 表取得。
     **回應為 NDJSON 串流**（`application/x-ndjson`），請以 `fetch` 讀取 `response.body`，勿使用單次 `response.json()`。
-    每一輸出單元須：**產出有效 RAG ZIP bytes**、**成功上傳至 rag 儲存**，且**上傳後能自儲存讀回非空檔**；任一環節失敗則該筆帶 `rag_error`，且整批 `complete.success` 為 false（不寫入 Rag 表）。
+    每一輸出單元須：**產出有效 RAG ZIP bytes**、**成功上傳至 rag 儲存**，且**上傳後能自儲存讀回非空檔**（讀回會多次重試）。
+    單一單元整段建置若仍失敗，會**自動再試最多 3 次**後才寫入 `rag_error`。讀取一開始的「上傳 ZIP」亦會**反覆重試**直到可開啟或達上限（逾限回 503）。
+    整批任一有 `rag_error` 則 `complete.success` 為 false（不寫入 Rag 表）。
 
     事件列舉（每行一個物件）：
     - `{"type":"start","total":N,"source_rag_tab_id":"...","unit_list":"..."}`：即將處理 N 個輸出單元
@@ -638,7 +725,8 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
     - `{"type":"unit","index":i,"total":N,"output":{...}}`：第 i 個單元完成（`output` 含 `unit_name`、`filename`（repack 工作檔名）、`repack_filename`／`rag_filename`（bucket 內 `{tab_id}.zip`／`{tab_id}_rag.zip`）、`file_size`，可含 `rag_error`）
     - `{"type":"complete","success":bool,"total","built_ok","built_failed","source_rag_tab_id","unit_list","outputs"}`：全部結束；`success` 為 false 時另有 `message` 說明，且**不會**更新 Rag 表（與原 API 整批失敗行為一致）
 
-    串流階段 HTTP 狀態碼固定 **200**（需先送出標頭）；請以最後一則 `type===complete` 的 `success` 判斷整批成敗；成功時寫入 Rag 表 rag_metadata。驗證失敗（無 ZIP、BadZip、無 API Key 等）仍回 **400/404** 與一般 JSON `detail`。
+    串流階段 HTTP 狀態碼固定 **200**（需先送出標頭）；請以最後一則 `type===complete` 的 `success` 判斷整批成敗；成功時寫入 Rag 表 rag_metadata。
+    多次重試後仍無法讀取上傳 ZIP 時回 **503**。其餘驗證失敗（BadZip、無 API Key 等）仍回 **400** 與一般 JSON `detail`。
 
     `POST /rag/tab/build-rag-zip-stream` 與本端點相同，僅自 OpenAPI 隱藏，供舊客戶端相容。
     """
@@ -648,9 +736,7 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
     if pid != caller_person_id:
         raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
 
-    path = get_zip_path(body.rag_tab_id) or get_zip_path_by_person(pid, body.rag_tab_id)
-    if not path or not path.exists():
-        raise HTTPException(status_code=404, detail="找不到該上傳的 ZIP，請先上傳或確認 rag_tab_id、person_id")
+    path = _fetch_source_upload_zip_with_retries(pid, body.rag_tab_id)
 
     try:
         with zipfile.ZipFile(path, "r") as z:
