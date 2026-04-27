@@ -7,23 +7,27 @@ English System API。對應 public."English_System" 表（測試文章；欄位�
   表啟用 RLS（Row Level Security）；後端以 service_role 寫入時不受 RLS 限制。
 
 - GET /english_system/tabs：僅 deleted=false；person_id 與 query 相同；local 篩選（未傳則依連線是否本機）；依 created_at 舊→新（對齊 GET /rag/tabs）。
+- GET /english_system/tab/phases：query 必填 `system_tab_id`；先確認該 `English_System` 存在、deleted=false 且 person_id 與查詢一致，再回傳該 tab 下所有 `English_System_Phase`（依 `created_at` 舊→新）。
 - PUT /english_system/tab/tab-name：對齊 PUT /rag/tab/tab-name（system_id、tab_name→system_name）；僅 deleted=false。
 - POST /english_system/transcript/audio：上傳 MP3／音訊（Form 必填 system_tab_id）；若尚無該 system_tab_id 之 English_System 列則自動建立一筆（system_name 預設為上傳檔之主檔名，local 依連線判定）。先寫入 Supabase Storage（SUPABASE_ENGLISH_BUCKET，預設 english_system）路徑對齊 RAG：{person_id}/{system_tab_id}/upload/…，再以 **Deepgram** 預錄 API 轉逐字稿（API Key：環境變數 DEEPGRAM_API_KEY 或 System_Setting key=deepgram_api_key；可選 DEEPGRAM_MODEL 預設 nova-2），並更新 English_System.system_metadata（`english_audio`）、quiz_mp3_filename、quiz_text。
 - GET /english_system/transcript/youtube：以 video_id 或 YouTube 網址擷取字幕為純文字（query：languages 逗號分隔，預設 en）。
 - POST /english_system/tab/create：對齊 POST /rag/tab/create（system_tab_id、tab_name→system_name、person_id、local）。
 - POST /english_system/tab/build-system：對齊 POST /rag/tab/build-rag-zip「建置完成寫表」概念（JSON body）；依 system_tab_id + person_id 更新四個測驗欄位，並將同一份資料合併寫入 **system_metadata**（與既有 JSON 合併，鍵名同欄位）。
 - POST /english_system/tab/phase/create：在 build-system 之後、依 `English_System` 主鍵與 person_id 建立一筆 `English_System_Phase`（表須已依 DDL 建立並啟用 RLS；後端以 service_role 寫入）。
+- POST /english_system/tab/phase/quiz/create：依 system_id、system_tab_id、system_quiz_phase_id（即 `english_system_quiz_phase_id`）與 person_id 驗證後，以 `quiz_text` 為 LLM system、`quiz_user_prompt_instruction` 為 user，產生 JSON：`quiz_content`、`quiz_answer_reference`（模型同 `utils/quiz_generation.generate_quiz` 之 gpt-4o）。
 """
 
+import json
 import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from openai import OpenAI
 
 from dependencies.person_id import PersonId
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from youtube_transcript_api._errors import (
     InvalidVideoId,
     NoTranscriptFound,
@@ -40,6 +44,7 @@ from utils.english_system_transcript import (
     youtube_transcript_plain_text,
 )
 from utils.json_utils import to_json_safe
+from utils.llm_api_key_utils import get_llm_api_key_for_person
 from utils.rag_exam_setting import is_localhost_request
 from utils.supabase_client import get_supabase
 
@@ -70,6 +75,14 @@ class ListEnglishSystemResponse(BaseModel):
     count: int
 
 
+class ListEnglishSystemPhasesResponse(BaseModel):
+    """GET /english_system/tab/phases。"""
+
+    system_tab_id: str = Field(..., description="查詢所依之 English_System.system_tab_id")
+    phases: list[dict] = Field(..., description="English_System_Phase 表列")
+    count: int
+
+
 class CreateEnglishSystemRequest(BaseModel):
     """POST /english_system/tab/create：對齊 Rag 之 tab 識別／顯示名／person_id／local。"""
 
@@ -95,18 +108,44 @@ class CreateEnglishSystemPhaseRequest(BaseModel):
         default="",
         description="English_System_Phase.quiz_phase_name",
     )
-    quiz_user_prompt_instruction: str | None = Field(
-        None,
-        description="English_System_Phase.quiz_user_prompt_instruction",
+
+
+class EnglishSystemPhaseQuizCreateRequest(BaseModel):
+    """POST /english_system/tab/phase/quiz/create：以 LLM 依 quiz_text（system）與 quiz_user_prompt_instruction（user）產生題目 JSON。"""
+
+    system_id: int = Field(..., gt=0, description="English_System.system_id")
+    system_tab_id: str = Field(..., description="English_System.system_tab_id（須與該列一致）")
+    system_quiz_phase_id: int = Field(
+        ...,
+        gt=0,
+        description="English_System_Phase 主鍵 english_system_quiz_phase_id",
     )
-    critique_user_prompt_instruction: str | None = Field(
-        None,
-        description="English_System_Phase.critique_user_prompt_instruction",
+    person_id: str = Field(..., description="須與 query 及資料列一致")
+    quiz_phase_name: str = Field(default="", description="選填；供對齊 Phase 顯示名稱")
+    quiz_text: str = Field(..., description="LLM system：教材／規範脈絡（常用 English_System.quiz_text）")
+    quiz_user_prompt_instruction: str = Field(
+        default="",
+        description="LLM user：使用者出題指令",
     )
-    quiz_metadata: dict[str, Any] | None = Field(
-        None,
-        description="English_System_Phase.quiz_metadata（json）",
-    )
+
+    @field_validator("system_tab_id", mode="before")
+    @classmethod
+    def _system_tab_id_as_str(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        return str(v).strip()
+
+
+class EnglishSystemPhaseQuizCreateResponse(BaseModel):
+    """POST /english_system/tab/phase/quiz/create 回傳（鍵名對齊 LLM JSON）。"""
+
+    quiz_content: str = Field(..., description="題目")
+    quiz_answer_reference: str = Field(..., description="參考答案")
+    system_id: int
+    system_tab_id: str
+    english_system_quiz_phase_id: int = Field(..., description="請求之 system_quiz_phase_id")
+    person_id: str | None = None
+    quiz_phase_name: str = ""
 
 
 class TranscriptAudioResponse(BaseModel):
@@ -216,26 +255,68 @@ def _english_system_phase_row(
     english_system_tab_id: str,
     person_id: str,
     quiz_phase_name: str = "",
-    quiz_user_prompt_instruction: str | None = None,
-    critique_user_prompt_instruction: str | None = None,
-    quiz_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """English_System_Phase 新增一筆（不含 english_system_quiz_phase_id，由 identity 產生）。"""
+    """English_System_Phase 新增一筆（不含 english_system_quiz_phase_id，由 identity 產生；欄位同目前 DDL）。"""
     ts = now_taipei_iso()
-    meta = None
-    if quiz_metadata is not None:
-        meta = to_json_safe(quiz_metadata)
     return {
         "english_system_id": english_system_id,
         "english_system_tab_id": english_system_tab_id if english_system_tab_id is not None else "",
         "person_id": person_id if person_id is not None else "",
         "quiz_phase_name": quiz_phase_name if quiz_phase_name is not None else "",
-        "quiz_user_prompt_instruction": quiz_user_prompt_instruction,
-        "critique_user_prompt_instruction": critique_user_prompt_instruction,
-        "quiz_metadata": meta,
         "created_at": ts,
         "updated_at": ts,
     }
+
+
+_ENGLISH_PHASE_QUIZ_LLM_MODEL = "gpt-4o"
+
+_PHASE_QUIZ_JSON_SUFFIX = (
+    "\n\n【回傳格式】請僅以 JSON 輸出（勿附其他文字），鍵名必須為："
+    '{"quiz_content":"題目全文","quiz_answer_reference":"參考答案全文"}。請使用繁體中文。'
+)
+
+
+def _parse_phase_quiz_llm_json(raw: str) -> tuple[str, str]:
+    try:
+        data = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    qc = data.get("quiz_content")
+    qar = data.get("quiz_answer_reference")
+    if qar is None:
+        qar = data.get("quiz_reference_answer")
+    if qar is None:
+        qar = data.get("reference_answer")
+    return str(qc or "").strip(), str(qar or "").strip()
+
+
+def _english_phase_quiz_llm_call(
+    *,
+    quiz_text: str,
+    quiz_user_prompt_instruction: str,
+    api_key: str,
+) -> tuple[str, str]:
+    sys_inner = (quiz_text or "").strip()
+    if not sys_inner:
+        raise ValueError("quiz_text 不可為空")
+    system_content = sys_inner + _PHASE_QUIZ_JSON_SUFFIX
+    user_content = (quiz_user_prompt_instruction or "").strip() or (
+        "請依上述系統指令產出一道測驗題，並提供參考答案。"
+    )
+    client = OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
+        model=_ENGLISH_PHASE_QUIZ_LLM_MODEL,
+        messages=[
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.7,
+    )
+    raw = response.choices[0].message.content or "{}"
+    return _parse_phase_quiz_llm_json(raw)
 
 
 @router.get("/tabs", response_model=ListEnglishSystemResponse)
@@ -261,6 +342,63 @@ def list_english_system_tabs(
     except Exception as e:
         logging.exception("GET /english_system/tabs 錯誤")
         raise HTTPException(status_code=500, detail=f"列出 English_System 失敗: {e!s}")
+
+
+@router.get(
+    "/tab/phases",
+    response_model=ListEnglishSystemPhasesResponse,
+    summary="List English System Tab Phases",
+)
+def list_english_system_tab_phases(
+    person_id: PersonId,
+    system_tab_id: str = Query(
+        ...,
+        description="English_System.system_tab_id；僅回傳該 tab 下屬於目前使用者之 English_System_Phase",
+    ),
+):
+    """
+    以 `system_tab_id` 取得該單元之所有 Phase。須已存在對應之 English_System（deleted=false）且 person_id 與 query 相同。
+    回傳依 `created_at` 舊→新（對齊 GET /english_system/tabs 之排序概念）。
+    """
+    fid = (system_tab_id or "").strip()
+    if not fid or "/" in fid or "\\" in fid:
+        raise HTTPException(status_code=400, detail="無效的 system_tab_id")
+    pid = person_id.strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="請傳入 person_id")
+    try:
+        supabase = get_supabase()
+        sel = (
+            supabase.table("English_System")
+            .select("system_id, system_tab_id, person_id")
+            .eq("system_tab_id", fid)
+            .eq("deleted", False)
+            .eq("person_id", pid)
+            .limit(1)
+            .execute()
+        )
+        if not sel.data or len(sel.data) == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="找不到該 system_tab_id 的 English_System 資料、已刪除，或與 person_id 不符",
+            )
+        system_id = sel.data[0]["system_id"]
+        q = (
+            supabase.table("English_System_Phase")
+            .select("*")
+            .eq("english_system_id", system_id)
+            .eq("person_id", pid)
+            .order("created_at", desc=False)
+        )
+        resp = q.execute()
+        rows = resp.data or []
+        data = to_json_safe(rows)
+        return ListEnglishSystemPhasesResponse(system_tab_id=fid, phases=data, count=len(data))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("GET /english_system/tab/phases 錯誤")
+        raise HTTPException(status_code=500, detail=f"列出 English_System_Phase 失敗: {e!s}")
 
 
 @router.put("/tab/tab-name", summary="Update Unit Tab Name")
@@ -709,9 +847,6 @@ def create_english_system_tab_phase(body: CreateEnglishSystemPhaseRequest, calle
                     english_system_tab_id=eff_tab,
                     person_id=pid,
                     quiz_phase_name=body.quiz_phase_name,
-                    quiz_user_prompt_instruction=body.quiz_user_prompt_instruction,
-                    critique_user_prompt_instruction=body.critique_user_prompt_instruction,
-                    quiz_metadata=body.quiz_metadata,
                 )
             )
             .execute()
@@ -731,4 +866,103 @@ def create_english_system_tab_phase(body: CreateEnglishSystemPhaseRequest, calle
         raise
     except Exception as e:
         logging.exception("POST /english_system/tab/phase/create 錯誤")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post(
+    "/tab/phase/quiz/create",
+    response_model=EnglishSystemPhaseQuizCreateResponse,
+    summary="English System Phase Quiz Create",
+)
+def english_system_phase_quiz_create(
+    body: EnglishSystemPhaseQuizCreateRequest,
+    caller_person_id: PersonId,
+):
+    """
+    驗證 `English_System` 與 `English_System_Phase` 後，以 OpenAI **gpt-4o**（與 `generate_quiz` 相同）呼叫：
+    **system** = `quiz_text`（並附加 JSON 鍵名說明）、**user** = `quiz_user_prompt_instruction`（空則使用預設一句）。
+    LLM 須回傳 JSON：`quiz_content`、`quiz_answer_reference`。
+    LLM API Key 依 `person_id` 自 User 設定取得（同 Rag 出題）。
+    """
+    pid = (body.person_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="請傳入 person_id")
+    if pid != caller_person_id:
+        raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
+    fid = (body.system_tab_id or "").strip()
+    if not fid or "/" in fid or "\\" in fid:
+        raise HTTPException(status_code=400, detail="無效的 system_tab_id")
+    qt = (body.quiz_text or "").strip()
+    if not qt:
+        raise HTTPException(status_code=400, detail="請傳入 quiz_text（作為 LLM system）")
+
+    api_key = get_llm_api_key_for_person(pid)
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="請於使用者設定填寫 LLM API Key",
+        )
+
+    try:
+        supabase = get_supabase()
+        sel_sys = (
+            supabase.table("English_System")
+            .select("system_id, system_tab_id, person_id")
+            .eq("system_id", body.system_id)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+        if not sel_sys.data or len(sel_sys.data) == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="找不到該 system_id 的 English_System 資料，或已刪除",
+            )
+        sys_row = sel_sys.data[0]
+        if (sys_row.get("person_id") or "").strip() != pid:
+            raise HTTPException(status_code=403, detail="無權對該 English_System 出題")
+        if (sys_row.get("system_tab_id") or "").strip() != fid:
+            raise HTTPException(status_code=400, detail="system_tab_id 與該 English_System 列不符")
+
+        sel_phase = (
+            supabase.table("English_System_Phase")
+            .select("english_system_quiz_phase_id, english_system_id, english_system_tab_id, person_id")
+            .eq("english_system_quiz_phase_id", body.system_quiz_phase_id)
+            .eq("english_system_id", body.system_id)
+            .eq("person_id", pid)
+            .limit(1)
+            .execute()
+        )
+        if not sel_phase.data or len(sel_phase.data) == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="找不到該 system_quiz_phase_id 與 system_id、person_id 對應之 English_System_Phase",
+            )
+        ph = sel_phase.data[0]
+        if (ph.get("english_system_tab_id") or "").strip() != fid:
+            raise HTTPException(status_code=400, detail="English_System_Phase 之 english_system_tab_id 與請求不符")
+
+        qc, qar = _english_phase_quiz_llm_call(
+            quiz_text=qt,
+            quiz_user_prompt_instruction=body.quiz_user_prompt_instruction or "",
+            api_key=api_key,
+        )
+        if not qc:
+            raise HTTPException(status_code=502, detail="LLM 未有效回傳 quiz_content")
+
+        return EnglishSystemPhaseQuizCreateResponse(
+            quiz_content=qc,
+            quiz_answer_reference=qar,
+            system_id=body.system_id,
+            system_tab_id=fid,
+            english_system_quiz_phase_id=body.system_quiz_phase_id,
+            person_id=pid,
+            quiz_phase_name=(body.quiz_phase_name or "").strip(),
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logging.exception("POST /english_system/tab/phase/quiz/create 錯誤")
         raise HTTPException(status_code=500, detail=str(e)) from e
