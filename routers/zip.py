@@ -26,6 +26,8 @@ import uuid
 import tempfile
 # 引入 zipfile 用於讀取 ZIP
 import zipfile
+
+from storage3.exceptions import StorageApiError
 # 引入 Path 用於路徑操作
 from pathlib import Path
 # 引入 Any 型別
@@ -686,6 +688,16 @@ async def upload_zip(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except StorageApiError as e:
+        if e.status == 413:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    "ZIP 超過 Supabase Storage 允許的單檔大小上限；請縮小檔案，"
+                    "或至 Supabase Dashboard → Project Settings → Storage 調高／確認方案限制。"
+                ),
+            ) from e
+        raise HTTPException(status_code=502, detail=f"儲存上傳失敗: {e.message}") from e
 
     file_size_mb = _bytes_to_mb(len(contents))
     file_metadata = {
