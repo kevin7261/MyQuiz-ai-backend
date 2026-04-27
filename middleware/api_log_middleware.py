@@ -43,7 +43,7 @@ _SKIP_LOG_PATHS_ANY_METHOD = frozenset({
 
 # parameters 內敏感欄位遮罩
 _REDACT_SUBSTRINGS = ("password", "secret", "token", "api_key", "apikey", "authorization")
-_REDACT_EXACT = frozenset({"password", "llm_api_key", "llmapikey"})
+_REDACT_EXACT = frozenset({"password", "llm_api_key", "llmapikey", "deepgram_api_key"})
 
 
 def _should_skip_path(path: str) -> bool:
