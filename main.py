@@ -22,7 +22,7 @@ from middleware.api_log_middleware import APILogMiddleware
 # 引入各子模組的路由器，並以別名區分（zip_router 等）
 from routers.english_system import router as english_system_router
 from routers.zip import router as zip_router
-# 評分相關路由（含 tab/quiz/create、tab/quiz/grade、tab/quiz/grade-result）
+# 評分相關路由（含 tab/unit/quiz/create 無 LLM、tab/unit/quiz/llm-generate、tab/quiz/grade、tab/quiz/grade-result）
 from routers.grade import router as grade_router
 # Exam 測驗相關路由（tabs、tab/create、tab/quiz/create、tab/quiz/grade 等）
 from routers.exam import router as exam_router
@@ -42,7 +42,7 @@ app = FastAPI(title="MyQuiz.ai_backend")
 
 # 註冊 CORS 中介軟體，允許前端跨域呼叫 API，避免瀏覽器 CORS 或 "Failed to fetch" 錯誤
 # 若出現 502，回應來自 Render 代理（逾時約 30 秒），不會帶 CORS 標頭
-# 評分已改為非同步：POST /rag/tab/quiz/grade 回傳 202 + job_id，請用 GET /rag/tab/quiz/grade-result/{job_id} 輪詢結果
+# 評分已改為非同步：POST /rag/tab/unit/quiz/grade 回傳 202 + job_id，請用 GET /rag/tab/unit/quiz/grade-result/{job_id} 輪詢結果
 # 後端預設 uvicorn :8000；前端若跑在其它 origin（如 :8081），必須列在下方或 CORS_EXTRA_ORIGINS，否則瀏覽器會擋跨域（與 API 404 無關）
 _cors_base = [
     "http://localhost:8080",           # 本地開發（localhost）
@@ -77,7 +77,7 @@ app.add_middleware(APILogMiddleware)
 
 # 依序掛載各路由至 app；順序影響 Swagger API 文件顯示（標籤先出現者排在較上）
 # english_system 須在 zip_router（rag）之前掛載，使 english system 群組顯示在 rag 之上
-# zip_router 於 grade 之前掛載，使 tab/quiz/create / tab/quiz/grade / tab/quiz/grade-result 出現在 rag 群組最下面
+# zip_router 於 grade 之前掛載，使 tab/unit/quiz/create（無 LLM）在 OpenAPI 上先於 llm-generate；仍含 tab/quiz/grade / grade-result
 app.include_router(english_system_router)
 app.include_router(zip_router)
 # 評分相關 API

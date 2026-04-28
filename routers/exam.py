@@ -33,7 +33,7 @@ from dependencies.person_id import PersonId
 # 引入 JSONResponse、Response
 from fastapi.responses import JSONResponse, Response
 # 引入 Pydantic 的 BaseModel、Field
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field
 
 # UTC 時間
 from utils.datetime_utils import now_taipei_iso, to_taipei_iso
@@ -275,18 +275,10 @@ class ExamGenerateQuizRequest(BaseModel):
         "",
         description="選填；指定供測驗 Rag 的 rag_metadata.outputs 中某一上傳單元（與 POST /rag/tab/build-rag-zip 的 outputs[].unit_name 一致）。未傳或空字串則使用第一筆輸出",
     )
-    quiz_level: str = Field("", description="難度／層級（字串），用於出題提示並寫入 quiz_metadata")
     quiz_rate: ExamQuizRateValue = Field(
         0,
         description="寫入 Exam_Quiz.quiz_rate，僅允許 -1、0、1（預設 0）",
     )
-
-    @field_validator("quiz_level", mode="before")
-    @classmethod
-    def _quiz_level_to_str(cls, v: Any) -> str:
-        if v is None:
-            return ""
-        return str(v)
 
 
 class ExamQuizRateRequest(BaseModel):
@@ -435,7 +427,7 @@ def delete_exam(
 @router.post("/generate-quiz", include_in_schema=False)
 def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest, caller_person_id: PersonId):
     """
-    傳入 exam_id 或 exam_tab_id（二擇一）、quiz_level；可傳 unit_name 指定 outputs 中哪一個上傳單元（與 tab/build-rag-zip 的 outputs[].unit_name 一致），未傳則用第一筆。
+    傳入 exam_id 或 exam_tab_id（二擇一）；可傳 unit_name 指定 outputs 中哪一個上傳單元（與 tab/build-rag-zip 的 outputs[].unit_name 一致），未傳則用第一筆。
     LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
     依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id，取得對應 Rag，依選定單元載入 RAG ZIP 出題。
     出題成功後寫入 public.Exam_Quiz 表；回傳 JSON 含 quiz_content, quiz_hint, quiz_reference_answer、exam_quiz_id 等。
@@ -475,7 +467,7 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest, caller_per
         )
     rag_rows = (
         supabase.table("Rag")
-        .select("rag_id, system_prompt_instruction")
+        .select("rag_id, rag_tab_id, system_prompt_instruction")
         .eq("rag_id", rag_id_from_setting)
         .eq("deleted", False)
         .limit(1)
@@ -483,13 +475,38 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest, caller_per
     )
     if not rag_rows.data or len(rag_rows.data) == 0:
         raise HTTPException(status_code=404, detail=f"找不到 rag_id={rag_id_from_setting} 的 Rag 資料，或已刪除")
-    rag_id = int(rag_rows.data[0].get("rag_id") or 0)
-    system_prompt_instruction = (rag_rows.data[0].get("system_prompt_instruction") or "").strip()
-    if not system_prompt_instruction:
-        raise HTTPException(status_code=400, detail="該筆供測驗 Rag 的 system_prompt_instruction 未設定，請在 POST /rag/tab/build-rag-zip 傳入")
+    rag_row = rag_rows.data[0]
+    rag_id = int(rag_row.get("rag_id") or 0)
+    rag_tab_id_for_units = (rag_row.get("rag_tab_id") or "").strip()
+    system_prompt_instruction = (rag_row.get("system_prompt_instruction") or "").strip()
 
     unit_filter = (body.unit_name or "").strip() or None
     stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, rag_id, unit_name=unit_filter)
+    if not system_prompt_instruction and rag_tab_id_for_units:
+        unit_rows = (
+            supabase.table("Rag_Unit")
+            .select("unit_name, quiz_system_prompt_text")
+            .eq("rag_tab_id", rag_tab_id_for_units)
+            .eq("deleted", False)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        units = unit_rows.data or []
+        selected: dict | None = None
+        if not unit_filter:
+            selected = units[0] if units else None
+        else:
+            for u in units:
+                if (u.get("unit_name") or "").strip() == unit_filter:
+                    selected = u
+                    break
+        if selected:
+            system_prompt_instruction = (selected.get("quiz_system_prompt_text") or "").strip()
+    if not system_prompt_instruction:
+        raise HTTPException(
+            status_code=400,
+            detail="供測驗 RAG 的出題系統指令未設定：請在該 Rag 設定 system_prompt_instruction，或對對應單元使用 PUT /rag/unit/system-prompt；也可在 POST /rag/tab/build-rag-zip 帶入",
+        )
     # 取得 RAG ZIP 路徑（下載至暫存檔）
     path = get_zip_path(rag_zip_tab_id)
     if not path or not path.exists():
@@ -500,11 +517,9 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest, caller_per
         result = generate_quiz(
             path,
             api_key=api_key,
-            quiz_level=body.quiz_level,
             system_prompt_instruction=system_prompt_instruction,
         )
         result["system_prompt_instruction"] = system_prompt_instruction
-        result["quiz_level"] = body.quiz_level
         result["rag_output"] = {
             "rag_tab_id": stem,
             "unit_name": stem,
@@ -537,7 +552,7 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest, caller_per
                     {"quiz_metadata": result, "updated_at": now_taipei_iso()}
                 ).eq("exam_quiz_id", result["exam_quiz_id"]).eq("exam_id", exam_id).eq("exam_tab_id", exam_tab_id).execute()
         except Exception:
-            pass  # 與 POST /rag/tab/quiz/create 相同：寫入題庫失敗仍回傳出題 JSON
+            pass  # 與 POST /rag/tab/unit/quiz/llm-generate 相同：寫入題庫失敗仍回傳出題 JSON
         body_bytes = json.dumps(result, ensure_ascii=False).encode("utf-8")
         return Response(content=body_bytes, media_type="application/json; charset=utf-8")
     except ValueError as e:
@@ -601,7 +616,7 @@ async def exam_grade_submission(
     傳入 exam_id 或 exam_tab_id、exam_quiz_id、quiz_content、quiz_answer。
     LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
     依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id；若帶 exam_quiz_id 則依該題 Exam_Quiz.unit_name 載入對應 RAG ZIP（與 tab/quiz/create 指定 unit_name 一致），否則使用第一筆 outputs。
-    回傳 202 與 job_id；背景寫入 public.Exam_Answer（與 POST /rag/tab/quiz/grade 相同管線；寫入失敗則輪詢為 error）。輪詢 GET /exam/tab/quiz/grade-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 exam_answer_id。
+    回傳 202 與 job_id；背景寫入 public.Exam_Answer（與 POST /rag/tab/unit/quiz/grade 相同管線；寫入失敗則輪詢為 error）。輪詢 GET /exam/tab/quiz/grade-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 exam_answer_id。
     """
     exam_id_str = (body.exam_id or "").strip()
     exam_tab_id = (body.exam_tab_id or "").strip()
@@ -722,7 +737,7 @@ async def exam_grade_submission(
 @router.get("/tab/quiz/grade-result/{job_id}", tags=["exam"])
 async def get_exam_grade_result(job_id: str, _person_id: PersonId):
     """
-    輪詢 Exam 評分結果（行為同 GET /rag/tab/quiz/grade-result/{job_id}）。
+    輪詢 Exam 評分結果（行為同 GET /rag/tab/unit/quiz/grade-result/{job_id}）。
     status: pending | ready | error；ready 時 result 含 quiz_grade、quiz_comments、exam_answer_id（已寫入 Exam_Answer）；
     error 時為 LLM／ZIP 例外，或 LLM 成功但寫入 Exam_Answer 失敗。
     """

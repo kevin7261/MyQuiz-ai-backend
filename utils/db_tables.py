@@ -3,5 +3,10 @@
 若遷移或重命名表，僅需改此處。
 """
 
-# public."User"：DDL 為 CREATE TABLE public."User" (...)；PostgREST 使用字串 "User" 對應該表。
+# public."User"
 USER_TABLE = "User"
+
+# RAG 相關表名
+RAG_TABLE = "Rag"
+RAG_UNIT_TABLE = "Rag_Unit"
+RAG_QUIZ_TABLE = "Rag_Quiz"

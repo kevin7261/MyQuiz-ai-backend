@@ -1,11 +1,34 @@
 """
-依 Rag 表與 rag_metadata.outputs 解析 repack stem、rag_zip_tab_id（供取得 RAG ZIP 路徑等）。
+依 Rag 表與 Rag_Unit 表解析 repack stem、rag_zip_tab_id（供取得 RAG ZIP 路徑等）。
+優先從 Rag_Unit 讀取（新版 schema）；Rag_Unit 無資料時回退至 rag_metadata.outputs（向下相容舊版）。
 """
 
-# 引入 FastAPI 的 HTTPException，用於拋出 404、400 等錯誤
 from pathlib import Path
 
 from fastapi import HTTPException
+from postgrest.exceptions import APIError
+
+
+def _fetch_rag_metadata_if_present(supabase, rag_id: int):
+    """
+    僅在需要 rag_metadata.outputs 回退時查詢；若資料庫尚無 rag_metadata 欄位則回傳 None。
+    """
+    try:
+        resp = (
+            supabase.table("Rag")
+            .select("rag_metadata")
+            .eq("rag_id", rag_id)
+            .eq("deleted", False)
+            .execute()
+        )
+        if resp.data:
+            return resp.data[0].get("rag_metadata")
+    except APIError as e:
+        msg = (e.message or "").lower()
+        if e.code == "42703" and "rag_metadata" in msg:
+            return None
+        raise
+    return None
 
 
 def _stem_from_output_entry(entry: dict) -> str:
@@ -25,7 +48,7 @@ def _stem_from_output_entry(entry: dict) -> str:
 
 
 def _output_unit_candidates(entry: dict) -> set[str]:
-    """可供前端傳入比對的 unit 識別字串（unit_name、舊欄位、檔名不含副檔名）。"""
+    """可供前端傳入比對的 unit 識別字串。"""
     out: set[str] = set()
     if not isinstance(entry, dict):
         return out
@@ -41,6 +64,24 @@ def _output_unit_candidates(entry: dict) -> set[str]:
     return out
 
 
+def _stem_from_rag_file_name(rag_file_name: str, unit_name: str) -> tuple[str, str]:
+    """
+    從 rag_file_name（例如 abc123_rag.zip）解析 stem 與 rag_zip_tab_id。
+    rag_file_name 對應 Rag_Unit.rag_file_name，格式為 {stem}_rag.zip。
+    回傳 (stem, rag_zip_tab_id)；無法解析時以 unit_name 組合。
+    """
+    if rag_file_name:
+        tab_id = Path(rag_file_name).stem  # e.g., "abc123_rag"
+        if tab_id.endswith("_rag"):
+            stem = tab_id[:-4]
+        else:
+            stem = unit_name
+            tab_id = f"{unit_name}_rag"
+        return stem, tab_id
+    stem = unit_name
+    return stem, f"{stem}_rag"
+
+
 def get_rag_stem_from_rag_id(
     supabase,
     rag_id: int,
@@ -48,27 +89,76 @@ def get_rag_stem_from_rag_id(
     unit_name: str | None = None,
 ):
     """
-    由 rag_id 查詢 Rag 表，回傳 stem（RAG ZIP 的 tab_id）與 rag_zip_tab_id（通常為 {stem}_rag）。
+    由 rag_id 查詢 Rag 表，再從 Rag_Unit 表（優先）或 rag_metadata.outputs（向下相容）取得
+    repack stem 與 rag_zip_tab_id（通常為 {stem}_rag）。
+
     include_row=True 時回傳 (row, stem, rag_zip_tab_id)；否則回傳 (stem, rag_zip_tab_id)。
-    unit_name 若指定（非空白），則自 rag_metadata.outputs 選取該上傳單元（與 tab/build-rag-zip 的 outputs[].unit_name 等一致）；未指定則使用第一筆輸出。
+    unit_name 若指定（非空白），則選取該名稱的單元；未指定則使用第一筆。
     """
-    # 依據 include_row 決定查詢欄位：需要完整 row 時多查 rag_tab_id、system_prompt_instruction、person_id、rag_id
-    # include_row 時多查 rag_tab_id、person_id 等
-    select_cols = "rag_tab_id, system_prompt_instruction, person_id, rag_id, rag_metadata" if include_row else "rag_metadata"
-    # 查詢 Rag 表中 rag_id 符合且 deleted=False 的資料
-    rag_rows = supabase.table("Rag").select(select_cols).eq("rag_id", rag_id).eq("deleted", False).execute()
-    # 若查無資料，拋出 404
+    # 勿在主要 SELECT 含 rag_metadata：部分環境尚未 migration 該欄，會導致整筆查詢 42703。
+    select_cols = (
+        "rag_tab_id, system_prompt_instruction, person_id, rag_id"
+        if include_row
+        else "rag_tab_id"
+    )
+    rag_rows = (
+        supabase.table("Rag")
+        .select(select_cols)
+        .eq("rag_id", rag_id)
+        .eq("deleted", False)
+        .execute()
+    )
     if not rag_rows.data or len(rag_rows.data) == 0:
         raise HTTPException(status_code=404, detail=f"找不到 rag_id={rag_id} 的 Rag 資料")
-    # 取第一筆資料
     row = rag_rows.data[0]
-    # 取得 rag_metadata（可能為 dict 或 None）
-    meta = row.get("rag_metadata")
-    # 從 rag_metadata.outputs 取得 outputs 陣列；stem 來自 rag_tab_id（舊）/ unit_name / tab_name / rag_name（舊）/ filename
+    rag_tab_id = (row.get("rag_tab_id") or "").strip()
+
+    unit_rows = (
+        supabase.table("Rag_Unit")
+        .select("rag_unit_id, unit_name, rag_file_name, repack_file_name")
+        .eq("rag_tab_id", rag_tab_id)
+        .eq("deleted", False)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    units = unit_rows.data or []
+
+    if units:
+        wanted = (unit_name or "").strip()
+        selected: dict | None = None
+        if not wanted:
+            selected = units[0]
+        else:
+            for u in units:
+                if (u.get("unit_name") or "").strip() == wanted:
+                    selected = u
+                    break
+            if selected is None:
+                available = [(u.get("unit_name") or "?") for u in units]
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"找不到 unit_name={wanted!r} 的 Rag_Unit；可選：{available}",
+                )
+        stem, rag_zip_tab_id = _stem_from_rag_file_name(
+            selected.get("rag_file_name", ""),
+            selected.get("unit_name", ""),
+        )
+        if not stem:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Rag_Unit（rag_tab_id={rag_tab_id}）缺少可辨識的 stem",
+            )
+        return (row, stem, rag_zip_tab_id) if include_row else (stem, rag_zip_tab_id)
+
+    meta = _fetch_rag_metadata_if_present(supabase, rag_id)
+    if include_row and meta is not None:
+        row = {**row, "rag_metadata": meta}
     outputs = (meta.get("outputs", []) if isinstance(meta, dict) else []) or []
-    # 若 outputs 為空，表示尚未執行 tab/build-rag-zip，拋出 400
     if not outputs:
-        raise HTTPException(status_code=400, detail=f"該筆 Rag（rag_id={rag_id}）的 rag_metadata.outputs 為空，請先執行 POST /rag/tab/build-rag-zip")
+        raise HTTPException(
+            status_code=400,
+            detail=f"該筆 Rag（rag_id={rag_id}）尚無 Rag_Unit 資料，請先執行 POST /rag/tab/build-rag-zip",
+        )
 
     wanted = (unit_name or "").strip()
     stem = ""
@@ -97,9 +187,7 @@ def get_rag_stem_from_rag_id(
     if not stem:
         raise HTTPException(
             status_code=400,
-            detail=f"該筆 Rag（rag_id={rag_id}）的 outputs 第一筆缺少可辨識的 repack stem（unit_name 或 filename）",
+            detail=f"該筆 Rag（rag_id={rag_id}）的 outputs 第一筆缺少可辨識的 repack stem",
         )
-    # RAG ZIP 的 tab_id 為 stem 加 _rag 後綴
     rag_zip_tab_id = f"{stem}_rag"
-    # 依據 include_row 回傳不同結構
     return (row, stem, rag_zip_tab_id) if include_row else (stem, rag_zip_tab_id)
