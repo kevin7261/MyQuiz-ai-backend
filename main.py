@@ -24,7 +24,7 @@ from routers.english_system import router as english_system_router
 from routers.zip import router as zip_router
 # 評分相關路由（含 tab/unit/quiz/create 無 LLM、tab/unit/quiz/llm-generate、tab/unit/quiz/llm-grade、tab/unit/quiz/grade-result）
 from routers.grade import router as grade_router
-# Exam 測驗相關路由（tabs、tab/create、tab/quiz/create、tab/quiz/grade 等）
+# Exam 測驗相關路由（tabs、rag-for-exams、tab/create、tab/quiz/create、tab/quiz/llm-generate、tab/quiz/llm-grade、grade-result 等）
 from routers.exam import router as exam_router
 # 個人分析路由（依 person_id 查詢測驗與弱點報告）
 from routers.person_analysis import router as person_analysis_router
@@ -42,7 +42,7 @@ app = FastAPI(title="MyQuiz.ai_backend")
 
 # 註冊 CORS 中介軟體，允許前端跨域呼叫 API，避免瀏覽器 CORS 或 "Failed to fetch" 錯誤
 # 若出現 502，回應來自 Render 代理（逾時約 30 秒），不會帶 CORS 標頭
-# 評分已改為非同步：POST /rag/tab/unit/quiz/llm-grade 回傳 202 + job_id，請用 GET /rag/tab/unit/quiz/grade-result/{job_id} 輪詢結果
+# 評分已改為非同步：POST /rag/.../llm-grade、POST /exam/.../llm-grade 回傳 202 + job_id，請用對應 GET .../grade-result/{job_id} 輪詢結果
 # 後端預設 uvicorn :8000；前端若跑在其它 origin（如 :8081），必須列在下方或 CORS_EXTRA_ORIGINS，否則瀏覽器會擋跨域（與 API 404 無關）
 _cors_base = [
     "http://localhost:8080",           # 本地開發（localhost）

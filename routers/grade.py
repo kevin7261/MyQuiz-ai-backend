@@ -1,7 +1,7 @@
 """
 評分 API 模組。
 依 rag_id 自 rag_metadata.outputs 取得 repack stem，再以 {stem}_rag 載入 RAG ZIP 檢索講義後由 GPT-4o 評分。
-非同步：POST /rag/tab/unit/quiz/llm-grade 回傳 202 + job_id，背景執行評分並更新 public.Rag_Quiz 之 answer_* 欄位；前端以 GET /rag/tab/unit/quiz/grade-result/{job_id} 輪詢（寫入失敗時 status 為 error）。POST /rag/tab/unit/quiz/for-exam 將 Rag_Quiz.for_exam 設為 true。RAG+LLM 出題為 POST /rag/tab/unit/quiz/llm-generate；純建 Rag_Quiz 列為 POST /rag/tab/unit/quiz/create（見 zip 路由）。
+非同步：POST /rag/tab/unit/quiz/llm-grade 回傳 202 + job_id，背景執行評分並更新 public.Rag_Quiz 之 answer_* 欄位；前端以 GET /rag/tab/unit/quiz/grade-result/{job_id} 輪詢（寫入失敗時 status 為 error）。POST /rag/tab/unit/quiz/for-exam 將 Rag_Quiz.for_exam 設為 true。列出 for_exam 之 Rag_Unit／Rag_Quiz 請用 GET /exam/rag-for-exams（exam 模組）。RAG+LLM 出題為 POST /rag/tab/unit/quiz/llm-generate；純建 Rag_Quiz 列為 POST /rag/tab/unit/quiz/create（見 zip 路由）。
 """
 
 # 引入 json 用於解析 GPT 回傳與序列化
@@ -109,12 +109,47 @@ def _quiz_comments_from_llm_json(llm_json: dict[str, Any]) -> list[str]:
     return out
 
 
-class GenerateQuizRequest(BaseModel):
-    """POST /rag/tab/unit/quiz/llm-generate：僅須此四欄；題目內容由 LLM 產生並寫入新列。"""
+def _quiz_grade_from_answer_critique(critique_raw: Any) -> int | None:
+    """自 answer_critique（JSON 字串或 dict）解析 quiz_grade；失敗則 None（相容 quiz_grade_metadata）。"""
+    if critique_raw is None:
+        return None
+    try:
+        data: Any
+        if isinstance(critique_raw, dict):
+            data = critique_raw
+        else:
+            s = str(critique_raw).strip()
+            if not s:
+                return None
+            data = json.loads(s)
+        if not isinstance(data, dict):
+            return None
+        g = data.get("quiz_grade")
+        if g is None:
+            meta = data.get("quiz_grade_metadata")
+            if isinstance(meta, dict):
+                g = meta.get("quiz_grade", meta.get("score"))
+        if g is None:
+            return None
+        return int(round(float(g)))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
 
-    rag_quiz_id: int = Field(..., gt=0, description="必填；既有 Rag_Quiz 錨點主鍵")
-    rag_tab_id: str = Field("", description="選填；非空時須與錨點列之 rag_tab_id 一致")
-    rag_unit_id: int = Field(0, ge=0, description="選填；大於 0 時須與錨點列之 rag_unit_id 一致")
+
+def _critique_stored_grade_matches(critique_raw: Any, expected: int) -> bool:
+    """answer_critique 內 quiz_grade 是否與預期一致。"""
+    g = _quiz_grade_from_answer_critique(critique_raw)
+    return g is not None and g == int(expected)
+
+
+class GenerateQuizRequest(BaseModel):
+    """POST /rag/tab/unit/quiz/llm-generate；請求 body 僅含 rag_quiz_id、quiz_name、quiz_user_prompt_text。"""
+
+    rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
+    quiz_name: str = Field(
+        "",
+        description="測驗名稱；空字串則由 repack stem／單元 unit_name 決定 Rag_Quiz.quiz_name",
+    )
     quiz_user_prompt_text: str = Field(
         "",
         description="使用者出題補充（可空）；併入送 LLM 之 user 訊息並寫入 Rag_Quiz",
@@ -124,34 +159,29 @@ class GenerateQuizRequest(BaseModel):
 class QuizGradeRequest(BaseModel):
     """
     POST /rag/tab/unit/quiz/llm-grade 請求 body。
-    依 rag_id 載入 RAG ZIP 批改後，以 rag_quiz_id 更新 public.Rag_Quiz：answer_user_prompt_text、answer_content、answer_grade、answer_critique 等。
+    欄位順序對齊 public.Rag_Quiz 中實際更新之列：rag_quiz_id、rag_tab_id、quiz_content、answer_user_prompt_text、answer（→answer_content）。
+    rag_id 用於載入 RAG ZIP（非 Rag_Quiz 欄位），置於末位。
     """
 
-    # Rag 表主鍵（字串，會轉成數字查詢）
-    rag_id: str = Field("", description="Rag 表主鍵 rag_id（字串，會轉成數字查詢）")
-    # 選填；保留供前端與舊版一致帶入（後端以 Rag 列為準）
+    rag_quiz_id: str = Field("", description="必填（數字字串 >0）；Rag_Quiz 主鍵")
     rag_tab_id: str = Field("", description="選填；後端以 Rag.rag_tab_id 為準")
-    # 必填（>0）：要更新之 Rag_Quiz.rag_quiz_id
-    rag_quiz_id: str = Field("", description="必填（數字字串 >0）；對應 Rag_Quiz 主鍵")
-    # 測驗題目內容（與 Rag_Quiz.quiz_content 一致，供 RAG 檢索與批改）
-    quiz_content: str = Field(..., description="測驗題目內容（與 Rag_Quiz 表 quiz_content 一致）")
-    # 學生／教師送批改時的補充說明（可空）；寫入 Rag_Quiz.answer_user_prompt_text，並併入送 LLM 之 user 訊息
+    quiz_content: str = Field(..., description="測驗題目內容（與 Rag_Quiz.quiz_content 一致，供 RAG 檢索與批改）")
     answer_user_prompt_text: str = Field(
         "",
         description="作答補充／批改指引（可空）；寫入 Rag_Quiz.answer_user_prompt_text 並供評分 prompt 參考",
     )
-    # 學生作答：請求欄位 quiz_answer（相容舊欄位 answer）；寫入 Rag_Quiz.answer_content
     quiz_answer: str = Field(
         ...,
         description="學生作答（寫入 Rag_Quiz.answer_content）；相容舊 JSON 欄位 answer",
         validation_alias=AliasChoices("quiz_answer", "answer"),
     )
+    rag_id: str = Field("", description="Rag 表主鍵 rag_id（字串）；用於解析 RAG ZIP，非 Rag_Quiz 欄位")
 
 
 class RagQuizForExamRequest(BaseModel):
     """
-    POST /rag/tab/unit/quiz/for-exam：以 **rag_quiz_id** 更新 Rag_Quiz.for_exam = true。
-    若一併傳入 `rag_tab_id`／`rag_unit_id`（>0），須與該列一致。
+    POST /rag/tab/unit/quiz/for-exam：欄位順序對齊 Rag_Quiz（主鍵與關聯欄）。
+    以 **rag_quiz_id** 更新 Rag_Quiz.for_exam = true；若一併傳入 `rag_tab_id`／`rag_unit_id`（>0），須與該列一致。
     """
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
@@ -333,7 +363,7 @@ def _run_grade_job_background(
         else:
             err_detail = (
                 "更新 Rag_Quiz 評分欄位失敗。常見原因：未設定 SUPABASE_SERVICE_ROLE_KEY 而改用 anon 遭 RLS 擋、"
-                "rag_quiz_id 無對應列或已刪除、或欄位 quiz_content／answer_user_prompt_text／answer_content／answer_grade／answer_critique 與表不符。請見伺服器日誌。"
+                "rag_quiz_id 無對應列或已刪除、或欄位 quiz_content／answer_user_prompt_text／answer_content／answer_critique 與表不符。請見伺服器日誌。"
             )
             _logger.warning(
                 "批改 LLM 已完成但寫入答案表失敗 job_id=%s：%s",
@@ -402,21 +432,24 @@ def _update_rag_quiz_with_grade(
     )
     ts = now_taipei_iso()
     qc_persist = (quiz_content or "").strip()
+    # 鍵順序對齊 public.Rag_Quiz：quiz_content（選填）→ answer_* → updated_at
     row: dict[str, Any] = {
         "answer_user_prompt_text": (answer_user_prompt_text or "").strip(),
         "answer_content": quiz_answer or "",
-        "answer_grade": grade,
         "answer_critique": json.dumps(_answer_row_payload(result_dict, quiz_answer), ensure_ascii=False),
         "updated_at": ts,
     }
     if qc_persist:
-        row["quiz_content"] = qc_persist
+        row = {
+            "quiz_content": qc_persist,
+            **row,
+        }
     try:
         supabase = get_supabase()
         supabase.table("Rag_Quiz").update(row).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
         chk = (
             supabase.table("Rag_Quiz")
-            .select("answer_grade, quiz_content")
+            .select("answer_critique, quiz_content")
             .eq("rag_quiz_id", rag_quiz_id)
             .eq("deleted", False)
             .limit(1)
@@ -429,15 +462,9 @@ def _update_rag_quiz_with_grade(
             )
             return None
         cr0 = chk.data[0]
-        ag = cr0.get("answer_grade")
-        try:
-            ag_int = int(ag) if ag is not None else 0
-        except (TypeError, ValueError):
-            ag_int = 0
-        if ag_int != grade:
+        if not _critique_stored_grade_matches(cr0.get("answer_critique"), grade):
             _logger.warning(
-                "Rag_Quiz 讀回 answer_grade=%s 與預期 %s 不符（rag_quiz_id=%s），可能更新未套用",
-                ag_int,
+                "Rag_Quiz 讀回 answer_critique 內 quiz_grade 與預期 %s 不符（rag_quiz_id=%s），可能更新未套用",
                 grade,
                 rag_quiz_id,
             )
@@ -454,32 +481,65 @@ def _update_rag_quiz_with_grade(
     return None
 
 
-def _insert_exam_answer(result_dict: dict, quiz_answer: str, *, exam_id: int, exam_tab_id: str, person_id: str, exam_quiz_id: int) -> tuple[str, int] | None:
-    """寫入 public.Exam_Answer，回傳 ("exam_answer_id", id) 或 None。exam_quiz_id<=0 時送 0（與 NOT NULL DEFAULT 0 之 schema 一致）。作答寫入 quiz_answer；分數與 LLM 結果寫入 quiz_grade、quiz_grade_metadata。"""
+def _update_exam_quiz_with_grade(
+    result_dict: dict,
+    quiz_answer: str,
+    *,
+    exam_quiz_id: int,
+) -> tuple[str, int] | None:
+    """更新 public.Exam_Quiz 的作答與評分欄位（answer_content, answer_critique 含 quiz_grade）；成功回傳 ("exam_quiz_id", id)。"""
+    if exam_quiz_id <= 0:
+        return None
+    grade = _clamp_quiz_grade(result_dict.get("quiz_grade", result_dict.get("score", 0)))
+    comments = _quiz_comments_from_llm_json(result_dict)
+    critique = json.dumps(
+        {"quiz_grade": grade, "quiz_comments": comments},
+        ensure_ascii=False,
+    )
     ts = now_taipei_iso()
-    row = {
-        "exam_id": exam_id,
-        "exam_tab_id": exam_tab_id or "",
-        "exam_quiz_id": exam_quiz_id if exam_quiz_id > 0 else 0,
-        "person_id": person_id or "",
-        "created_at": ts,
-        "updated_at": ts,
-        **_answer_row_payload(result_dict, quiz_answer),
-    }
-    return _insert_answer_table_row("Exam_Answer", "exam_answer_id", row)
+    try:
+        supabase = get_supabase()
+        supabase.table("Exam_Quiz").update({
+            "answer_content": quiz_answer or "",
+            "answer_critique": critique,
+            "updated_at": ts,
+        }).eq("exam_quiz_id", exam_quiz_id).execute()
+        chk = (
+            supabase.table("Exam_Quiz")
+            .select("answer_critique")
+            .eq("exam_quiz_id", exam_quiz_id)
+            .limit(1)
+            .execute()
+        )
+        if not chk.data:
+            _logger.warning(
+                "Exam_Quiz update 後讀不到列（可能 exam_quiz_id=%s 不存在或遭 RLS 擋）",
+                exam_quiz_id,
+            )
+            return None
+        if not _critique_stored_grade_matches(chk.data[0].get("answer_critique"), grade):
+            _logger.warning(
+                "Exam_Quiz 讀回 answer_critique 內 quiz_grade 與預期 %s 不符（exam_quiz_id=%s）",
+                grade,
+                exam_quiz_id,
+            )
+            return None
+        return ("exam_quiz_id", exam_quiz_id)
+    except Exception as e:
+        _logger.warning("Exam_Quiz grade update 失敗: %s", e, exc_info=True)
+    return None
 
 
 @router.post("/tab/unit/quiz/llm-generate", summary="Rag LLM Generate Quiz", operation_id="rag_llm_generate_quiz")
 @router.post("/generate-quiz", include_in_schema=False)
 def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId):
     """
-    **RAG + LLM 出題**（與 `POST /rag/tab/unit/quiz/create` 分開；請求 Body 僅四欄：rag_quiz_id、rag_tab_id、rag_unit_id、quiz_user_prompt_text）。
-    傳入 rag_quiz_id（必填）定位既有題目，再沿用該題所屬 Rag 與單元進行出題。
-    可選傳 rag_tab_id、rag_unit_id 做一致性驗證。
+    Body：**`rag_quiz_id`、`quiz_name`、`quiz_user_prompt_text`**（後兩者可空字串）；
+    `rag_tab_id`／`rag_unit_id` 由後端依 `rag_quiz_id` 自資料庫帶入；`quiz_name` 空則沿用 stem／單元名。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
     程式依 rag_quiz_id 對應之 rag_unit_id 查到 Rag_Unit，再回推 Rag 查找 RAG ZIP 出題；
     出題系統指令優先使用 **Rag.system_prompt_instruction**，若為空則使用該單元 **Rag_Unit.quiz_system_prompt_text**（建置時由 **POST /rag/tab/build-rag-zip** 帶入 system_prompt_instruction 寫入）。
-    出題成功後**更新** public.Rag_Quiz 錨點列（quiz_*；並清空 answer_* 以免舊作答留存）；回傳 JSON 含 quiz_content, quiz_hint, quiz_reference_answer、rag_quiz_id 等。
+    出題成功後**更新** public.Rag_Quiz 錨點列（quiz_name 空字串則沿用 stem／單元名、quiz_*；並清空 answer_* 以免舊作答留存）；回傳 JSON 含 quiz_content, quiz_hint, quiz_reference_answer、quiz_name、rag_quiz_id 等。
     """
     supabase = get_supabase()
 
@@ -497,8 +557,6 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
     source_rag_unit_id = int(q_row.get("rag_unit_id") or 0)
     if source_rag_unit_id <= 0:
         raise HTTPException(status_code=400, detail="該 rag_quiz_id 對應的 rag_unit_id 無效")
-    if body.rag_unit_id > 0 and source_rag_unit_id > 0 and body.rag_unit_id != source_rag_unit_id:
-        raise HTTPException(status_code=400, detail="rag_unit_id 與 rag_quiz_id 對應資料不一致")
 
     unit_sel = (
         supabase.table("Rag_Unit")
@@ -515,9 +573,6 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
     unit_rag_tab_id = (unit_row.get("rag_tab_id") or "").strip()
 
     source_rag_tab_id = (q_row.get("rag_tab_id") or "").strip()
-    req_rag_tab_id = (body.rag_tab_id or "").strip()
-    if req_rag_tab_id and source_rag_tab_id and req_rag_tab_id != source_rag_tab_id:
-        raise HTTPException(status_code=400, detail="rag_tab_id 與 rag_quiz_id 對應資料不一致")
     if source_rag_tab_id and unit_rag_tab_id and source_rag_tab_id != unit_rag_tab_id:
         raise HTTPException(status_code=400, detail="Rag_Quiz 與 Rag_Unit 的 rag_tab_id 不一致")
 
@@ -604,7 +659,9 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
         result["rag_quiz_id"] = body.rag_quiz_id
         qup = (body.quiz_user_prompt_text or "").strip()
         qts = now_taipei_iso()
-        quiz_name = ((stem or "").strip() or (unit_row.get("unit_name") or "").strip() or "")
+        body_quiz_name = body.quiz_name.strip()
+        quiz_name = body_quiz_name or ((stem or "").strip() or (unit_row.get("unit_name") or "").strip() or "")
+        result["quiz_name"] = quiz_name
         quiz_update: dict[str, Any] = {
             "quiz_name": quiz_name,
             "quiz_user_prompt_text": qup,
@@ -613,7 +670,6 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
             "quiz_answer_reference": qref,
             "answer_user_prompt_text": "",
             "answer_content": "",
-            "answer_grade": 0,
             "answer_critique": None,
             "updated_at": qts,
         }
@@ -679,9 +735,10 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
 @router.post("/tab/unit/quiz/llm-grade", summary="Rag Grade Quiz")
 async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest, caller_person_id: PersonId):
     """
-    傳入 rag_id（字串）、rag_tab_id（選填）、rag_quiz_id、quiz_content、quiz_answer；選填 answer_user_prompt_text（寫入 Rag_Quiz 並併入評分 LLM user 訊息）。
+    Body 欄位順序對齊 public.Rag_Quiz（可更新／路由欄）：`rag_quiz_id`、`rag_tab_id`、`quiz_content`、
+    `answer_user_prompt_text`、`quiz_answer`（→answer_content）；末欄 `rag_id` 僅供載入 RAG ZIP（非 Rag_Quiz 欄位）。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
-    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。**rag_quiz_id 必填**（對應 Rag_Quiz 主鍵）。驗證後回傳 202 與 job_id；背景**更新 public.Rag_Quiz**（answer_*；若 body 帶 quiz_content 則一併寫入題幹）。輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}，ready 時除 result 外另附 **rag_quiz**（自 DB 讀回之整列）。
+    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。**rag_quiz_id 必填**。驗證後回傳 202 與 job_id；背景**更新 public.Rag_Quiz**（answer_*；若 body 帶 quiz_content 則一併寫入題幹）。輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}，ready 時除 result 外另附 **rag_quiz**（自 DB 讀回之整列）。
     """
     # 取得 rag_id 字串並去除空白
     rag_id_str = (body.rag_id or "").strip()
@@ -836,17 +893,18 @@ def mark_rag_quiz_for_exam(body: RagQuizForExamRequest, caller_person_id: Person
                 "rag_unit_id": row.get("rag_unit_id"),
                 "person_id": row.get("person_id"),
                 "quiz_name": row.get("quiz_name"),
+                "quiz_user_prompt_text": row.get("quiz_user_prompt_text"),
                 "quiz_content": row.get("quiz_content"),
                 "quiz_hint": row.get("quiz_hint"),
                 "quiz_answer_reference": row.get("quiz_answer_reference"),
-                "quiz_user_prompt_text": row.get("quiz_user_prompt_text"),
                 "answer_user_prompt_text": row.get("answer_user_prompt_text"),
                 "answer_content": row.get("answer_content"),
-                "answer_grade": row.get("answer_grade"),
+                "answer_grade": _quiz_grade_from_answer_critique(row.get("answer_critique")),
                 "answer_critique": row.get("answer_critique"),
                 "for_exam": row.get("for_exam"),
-                "created_at": row.get("created_at"),
+                "deleted": row.get("deleted"),
                 "updated_at": row.get("updated_at"),
+                "created_at": row.get("created_at"),
             }
         )
     except HTTPException:

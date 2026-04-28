@@ -50,6 +50,7 @@ from utils.zip_storage import (
 )
 from utils.supabase_client import get_supabase
 from utils.rag_exam_setting import is_localhost_request
+from routers.grade import _quiz_grade_from_answer_critique
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -225,7 +226,8 @@ class UpdateRagUnitUnitNameRequest(BaseModel):
 
 class InsertRagQuizRowRequest(BaseModel):
     """
-    POST /rag/tab/unit/quiz/create：`rag_tab_id` 與 `rag_unit_id` 二擇一定位 Rag_Unit：
+    POST /rag/tab/unit/quiz/create：欄位順序對齊 public.Rag_Quiz 之關聯欄（rag_tab_id、rag_unit_id）。
+    `rag_tab_id` 與 `rag_unit_id` 二擇一定位 Rag_Unit：
     - `rag_unit_id > 0`：以主鍵載入；若同傳 `rag_tab_id`（非空）則須與該列一致。
     - `rag_unit_id == 0`：`rag_tab_id`（非空）須在該名下**唯一**一筆未刪除之 Rag_Unit，否則 400。
     """
@@ -1025,12 +1027,11 @@ def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonI
             "quiz_answer_reference": "",
             "answer_user_prompt_text": "",
             "answer_content": "",
-            "answer_grade": 0,
             "answer_critique": None,
             "for_exam": False,
             "deleted": False,
-            "created_at": ts,
             "updated_at": ts,
+            "created_at": ts,
         }
         ins = supabase.table("Rag_Quiz").insert(quiz_row).execute()
         if not ins.data or len(ins.data) == 0:
@@ -1043,17 +1044,18 @@ def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonI
                 "rag_unit_id": row.get("rag_unit_id"),
                 "person_id": row.get("person_id"),
                 "quiz_name": row.get("quiz_name"),
+                "quiz_user_prompt_text": row.get("quiz_user_prompt_text"),
                 "quiz_content": row.get("quiz_content"),
                 "quiz_hint": row.get("quiz_hint"),
                 "quiz_answer_reference": row.get("quiz_answer_reference"),
-                "quiz_user_prompt_text": row.get("quiz_user_prompt_text"),
                 "answer_user_prompt_text": row.get("answer_user_prompt_text"),
                 "answer_content": row.get("answer_content"),
-                "answer_grade": row.get("answer_grade"),
+                "answer_grade": _quiz_grade_from_answer_critique(row.get("answer_critique")),
                 "answer_critique": row.get("answer_critique"),
                 "for_exam": row.get("for_exam"),
-                "created_at": row.get("created_at"),
+                "deleted": row.get("deleted"),
                 "updated_at": row.get("updated_at"),
+                "created_at": row.get("created_at"),
             }
         )
     except HTTPException:

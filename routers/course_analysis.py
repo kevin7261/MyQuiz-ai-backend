@@ -1,25 +1,21 @@
 """
 課程分析 API 模組。
-回傳 Exam_Quiz 資料表全部內容，格式與 GET /person-analysis/quizzes/{person_id} 一致。
-- GET /course-analysis/quizzes：回傳格式同 List Quizzes By Person：exams 陣列，每筆 Exam 含表欄位及 quizzes（每題帶 answers）、頂層 answers；count、weakness_report（課程分析固定為 null）。
+回傳 Exam_Quiz 資料表全部內容。新 schema 中答案欄位（answer_content／answer_critique，分數於 critique 之 quiz_grade）
+直接內嵌於 Exam_Quiz，不再有獨立的 Exam_Answer 表。
+- GET /course-analysis/quizzes：回傳全部 Exam_Quiz，依 exam_tab_id 分群對應 Exam；
+  每筆 Exam 含 quizzes（Exam_Quiz 列，answer 內嵌）與 answers（Exam 下所有已作答的摘要）。
 """
 
-# 引入 Optional 型別
 from typing import Optional
 
-# 引入 FastAPI 的 APIRouter、HTTPException
 from fastapi import APIRouter, HTTPException
 
 from dependencies.person_id import PersonId
-# 引入 Pydantic 的 BaseModel、Field
 from pydantic import BaseModel, Field
 
-# 從 exam 模組引入共用查詢函數
-from routers.exam import _all_exam_quizzes, _answers_by_exam_quiz_ids, _exams_by_ids
-# 引入 to_json_safe 將 datetime 等轉成可 JSON 序列化
+from routers.exam import _all_exam_quizzes, _exams_by_tab_ids, exam_quiz_grade_from_critique
 from utils.json_utils import to_json_safe
 
-# 建立路由，前綴 /course-analysis
 router = APIRouter(prefix="/course-analysis", tags=["course analysis"])
 
 
@@ -30,57 +26,56 @@ class ListQuizzesResponse(BaseModel):
     weakness_report: Optional[str] = Field(default=None, description="課程分析不產出，固定為 null")
 
 
+def _quiz_has_answer(quiz: dict) -> bool:
+    """判斷 Exam_Quiz 是否已作答（answer_content 非空）。"""
+    return bool((quiz.get("answer_content") or "").strip())
+
+
+def _synthetic_answer_from_quiz(quiz: dict) -> dict:
+    """從 Exam_Quiz 的內嵌欄位構造 answer 摘要（供 answers[] 陣列）。"""
+    return {
+        "exam_quiz_id": quiz.get("exam_quiz_id"),
+        "quiz_answer": quiz.get("answer_content"),
+        "answer_grade": exam_quiz_grade_from_critique(quiz),
+        "answer_critique": quiz.get("answer_critique"),
+    }
+
+
 @router.get("/quizzes", response_model=ListQuizzesResponse)
 def list_exam_quizzes(_person_id: PersonId):
     """
-    回傳 Exam_Quiz 全部內容，格式與 List Quizzes By Person 相同。
-    exams 陣列，每筆含 quizzes、answers；每題 quiz 帶關聯的 answers（Exam_Answer）。
+    回傳 Exam_Quiz 全部內容。
+    exams 陣列：每筆 Exam 含 quizzes（Exam_Quiz）與 answers（已作答的內嵌摘要）。
     weakness_report 固定為 null。
     """
     try:
-        # 查詢 Exam_Quiz 全部筆數
         quizzes = _all_exam_quizzes()
-        quiz_ids: list[int] = []
+
+        # 以 exam_tab_id 分群
+        tab_ids: list[str] = []
         for row in quizzes:
-            qid = row.get("exam_quiz_id")
-            if qid is not None:
-                try:
-                    quiz_ids.append(int(qid))
-                except (TypeError, ValueError):
-                    pass
-        quiz_ids = list(dict.fromkeys(quiz_ids))
-        # 依 exam_quiz_id 查詢 answers
-        answers_by_quiz = _answers_by_exam_quiz_ids(quiz_ids)
-        for quiz in quizzes:
-            qid = quiz.get("exam_quiz_id")
-            qid_int = int(qid) if qid is not None else None
-            quiz["answers"] = (answers_by_quiz.get(qid_int, []) or []) if qid_int is not None else []
-        exam_ids: list[int] = []
-        for row in quizzes:
-            eid = row.get("exam_id")
-            if eid is not None:
-                try:
-                    exam_ids.append(int(eid))
-                except (TypeError, ValueError):
-                    pass
-        exam_ids = list(dict.fromkeys(exam_ids))
-        exam_rows = _exams_by_ids(exam_ids)
-        quizzes_by_exam: dict[int, list[dict]] = {eid: [] for eid in exam_ids}
+            tid = row.get("exam_tab_id")
+            if tid is not None:
+                tab_ids.append(str(tid))
+        tab_ids = list(dict.fromkeys(tab_ids))
+
+        exam_rows = _exams_by_tab_ids(tab_ids)
+        quizzes_by_tab: dict[str, list[dict]] = {tid: [] for tid in tab_ids}
         for q in quizzes:
-            eid = q.get("exam_id")
-            if eid is not None:
-                try:
-                    quizzes_by_exam.setdefault(int(eid), []).append(q)
-                except (TypeError, ValueError):
-                    pass
+            tid = q.get("exam_tab_id")
+            if tid is not None:
+                quizzes_by_tab.setdefault(str(tid), []).append(q)
+
         for row in exam_rows:
-            eid = row.get("exam_id")
-            eid_int = int(eid) if eid is not None else None
-            row_quizzes = quizzes_by_exam.get(eid_int, []) if eid_int is not None else []
+            tid = str(row.get("exam_tab_id") or "")
+            row_quizzes = quizzes_by_tab.get(tid, [])
             row["quizzes"] = row_quizzes
-            row["answers"] = []
-            for q in row_quizzes:
-                row["answers"].extend(q.get("answers") or [])
+            row["answers"] = [
+                _synthetic_answer_from_quiz(q)
+                for q in row_quizzes
+                if _quiz_has_answer(q)
+            ]
+
         data = to_json_safe(exam_rows)
         return ListQuizzesResponse(exams=data, count=len(data), weakness_report=None)
     except Exception as e:
