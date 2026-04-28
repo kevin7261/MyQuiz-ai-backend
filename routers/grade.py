@@ -1,7 +1,7 @@
 """
 評分 API 模組。
 依 rag_id 自 rag_metadata.outputs 取得 repack stem，再以 {stem}_rag 載入 RAG ZIP 檢索講義後由 GPT-4o 評分。
-非同步：POST /rag/tab/unit/quiz/grade 回傳 202 + job_id，背景執行評分並更新 public.Rag_Quiz 之 answer_* 欄位；前端以 GET /rag/tab/unit/quiz/grade-result/{job_id} 輪詢（寫入失敗時 status 為 error）。RAG+LLM 出題為 POST /rag/tab/unit/quiz/llm-generate；純建 Rag_Quiz 列為 POST /rag/tab/unit/quiz/create（見 zip 路由）。
+非同步：POST /rag/tab/unit/quiz/llm-grade 回傳 202 + job_id，背景執行評分並更新 public.Rag_Quiz 之 answer_* 欄位；前端以 GET /rag/tab/unit/quiz/grade-result/{job_id} 輪詢（寫入失敗時 status 為 error）。POST /rag/tab/unit/quiz/for-exam 將 Rag_Quiz.for_exam 設為 true。RAG+LLM 出題為 POST /rag/tab/unit/quiz/llm-generate；純建 Rag_Quiz 列為 POST /rag/tab/unit/quiz/create（見 zip 路由）。
 """
 
 # 引入 json 用於解析 GPT 回傳與序列化
@@ -51,6 +51,7 @@ from utils.rag_faiss_zip import process_zip_to_docs
 from utils.rag_stem_utils import get_rag_stem_from_rag_id
 # 取得 ZIP 儲存路徑
 from utils.zip_storage import get_zip_path
+from utils.json_utils import to_json_safe
 # Supabase 客戶端
 from utils.supabase_client import get_supabase
 
@@ -122,8 +123,8 @@ class GenerateQuizRequest(BaseModel):
 
 class QuizGradeRequest(BaseModel):
     """
-    POST /rag/tab/unit/quiz/grade 請求 body。
-    依 rag_id 載入 RAG ZIP 批改後，以 rag_quiz_id 更新 public.Rag_Quiz：answer_content、answer_grade、answer_critique（JSON，含 quiz_grade／quiz_comments 等）。
+    POST /rag/tab/unit/quiz/llm-grade 請求 body。
+    依 rag_id 載入 RAG ZIP 批改後，以 rag_quiz_id 更新 public.Rag_Quiz：answer_user_prompt_text、answer_content、answer_grade、answer_critique 等。
     """
 
     # Rag 表主鍵（字串，會轉成數字查詢）
@@ -134,12 +135,28 @@ class QuizGradeRequest(BaseModel):
     rag_quiz_id: str = Field("", description="必填（數字字串 >0）；對應 Rag_Quiz 主鍵")
     # 測驗題目內容（與 Rag_Quiz.quiz_content 一致，供 RAG 檢索與批改）
     quiz_content: str = Field(..., description="測驗題目內容（與 Rag_Quiz 表 quiz_content 一致）")
+    # 學生／教師送批改時的補充說明（可空）；寫入 Rag_Quiz.answer_user_prompt_text，並併入送 LLM 之 user 訊息
+    answer_user_prompt_text: str = Field(
+        "",
+        description="作答補充／批改指引（可空）；寫入 Rag_Quiz.answer_user_prompt_text 並供評分 prompt 參考",
+    )
     # 學生作答：請求欄位 quiz_answer（相容舊欄位 answer）；寫入 Rag_Quiz.answer_content
     quiz_answer: str = Field(
         ...,
         description="學生作答（寫入 Rag_Quiz.answer_content）；相容舊 JSON 欄位 answer",
         validation_alias=AliasChoices("quiz_answer", "answer"),
     )
+
+
+class RagQuizForExamRequest(BaseModel):
+    """
+    POST /rag/tab/unit/quiz/for-exam：以 **rag_quiz_id** 更新 Rag_Quiz.for_exam = true。
+    若一併傳入 `rag_tab_id`／`rag_unit_id`（>0），須與該列一致。
+    """
+
+    rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
+    rag_tab_id: str = Field("", description="選填；與資料列 rag_tab_id 須一致")
+    rag_unit_id: int = Field(0, ge=0, description="選填；>0 時須與資料列 rag_unit_id 一致")
 
 
 # 非同步評分結果暫存：job_id -> {"status": "pending"|"ready"|"error", "result": dict|None, "error": str|None}
@@ -158,6 +175,7 @@ def _run_grade_job(
     api_key: str,
     quiz_content: str,
     quiz_answer: str,
+    answer_user_prompt_text: str = "",
 ) -> tuple[str, dict[str, Any]]:
     """在給定的 work_dir（已含 ref.zip）執行 RAG + GPT 評分。回傳 (LLM 訊息原文, 解析後 JSON 物件)。"""
     # 工作目錄中的 ZIP 路徑
@@ -227,6 +245,12 @@ def _run_grade_job(
     context_text = "\n\n".join([d.page_content for d in docs])
 
     course_name = get_course_name_for_prompt()
+    aup = (answer_user_prompt_text or "").strip()
+    aup_block = (
+        f"        【作答補充／批改指引】\n        {aup}\n"
+        if aup
+        else ""
+    )
     # 組裝評分 prompt：角色、目標、限制、評分標準、輸出格式、題目、學生答案、講義依據
     prompt = f"""
         你是一位「{course_name}」課程的教授，請批改這道題目：。
@@ -234,7 +258,7 @@ def _run_grade_job(
         跟據「測驗題目」與「課程內容」，評估「學生答案」的內容是否正確。
         測驗題目：{quiz_content}
         學生答案：{quiz_answer}
-        課程內容：{context_text}
+        {aup_block}        課程內容：{context_text}
         【重要限制】
         請使用繁體繁體中文 (Traditional Chinese) 撰寫評語 (quiz_comments)。**
         【評分標準】
@@ -280,13 +304,16 @@ def _run_grade_job_background(
     quiz_answer: str,
     results_store: dict[str, dict[str, Any]],
     insert_answer_fn: Callable[[dict, str], tuple[str, int] | None],
+    answer_user_prompt_text: str = "",
 ) -> None:
     """
     通用背景評分：執行評分、可選寫入 DB、結果存 results_store。
     insert_answer_fn(result_dict, quiz_answer) 寫入 DB 並回傳 (id_key, id_val) 或 None。
     """
     try:
-        _, llm_json = _run_grade_job(work_dir, api_key, quiz_content, quiz_answer)
+        _, llm_json = _run_grade_job(
+            work_dir, api_key, quiz_content, quiz_answer, answer_user_prompt_text
+        )
         result_dict: dict[str, Any] = {
             "quiz_grade": _quiz_grade_from_llm_json(llm_json),
             "quiz_comments": _quiz_comments_from_llm_json(llm_json),
@@ -306,7 +333,7 @@ def _run_grade_job_background(
         else:
             err_detail = (
                 "更新 Rag_Quiz 評分欄位失敗。常見原因：未設定 SUPABASE_SERVICE_ROLE_KEY 而改用 anon 遭 RLS 擋、"
-                "rag_quiz_id 無對應列或已刪除、或欄位 answer_content／answer_grade／answer_critique 與表不符。請見伺服器日誌。"
+                "rag_quiz_id 無對應列或已刪除、或欄位 quiz_content／answer_user_prompt_text／answer_content／answer_grade／answer_critique 與表不符。請見伺服器日誌。"
             )
             _logger.warning(
                 "批改 LLM 已完成但寫入答案表失敗 job_id=%s：%s",
@@ -360,27 +387,36 @@ def _answer_row_payload(
 
 
 def _update_rag_quiz_with_grade(
-    result_dict: dict, quiz_answer: str, *, rag_quiz_id: int
+    result_dict: dict,
+    quiz_answer: str,
+    *,
+    rag_quiz_id: int,
+    answer_user_prompt_text: str = "",
+    quiz_content: str = "",
 ) -> tuple[str, int] | None:
-    """更新 public.Rag_Quiz 的作答與評分欄位；成功回傳 (\"rag_quiz_id\", id)。rag_quiz_id<=0 時回傳 None。"""
+    """更新 public.Rag_Quiz 的題幹（選填）、作答與評分欄位；成功回傳 (\"rag_quiz_id\", id)。rag_quiz_id<=0 時回傳 None。"""
     if rag_quiz_id <= 0:
         return None
     grade = _clamp_quiz_grade(
         result_dict.get("quiz_grade", result_dict.get("score", 0))
     )
     ts = now_taipei_iso()
-    row = {
+    qc_persist = (quiz_content or "").strip()
+    row: dict[str, Any] = {
+        "answer_user_prompt_text": (answer_user_prompt_text or "").strip(),
         "answer_content": quiz_answer or "",
         "answer_grade": grade,
         "answer_critique": json.dumps(_answer_row_payload(result_dict, quiz_answer), ensure_ascii=False),
         "updated_at": ts,
     }
+    if qc_persist:
+        row["quiz_content"] = qc_persist
     try:
         supabase = get_supabase()
         supabase.table("Rag_Quiz").update(row).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
         chk = (
             supabase.table("Rag_Quiz")
-            .select("answer_grade")
+            .select("answer_grade, quiz_content")
             .eq("rag_quiz_id", rag_quiz_id)
             .eq("deleted", False)
             .limit(1)
@@ -392,7 +428,8 @@ def _update_rag_quiz_with_grade(
                 rag_quiz_id,
             )
             return None
-        ag = chk.data[0].get("answer_grade")
+        cr0 = chk.data[0]
+        ag = cr0.get("answer_grade")
         try:
             ag_int = int(ag) if ag is not None else 0
         except (TypeError, ValueError):
@@ -402,6 +439,12 @@ def _update_rag_quiz_with_grade(
                 "Rag_Quiz 讀回 answer_grade=%s 與預期 %s 不符（rag_quiz_id=%s），可能更新未套用",
                 ag_int,
                 grade,
+                rag_quiz_id,
+            )
+            return None
+        if qc_persist and (cr0.get("quiz_content") or "").strip() != qc_persist:
+            _logger.warning(
+                "Rag_Quiz 讀回 quiz_content 與預期不符（rag_quiz_id=%s），可能更新未套用",
                 rag_quiz_id,
             )
             return None
@@ -435,7 +478,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
     可選傳 rag_tab_id、rag_unit_id 做一致性驗證。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
     程式依 rag_quiz_id 對應之 rag_unit_id 查到 Rag_Unit，再回推 Rag 查找 RAG ZIP 出題；
-    出題系統指令優先使用 **Rag.system_prompt_instruction**，若為空則使用該單元 **Rag_Unit.quiz_system_prompt_text**（例如 **PUT /rag/unit/system-prompt** 寫入）。
+    出題系統指令優先使用 **Rag.system_prompt_instruction**，若為空則使用該單元 **Rag_Unit.quiz_system_prompt_text**（建置時由 **POST /rag/tab/build-rag-zip** 帶入 system_prompt_instruction 寫入）。
     出題成功後**更新** public.Rag_Quiz 錨點列（quiz_*；並清空 answer_* 以免舊作答留存）；回傳 JSON 含 quiz_content, quiz_hint, quiz_reference_answer、rag_quiz_id 等。
     """
     supabase = get_supabase()
@@ -518,14 +561,14 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
             status_code=400,
             detail="該使用者（person_id）尚未於個人設定填寫 LLM API Key，請至 User 設定",
         )
-    # 出題系統指令：Rag 全 tab 預設，或回退至本單元 Rag_Unit（與 PUT /rag/unit/system-prompt 一致）
+    # 出題系統指令：Rag 全 tab 預設，或回退至本單元 Rag_Unit.quiz_system_prompt_text
     system_prompt_instruction = (row.get("system_prompt_instruction") or "").strip()
     if not system_prompt_instruction:
         system_prompt_instruction = (unit_row.get("quiz_system_prompt_text") or "").strip()
     if not system_prompt_instruction:
         raise HTTPException(
             status_code=400,
-            detail="出題系統指令未設定：請在 Rag 設定 system_prompt_instruction，或對該單元呼叫 PUT /rag/unit/system-prompt（quiz_system_prompt_text）；若走 ZIP 打包流程也可在 POST /rag/tab/build-rag-zip 帶入",
+            detail="出題系統指令未設定：請在 Rag 設定 system_prompt_instruction；若走 ZIP 打包流程可在 POST /rag/tab/build-rag-zip 帶入 system_prompt_instruction（會寫入各 Rag_Unit.quiz_system_prompt_text）",
         )
 
     # 取得 RAG ZIP 的檔案路徑（下載至暫存檔）
@@ -633,12 +676,12 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
             pass
 
 
-@router.post("/tab/unit/quiz/grade", summary="Rag Grade Quiz")
+@router.post("/tab/unit/quiz/llm-grade", summary="Rag Grade Quiz")
 async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest, caller_person_id: PersonId):
     """
-    傳入 rag_id（字串）、rag_tab_id（選填）、rag_quiz_id、quiz_content、quiz_answer。
+    傳入 rag_id（字串）、rag_tab_id（選填）、rag_quiz_id、quiz_content、quiz_answer；選填 answer_user_prompt_text（寫入 Rag_Quiz 並併入評分 LLM user 訊息）。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
-    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。**rag_quiz_id 必填**（對應 Rag_Quiz 主鍵）。驗證後回傳 202 與 job_id；背景更新 public.Rag_Quiz 之 answer_*（失敗則輪詢為 error）。輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments、rag_quiz_id（另帶 rag_answer_id 同值以相容舊前端）。
+    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。**rag_quiz_id 必填**（對應 Rag_Quiz 主鍵）。驗證後回傳 202 與 job_id；背景**更新 public.Rag_Quiz**（answer_*；若 body 帶 quiz_content 則一併寫入題幹）。輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}，ready 時除 result 外另附 **rag_quiz**（自 DB 讀回之整列）。
     """
     # 取得 rag_id 字串並去除空白
     rag_id_str = (body.rag_id or "").strip()
@@ -718,7 +761,15 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     job_id = str(uuid.uuid4())
     # 初始化 job 狀態為 pending
     _grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
-    insert_fn = lambda rd, qa: _update_rag_quiz_with_grade(rd, qa, rag_quiz_id=rag_quiz_id_int)
+    aup = (body.answer_user_prompt_text or "").strip()
+    qc_body = (body.quiz_content or "").strip()
+    insert_fn = lambda rd, qa: _update_rag_quiz_with_grade(
+        rd,
+        qa,
+        rag_quiz_id=rag_quiz_id_int,
+        answer_user_prompt_text=aup,
+        quiz_content=qc_body,
+    )
     # 加入背景任務
     background_tasks.add_task(
         _run_grade_job_background,  # 背景任務函數
@@ -729,17 +780,88 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
         body.quiz_answer or "",
         _grade_job_results,  # 結果存放的 dict
         insert_fn,  # 更新 Rag_Quiz 評分欄位
+        aup,
     )
     # 回傳 202 與 job_id，供前端輪詢
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
 
-@router.get("/tab/unit/quiz/grade-result/{job_id}", tags=["rag"])
+@router.post("/tab/unit/quiz/for-exam", summary="Mark Rag Quiz for exam")
+def mark_rag_quiz_for_exam(body: RagQuizForExamRequest, caller_person_id: PersonId):
+    """
+    將既有 **Rag_Quiz** 的 **for_exam** 設為 **true**。以 `rag_quiz_id` 定位；
+    僅 `deleted=false` 且 `person_id` 與呼叫者相符者可更新。
+    """
+    req_tab = (body.rag_tab_id or "").strip()
+    req_unit = int(body.rag_unit_id or 0)
+    try:
+        supabase = get_supabase()
+        sel = (
+            supabase.table("Rag_Quiz")
+            .select("rag_quiz_id, rag_tab_id, rag_unit_id, person_id")
+            .eq("rag_quiz_id", body.rag_quiz_id)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+        if not sel.data:
+            raise HTTPException(status_code=404, detail="找不到該 rag_quiz_id 的 Rag_Quiz，或已刪除")
+
+        row0 = sel.data[0]
+        pid = (row0.get("person_id") or "").strip()
+        if pid != caller_person_id:
+            raise HTTPException(status_code=403, detail="無權更新該 Rag_Quiz")
+
+        if req_tab and (row0.get("rag_tab_id") or "").strip() != req_tab:
+            raise HTTPException(status_code=400, detail="rag_tab_id 與 rag_quiz_id 對應資料不一致")
+        if req_unit > 0 and int(row0.get("rag_unit_id") or 0) != req_unit:
+            raise HTTPException(status_code=400, detail="rag_unit_id 與 rag_quiz_id 對應資料不一致")
+
+        ts = now_taipei_iso()
+        supabase.table("Rag_Quiz").update({"for_exam": True, "updated_at": ts}).eq("rag_quiz_id", body.rag_quiz_id).eq("deleted", False).execute()
+
+        read = (
+            supabase.table("Rag_Quiz")
+            .select("*")
+            .eq("rag_quiz_id", body.rag_quiz_id)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+        row = (read.data or [{}])[0]
+        return to_json_safe(
+            {
+                "rag_quiz_id": row.get("rag_quiz_id"),
+                "rag_tab_id": row.get("rag_tab_id"),
+                "rag_unit_id": row.get("rag_unit_id"),
+                "person_id": row.get("person_id"),
+                "quiz_name": row.get("quiz_name"),
+                "quiz_content": row.get("quiz_content"),
+                "quiz_hint": row.get("quiz_hint"),
+                "quiz_answer_reference": row.get("quiz_answer_reference"),
+                "quiz_user_prompt_text": row.get("quiz_user_prompt_text"),
+                "answer_user_prompt_text": row.get("answer_user_prompt_text"),
+                "answer_content": row.get("answer_content"),
+                "answer_grade": row.get("answer_grade"),
+                "answer_critique": row.get("answer_critique"),
+                "for_exam": row.get("for_exam"),
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("POST /rag/tab/unit/quiz/for-exam 錯誤")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tab/unit/quiz/grade-result/{job_id}", summary="Get Grade Result", tags=["rag"])
 async def get_grade_result(job_id: str, _person_id: PersonId):  # 路徑參數 job_id
     """
     輪詢評分結果。回傳 status: pending | ready | error；
-    ready 時 result 為 quiz_grade、quiz_comments、rag_quiz_id（另含 rag_answer_id 同值）；error 時為 LLM／ZIP 例外，或 LLM 成功但更新 Rag_Quiz 失敗。
-    此端點刻意保持輕量（僅記憶體查表），以減少代理逾時 502。
+    ready 時 result 為 quiz_grade、quiz_comments、rag_quiz_id（另含 rag_answer_id 同值），並自資料庫讀取 **rag_quiz** 整列（與 Rag_Quiz 表一致，供前端確認已持久化）；error 時為 LLM／ZIP 例外，或 LLM 成功但更新 Rag_Quiz 失敗。
+    pending／error 時不查資料庫；rag_quiz 讀取失敗時仍回傳 result，rag_quiz 為 null。
     """
     # 若 job_id 不存在於 _grade_job_results（可能服務重啟）
     if job_id not in _grade_job_results:
@@ -753,9 +875,37 @@ async def get_grade_result(job_id: str, _person_id: PersonId):  # 路徑參數 j
         )
     # 取得該 job 的資料
     data = _grade_job_results[job_id]
-    # 回傳 status、result、error
-    return {
+    out: dict[str, Any] = {
         "status": data["status"],  # pending | ready | error
         "result": data.get("result"),  # 批改結果（ready 時）
         "error": data.get("error"),  # 錯誤訊息（error 時）
     }
+    rag_quiz_row: dict[str, Any] | None = None
+    if data["status"] == "ready":
+        res = data.get("result")
+        if isinstance(res, dict):
+            rid = res.get("rag_quiz_id")
+            if rid is None:
+                rid = res.get("rag_answer_id")
+            if rid is not None:
+                try:
+                    rid_int = int(rid)
+                    if rid_int > 0:
+                        supabase = get_supabase()
+                        q = (
+                            supabase.table("Rag_Quiz")
+                            .select("*")
+                            .eq("rag_quiz_id", rid_int)
+                            .eq("deleted", False)
+                            .limit(1)
+                            .execute()
+                        )
+                        if q.data:
+                            rag_quiz_row = to_json_safe(q.data[0])
+                except (TypeError, ValueError) as e:
+                    _logger.debug("grade-result rag_quiz_id 無效 job_id=%s: %s", job_id, e)
+                except Exception as e:
+                    _logger.warning("grade-result 讀取 Rag_Quiz 失敗 job_id=%s: %s", job_id, e)
+    if data["status"] == "ready":
+        out["rag_quiz"] = rag_quiz_row
+    return out

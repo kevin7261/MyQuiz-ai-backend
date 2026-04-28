@@ -32,14 +32,7 @@ _SKIP_PATH_PREFIXES = (
 # 不寫入 Log 的「方法 + 路徑」（精確比對 path，不含 query）
 _SKIP_LOG_ROUTES = frozenset({
     ("GET", "/system-settings/course-name"),
-    ("GET", "/rag/tab/for-exam"),
     ("GET", "/english_system/tab/for-exam"),
-})
-
-# 不寫入 Log 的路徑（任何 HTTP 方法；精確比對 path，不含 query）
-_SKIP_LOG_PATHS_ANY_METHOD = frozenset({
-    "/system-settings/rag-for-exam-localhost",
-    "/system-settings/rag-for-exam-deploy",
 })
 
 # parameters 內敏感欄位遮罩
@@ -143,8 +136,6 @@ class APILogMiddleware(BaseHTTPMiddleware):
         if method_upper in _SKIP_HTTP_METHODS:
             return await call_next(request)
         if _should_skip_route(method_upper, path):
-            return await call_next(request)
-        if (path or "") in _SKIP_LOG_PATHS_ANY_METHOD:
             return await call_next(request)
 
         query_params = dict(request.query_params)

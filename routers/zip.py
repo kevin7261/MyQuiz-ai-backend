@@ -2,15 +2,13 @@
 ZIP 與 RAG 相關 API 模組。
 提供：
 - GET /rag/tabs：列出 Rag 表（含 units→quizzes）；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新
-- GET /rag/tab/for-exam：依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id，回傳對應 Rag 與其 Rag_Unit 列表
 - GET /rag/units：依 rag_tab_id 列出 Rag_Unit（含 quizzes）
 - POST /rag/tab/create：建立一筆 Rag（可傳 local）
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
 - POST /rag/tab/upload-zip：上傳 ZIP
 - POST /rag/tab/build-rag-zip：依 unit_list 打包並建 RAG；回應為 NDJSON 串流（start／building／unit／complete），成功後自動建立 Rag_Unit 記錄。POST /rag/tab/build-rag-zip-stream 為同行為之別名
 - POST /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除 Rag 及其 Rag_Unit，並刪除儲存（須傳 query person_id）
-- PUT /rag/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
-- PUT /rag/unit/system-prompt：更新 Rag_Unit 的 quiz_system_prompt_text（body：rag_unit_id、quiz_system_prompt_text）
+- PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
 - POST /rag/tab/unit/quiz/create：body `rag_tab_id`、`rag_unit_id` 定位 Rag_Unit 後新增一筆 Rag_Quiz（無 LLM）；`rag_quiz_id` 由資料庫產生。
 """
 
@@ -51,7 +49,7 @@ from utils.zip_storage import (
     FOLDER_RAG,
 )
 from utils.supabase_client import get_supabase
-from utils.rag_exam_setting import fetch_exam_rag_id_from_settings, is_localhost_request
+from utils.rag_exam_setting import is_localhost_request
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -105,7 +103,6 @@ def _rag_unit_default_row(
     quiz_system_prompt_text: str = "",
     mp3_file_name: str = "",
     youtube_url: str = "",
-    for_exam: bool = False,
 ) -> dict[str, Any]:
     """Rag_Unit 表一筆新增時的預設欄位。"""
     ts = now_taipei_iso()
@@ -120,7 +117,6 @@ def _rag_unit_default_row(
         "quiz_system_prompt_text": quiz_system_prompt_text,
         "mp3_file_name": mp3_file_name,
         "youtube_url": youtube_url,
-        "for_exam": for_exam,
         "deleted": False,
         "created_at": ts,
         "updated_at": ts,
@@ -222,15 +218,9 @@ class PackRequest(BaseModel):
 
 
 class UpdateRagUnitUnitNameRequest(BaseModel):
-    """PUT /rag/unit/unit-name：更新 Rag_Unit 的 unit_name。"""
+    """PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name。"""
     rag_unit_id: int = Field(..., description="Rag_Unit 表主鍵")
     unit_name: str = Field(..., description="新的 unit_name")
-
-
-class UpdateRagUnitSystemPromptRequest(BaseModel):
-    """PUT /rag/unit/system-prompt：更新 Rag_Unit 的 quiz_system_prompt_text。"""
-    rag_unit_id: int = Field(..., description="Rag_Unit 表主鍵")
-    quiz_system_prompt_text: str = Field(..., description="新的出題系統指令")
 
 
 class InsertRagQuizRowRequest(BaseModel):
@@ -503,74 +493,6 @@ def list_rag(
     except Exception as e:
         logging.exception("GET /rag/tabs 錯誤")
         raise HTTPException(status_code=500, detail=f"列出 Rag 失敗: {e!s}")
-
-
-@router.get("/tab/for-exam")
-def get_for_exam_rag(request: Request, _person_id: PersonId):
-    """
-    依連線讀取 System_Setting（本機：rag_localhost，否則 rag_deploy）的 value 作為 rag_id，取得該筆 Rag（deleted=false）及其 Rag_Unit 列表。
-    回傳 rag_id、rag_tab_id、system_prompt_instruction、file_size、file_metadata、units（Rag_Unit 列表）。
-    """
-    try:
-        supabase = get_supabase()
-        _, rag_id = fetch_exam_rag_id_from_settings(supabase, request)
-        if rag_id is None or rag_id <= 0:
-            return {
-                "rag_id": None,
-                "rag_tab_id": None,
-                "system_prompt_instruction": None,
-                "llm_api_key": None,
-                "file_size": None,
-                "file_metadata": None,
-                "units": [],
-            }
-        resp = (
-            supabase.table("Rag")
-            .select(RAG_SELECT_ALL)
-            .eq("rag_id", rag_id)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
-        )
-        data = resp.data or []
-        if len(data) == 0:
-            return {
-                "rag_id": None,
-                "rag_tab_id": None,
-                "system_prompt_instruction": None,
-                "llm_api_key": None,
-                "file_size": None,
-                "file_metadata": None,
-                "units": [],
-            }
-        row = data[0]
-        rag_tab_id = row.get("rag_tab_id")
-
-        units_resp = (
-            supabase.table("Rag_Unit")
-            .select("*")
-            .eq("rag_tab_id", rag_tab_id)
-            .eq("deleted", False)
-            .order("created_at", desc=False)
-            .execute()
-        )
-        units = units_resp.data or []
-
-        return to_json_safe({
-            "rag_id": row.get("rag_id"),
-            "rag_tab_id": rag_tab_id,
-            "system_prompt_instruction": row.get("system_prompt_instruction"),
-            "llm_api_key": row.get("llm_api_key"),
-            "file_size": row.get("file_size"),
-            "file_metadata": row.get("file_metadata"),
-            "units": units,
-        })
-    except Exception as e:
-        logging.exception("GET /rag/tab/for-exam 錯誤")
-        raise HTTPException(
-            status_code=500,
-            detail=f"取得供測驗 RAG 失敗: {e!s}",
-        )
 
 
 @router.post("/tab/create")
@@ -1025,45 +947,6 @@ def update_rag_unit_name(body: UpdateRagUnitUnitNameRequest, caller_person_id: P
             "rag_tab_id": row.get("rag_tab_id"),
             "person_id": pid,
             "unit_name": unit_name,
-            "updated_at": ts,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.put("/tab/unit/system-prompt")
-def update_rag_unit_system_prompt(body: UpdateRagUnitSystemPromptRequest, caller_person_id: PersonId):
-    """
-    更新既有 Rag_Unit 的 quiz_system_prompt_text。以 rag_unit_id（主鍵）比對；僅更新 deleted=false 的列。
-    回傳 rag_unit_id、rag_tab_id、person_id、quiz_system_prompt_text、updated_at。
-    """
-    if body.rag_unit_id <= 0:
-        raise HTTPException(status_code=400, detail="無效的 rag_unit_id")
-    try:
-        supabase = get_supabase()
-        sel = (
-            supabase.table("Rag_Unit")
-            .select("rag_unit_id, rag_tab_id, person_id")
-            .eq("rag_unit_id", body.rag_unit_id)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
-        )
-        if not sel.data or len(sel.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該 rag_unit_id 的 Rag_Unit 資料，或已刪除")
-        row = sel.data[0]
-        pid = row.get("person_id")
-        if (pid or "").strip() != caller_person_id:
-            raise HTTPException(status_code=403, detail="無權修改該 Rag_Unit")
-        ts = now_taipei_iso()
-        supabase.table("Rag_Unit").update({"quiz_system_prompt_text": body.quiz_system_prompt_text, "updated_at": ts}).eq("rag_unit_id", body.rag_unit_id).eq("deleted", False).execute()
-        return {
-            "rag_unit_id": body.rag_unit_id,
-            "rag_tab_id": row.get("rag_tab_id"),
-            "person_id": pid,
-            "quiz_system_prompt_text": body.quiz_system_prompt_text,
             "updated_at": ts,
         }
     except HTTPException:

@@ -463,7 +463,7 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest, caller_per
     if rag_id_from_setting is None or rag_id_from_setting <= 0:
         raise HTTPException(
             status_code=404,
-            detail="尚未設定供測驗用 RAG rag_id，請以 PUT /system-settings/rag-for-exam-localhost 或 rag-for-exam-deploy 寫入",
+            detail="尚未設定供測驗用 RAG rag_id：請於 System_Setting 表設定 key **rag_localhost**（本機）或 **rag_deploy**（非本機），value 為 Rag.rag_id",
         )
     rag_rows = (
         supabase.table("Rag")
@@ -505,7 +505,7 @@ def exam_create_quiz(request: Request, body: ExamGenerateQuizRequest, caller_per
     if not system_prompt_instruction:
         raise HTTPException(
             status_code=400,
-            detail="供測驗 RAG 的出題系統指令未設定：請在該 Rag 設定 system_prompt_instruction，或對對應單元使用 PUT /rag/unit/system-prompt；也可在 POST /rag/tab/build-rag-zip 帶入",
+            detail="供測驗 RAG 的出題系統指令未設定：請在該 Rag 設定 system_prompt_instruction，或在 POST /rag/tab/build-rag-zip 帶入 system_prompt_instruction",
         )
     # 取得 RAG ZIP 路徑（下載至暫存檔）
     path = get_zip_path(rag_zip_tab_id)
@@ -616,7 +616,7 @@ async def exam_grade_submission(
     傳入 exam_id 或 exam_tab_id、exam_quiz_id、quiz_content、quiz_answer。
     LLM API Key 由系統設定（/system-settings/llm-api-key）取得；請先於系統設定填寫。
     依連線讀取 System_Setting（rag_localhost / rag_deploy）的 rag_id；若帶 exam_quiz_id 則依該題 Exam_Quiz.unit_name 載入對應 RAG ZIP（與 tab/quiz/create 指定 unit_name 一致），否則使用第一筆 outputs。
-    回傳 202 與 job_id；背景寫入 public.Exam_Answer（與 POST /rag/tab/unit/quiz/grade 相同管線；寫入失敗則輪詢為 error）。輪詢 GET /exam/tab/quiz/grade-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 exam_answer_id。
+    回傳 202 與 job_id；背景寫入 public.Exam_Answer（與 POST /rag/tab/unit/quiz/llm-grade 相同管線；寫入失敗則輪詢為 error）。輪詢 GET /exam/tab/quiz/grade-result/{job_id}，ready 時 result 含 quiz_grade、quiz_comments 及 exam_answer_id。
     """
     exam_id_str = (body.exam_id or "").strip()
     exam_tab_id = (body.exam_tab_id or "").strip()
@@ -654,7 +654,7 @@ async def exam_grade_submission(
         return JSONResponse(
             status_code=404,
             content={
-                "error": "尚未設定供測驗用 RAG rag_id，請以 PUT /system-settings/rag-for-exam-localhost 或 rag-for-exam-deploy 寫入",
+                "error": "尚未設定供測驗用 RAG rag_id：請於 System_Setting 表設定 key rag_localhost（本機）或 rag_deploy（非本機），value 為 Rag.rag_id",
             },
         )
     rag_rows = (
