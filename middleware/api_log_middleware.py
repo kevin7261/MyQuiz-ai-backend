@@ -33,6 +33,7 @@ _SKIP_PATH_PREFIXES = (
 _SKIP_LOG_ROUTES = frozenset({
     ("GET", "/system-settings/course-name"),
     ("GET", "/rag/tab/for-exam"),
+    ("GET", "/english_system/tab/for-exam"),
 })
 
 # 不寫入 Log 的路徑（任何 HTTP 方法；精確比對 path，不含 query）
