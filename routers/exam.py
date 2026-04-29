@@ -1,5 +1,8 @@
 """
 Exam API 模組。對應 public.Exam、public.Exam_Quiz。
+
+檔案結構（由上而下）：模型／檢索說明 → LLM Prompt → 型別與作業快取 → Pydantic → 輔助函式與路由。
+
 - GET /exam/tabs：列出 Exam（deleted=false，person_id 篩選，local 篩選），每筆帶 units（依 unit_name 分群之 Exam_Quiz）。
 - GET /exam/rag-for-exams：列出 for_exam 測驗用 RAG 資料（Rag_Unit.for_exam=true 或含 Rag_Quiz.for_exam=true）。
 - POST /exam/tab/create：建立一筆 Exam。
@@ -55,9 +58,12 @@ from utils.zip_storage import generate_tab_id, get_zip_path
 
 router = APIRouter(prefix="/exam", tags=["exam"])
 
-ExamQuizRateValue = Literal[-1, 0, 1]
 
-_exam_grade_job_results: dict[str, dict[str, Any]] = {}
+# ---------------------------------------------------------------------------
+# 模型與檢索常數
+# ---------------------------------------------------------------------------
+# 本模組不直接宣告 OpenAI 模型名；出題呼叫 `utils.quiz_generation`（`QUIZ_LLM_MODEL`、embedding、k），
+# 批改呼叫 `services.grading`（`GRADE_LLM_MODEL`、檢索與 chunk 常數）。
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +88,11 @@ PROMPT_EXAM_LLM_GENERATE_USER_PREFIX = textwrap.dedent("""
 
     {quiz_user_prompt}
     """).strip()
+
+
+ExamQuizRateValue = Literal[-1, 0, 1]
+
+_exam_grade_job_results: dict[str, dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +263,7 @@ def _exam_llm_generate_api_instruction(body: ExamLlmGenerateQuizRequest, quiz_us
     """
     組出 POST /exam/tab/quiz/llm-generate 送進 utils.generate_quiz* 的 quiz_user_prompt_text 前綴。
 
-    quiz_user_prompt_resolved：已自 Rag_Quiz 或請求解析之最終出題補充文字（可能空，模板內顯示未提供）。
+    quiz_user_prompt_resolved：已自 Rag_Quiz 或請求解析之最終出題 user prompt 文字（可能空，模板內顯示未提供）。
     """
     rq = body.rag_quiz_id
     rq_md = f"`{rq}`" if rq is not None else "（請求未傳入）"
@@ -553,7 +564,7 @@ def exam_insert_empty_quiz(body: ExamCreateQuizRequest, caller_person_id: Person
 def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, caller_person_id: PersonId):
     """
     Body：exam_quiz_id 必填；選填 rag_unit_id（>0）、rag_quiz_id、unit_name、quiz_name。
-    出題補充 quiz_user_prompt_text 僅自 Rag_Quiz（effective rag_quiz_id）讀取。
+    欄位 `quiz_user_prompt_text`（出題 user prompt）僅自 Rag_Quiz（effective rag_quiz_id）讀取。
     unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcription。
     unit_type 2／3／4 時不載入 RAG ZIP，改以 transcription 純 LLM 出題。
     出題成功後更新該筆 Exam_Quiz（quiz_name、quiz_content／quiz_hint／quiz_answer_reference；清空作答欄位）。
@@ -1012,7 +1023,7 @@ async def exam_grade_submission(
 async def get_exam_grade_result(job_id: str, _person_id: PersonId):
     """
     輪詢 Exam 評分結果（搭配 POST /exam/tab/quiz/llm-grade）。
-    status: pending | ready | error；ready 時 result 含 quiz_grade、quiz_comments、exam_quiz_id。
+    status: pending | ready | error；ready 時 result 含 quiz_comments、exam_quiz_id。
     """
     if job_id not in _exam_grade_job_results:
         return JSONResponse(

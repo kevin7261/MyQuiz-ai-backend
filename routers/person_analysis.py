@@ -6,7 +6,7 @@
 
 重要：弱點報告 prompt 與回應皆為 Markdown；與 json_object 出題／批改分流。
 
-檔案結構：LLM Prompt 常數 → Pydantic → 弱點資料彙整私有函式 → 路由。
+檔案結構：模型／檢索常數 → LLM Prompt → Pydantic → 弱點資料彙整私有函式 → 路由。
 """
 
 import json
@@ -24,6 +24,13 @@ from utils.json_utils import to_json_safe
 from utils.llm_api_key_utils import get_llm_api_key
 
 router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
+
+
+# ---------------------------------------------------------------------------
+# 模型與檢索常數
+# ---------------------------------------------------------------------------
+
+WEAKNESS_LLM_MODEL = "gpt-4o"
 
 
 # ---------------------------------------------------------------------------
@@ -48,9 +55,6 @@ PROMPT_WEAKNESS_REPORT = textwrap.dedent("""
     2. 結構請包含：**簡介**、**學習弱點分析**、**具體建議**、**結論**（使用 Markdown 標題與條列即可）。
     3. 僅輸出報告本文，不要前言後語或以程式碼區塊包整份報告。
     """).strip()
-
-# 與出題／批改分開命名，避免日後改模型時誤改到別條 API。
-WEAKNESS_LLM_MODEL = "gpt-4o"
 
 
 # ---------------------------------------------------------------------------

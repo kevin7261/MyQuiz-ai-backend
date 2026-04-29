@@ -10,7 +10,7 @@ from postgrest.exceptions import APIError
 
 
 def instruction_from_rag_row(row: dict | None) -> str:
-    """Rag 表層級補充文字：**Rag.transcription**（與出題時注入 LLM 的內容一致）。"""
+    """Rag 表層說明文：**Rag.transcription**（與出題時注入 LLM 的內容一致）。"""
     if not row:
         return ""
     return (row.get("transcription") or "").strip()

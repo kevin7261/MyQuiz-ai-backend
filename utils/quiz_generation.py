@@ -2,16 +2,16 @@
 測驗題 LLM 生成：路由依 Rag_Unit.unit_type 擇一呼叫。
 
 - generate_quiz：有 FAISS RAG ZIP。檢索片段 → user「課程內容」；system 僅出題規範（Markdown）。
-- system／user 訊息與使用者 **出題補充** 皆為 **Markdown**（課程原文以 fenced code block 包覆）。
+- system／user 訊息與使用者 **出題 user prompt** 皆為 **Markdown**（課程原文以 fenced code block 包覆）。
 
 重要（維持行為時請留意）：
 - unit_type=1：僅依向量檢索片段出題；2/3/4 依整份逐字稿（格式與 RAG 的 user 課程區塊對齊）。
 - 兩路徑皆 response_format=json_object；system 範本含「JSON」字樣，無需再補尾段。
 
 檔案結構（由上而下）：
-1. 模型／檢索常數
-2. **LLM Prompt 全文**（見「出題 Prompt」區：system → user；`{quiz_user_prompt_text}` 與版面皆在模板內）
-3. LLM 回傳正規化與 API 呼叫（僅 `_context_as_markdown_fenced` 將課文套入 `{context_md}`）
+1. 模型／檢索常數（`QUIZ_LLM_MODEL`、embedding、k、檢索查詢句）
+2. **LLM Prompt 全文**（system／user、`{quiz_user_prompt_text}`／`{context_md}`）
+3. `_context_as_markdown_fenced`（`{context_md}`）、LLM 回傳正規化、`_invoke_quiz_json_llm`
 4. 公開函式（exam／grade 路由動態 import）
 """
 
@@ -29,9 +29,9 @@ from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 from openai import OpenAI
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 模型與檢索常數
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 下列數值會直接影響：API 成本、embedding 維度相容、檢索到的 chunk 數與內容。
 # 若調整 DEFAULT_RETRIEVAL_QUERY，歷史產出的題目可能無法與舊 log 對照。
 
@@ -43,13 +43,12 @@ DEFAULT_RETRIEVAL_QUERY = "課程重點概念"
 
 
 # -----------------------------------------------------------------------------
-# LLM 出題 Prompt（閱讀順序：[system] → [user]，user 以 .format(quiz_user_prompt_text=…, context_md=…) 填入）
+# LLM 出題 Prompt（system → user；user 以 .format(quiz_user_prompt_text=…, context_md=…) 填入）
 # -----------------------------------------------------------------------------
 # Chat messages：
 #   role=system … SYSTEM_PROMPT_FAISS_QUIZ
 #   role=user … USER_PROMPT_FAISS_COURSE 或 USER_PROMPT_TRANSCRIPTION_COURSE；
 #   其中 `{context_md}` 僅由向量檢索／逐字稿經 _context_as_markdown_fenced 產生，其餘不重組字串。
-#
 
 SYSTEM_PROMPT_FAISS_QUIZ = textwrap.dedent("""
     # 角色
@@ -61,8 +60,8 @@ SYSTEM_PROMPT_FAISS_QUIZ = textwrap.dedent("""
     - 系統與使用者訊息皆為 **Markdown**（標題、清單、粗體、水平線、`---`、課程原文之 fenced code block 等）。
     - **課程內容** 以 code fence（```text …```）包住逐字／檢索原文；區段內唯純引用，勿將標記語法本身當成教學內容。
     - 將 `---` 視為區段分隔。
-    - **出題補充** 區塊（`## 出題補充`）以下若無實質文字（僅留白或空字串），請**完全忽略**該節，僅依 **課程內容** 出題。
-    - 若出題補充有文字，則同時斟酌 **出題補充** 與 **課程內容** 出題。
+    - **出題 user prompt** 區塊（`## 出題 user prompt`）以下若無實質文字（僅留白或空字串），請**完全忽略**該節，僅依 **課程內容** 出題。
+    - 若出題 user prompt 有文字，則同時斟酌 **出題 user prompt** 與 **課程內容** 出題。
 
     ## 出題規範
 
@@ -78,7 +77,7 @@ SYSTEM_PROMPT_FAISS_QUIZ = textwrap.dedent("""
     """).strip()
 
 USER_PROMPT_FAISS_COURSE = textwrap.dedent("""
-    ## 出題補充
+    ## 出題 user prompt
 
     {quiz_user_prompt_text}
 
@@ -92,7 +91,7 @@ USER_PROMPT_FAISS_COURSE = textwrap.dedent("""
     """).strip()
 
 USER_PROMPT_TRANSCRIPTION_COURSE = textwrap.dedent("""
-    ## 出題補充
+    ## 出題 user prompt
 
     {quiz_user_prompt_text}
 
@@ -106,6 +105,10 @@ USER_PROMPT_TRANSCRIPTION_COURSE = textwrap.dedent("""
     """).strip()
 
 
+# ---------------------------------------------------------------------------
+# LLM 回傳正規化與呼叫（非 prompt 文字）
+# ---------------------------------------------------------------------------
+
 def _context_as_markdown_fenced(context_text: str) -> str:
     """產出 USER_PROMPT_* 占位 {context_md}：Markdown fenced block（標記為 text）；圍欄長度避開內文反引號。"""
     inner = (context_text or "").rstrip()
@@ -116,10 +119,6 @@ def _context_as_markdown_fenced(context_text: str) -> str:
     fence = "`" * n
     return f"{fence}text\n{inner}\n{fence}"
 
-
-# ---------------------------------------------------------------------------
-# LLM 回傳正規化與呼叫（非 prompt 文字）
-# ---------------------------------------------------------------------------
 
 def _normalize_quiz_llm_json(data: dict) -> dict:
     """
@@ -178,7 +177,7 @@ def generate_quiz_transcription_only(
     Args:
         api_key: OpenAI API Key（與 embeddings 無關，本路徑不建向量）。
         transcription: 課程全文或逐字稿，填入 user 課程內容區塊；不可空。
-        quiz_user_prompt_text: 填入 USER_PROMPT_* 之「出題補充」占位；空字串時依 system 指示略過該節。
+        quiz_user_prompt_text: 填入 USER_PROMPT_* 之「出題 user prompt」占位；空字串時依 system 指示略過該節。
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 llm_api_key")
@@ -218,7 +217,7 @@ def generate_quiz(
     Args:
         zip_path: 本機路徑，指向已下載之 RAG ZIP（內含 index.faiss / index.pkl）。
         api_key: 同時用於 OpenAIEmbeddings 與 Chat Completions。
-        quiz_user_prompt_text: 填入 USER_PROMPT_FAISS_COURSE 之「出題補充」占位；空字串時依 system 指示略過該節。
+        quiz_user_prompt_text: 填入 USER_PROMPT_FAISS_COURSE 之「出題 user prompt」占位；空字串時依 system 指示略過該節。
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 llm_api_key")

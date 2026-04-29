@@ -1,7 +1,7 @@
 """
 RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/llm-generate：依 rag_quiz_id 出題（LLM）；unit_type 1 僅 RAG ZIP 向量檢索；2/3/4 以 transcription 純生成；其餘載 RAG ZIP 向量檢索。
-- POST /rag/tab/unit/quiz/llm-grade：非同步 RAG+LLM 評分；回傳 202 + job_id，輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
+- POST /rag/tab/unit/quiz/llm-grade：非同步 RAG+LLM 評分（body 以 rag_id 置頂；quiz_content 可空，自 Rag_Quiz 讀題幹）；回傳 202 + job_id，輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
 - POST /rag/tab/unit/quiz/for-exam：將 Rag_Quiz.for_exam 設為 true。
 - GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
 - GET /rag/transcript/text、audio、youtube：自 Storage upload ZIP 讀取逐字稿。
@@ -71,30 +71,35 @@ class GenerateQuizRequest(BaseModel):
     )
     quiz_user_prompt_text: str = Field(
         "",
-        description="出題補充（可空）；非空時優先並寫入 Rag_Quiz；空則自該列 Rag_Quiz.quiz_user_prompt_text 帶入 LLM",
+        description="出題 user prompt（可空）；非空時優先並寫入 Rag_Quiz；空則自該列 Rag_Quiz.quiz_user_prompt_text 帶入 LLM",
     )
 
 
 class QuizGradeRequest(BaseModel):
     """
     POST /rag/tab/unit/quiz/llm-grade 請求 body。
-    欄位順序對齊 public.Rag_Quiz 中實際更新之列：rag_quiz_id、rag_tab_id、quiz_content、answer_user_prompt_text、answer（→answer_content）。
-    rag_id 用於載入 RAG ZIP（非 Rag_Quiz 欄位），置於末位。
+    rag_id 置頂：用於載入 RAG ZIP 與權限；quiz_content 可省略，沿用該 Rag_Quiz 資料列題幹。
     """
 
+    rag_id: str = Field(
+        "",
+        description="必填；Rag 表 rag_id（字串）；載入講義／向量 ZIP 並驗證存取權",
+    )
     rag_quiz_id: str = Field("", description="必填（數字字串 >0）；Rag_Quiz 主鍵")
     rag_tab_id: str = Field("", description="選填；後端以 Rag.rag_tab_id 為準")
-    quiz_content: str = Field(..., description="測驗題目內容（與 Rag_Quiz.quiz_content 一致，供 RAG 檢索與批改）")
+    quiz_content: str = Field(
+        "",
+        description="選填；非空時優先並可寫入 Rag_Quiz；空則自該 rag_quiz_id 之 Rag_Quiz.quiz_content 讀取（須於庫記憶中有題幹）",
+    )
     answer_user_prompt_text: str = Field(
         "",
-        description="作答補充／批改指引（可空）；寫入 Rag_Quiz.answer_user_prompt_text 並供評分 prompt 參考",
+        description="作答／批改 user prompt（可空）；寫入 Rag_Quiz.answer_user_prompt_text 並供評分 prompt 參考",
     )
     quiz_answer: str = Field(
         ...,
         description="學生作答（寫入 Rag_Quiz.answer_content）；相容舊 JSON 欄位 answer",
         validation_alias=AliasChoices("quiz_answer", "answer"),
     )
-    rag_id: str = Field("", description="Rag 表主鍵 rag_id（字串）；用於解析 RAG ZIP，非 Rag_Quiz 欄位")
 
 
 class RagQuizForExamRequest(BaseModel):
@@ -151,7 +156,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
     Body：rag_quiz_id、quiz_name、quiz_user_prompt_text（後兩者可空字串）；
     rag_tab_id／rag_unit_id 由後端依 rag_quiz_id 自資料庫帶入；quiz_user_prompt_text 空則自該列 Rag_Quiz 讀取。
     unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcription。
-    unit_type 2／3／4 時不載入 RAG ZIP，改以 system = transcription 純 LLM 出題。
+    unit_type 2／3／4 時不載入 RAG ZIP，改以固定 system（`SYSTEM_PROMPT_FAISS_QUIZ`）與含逐字稿 **課程內容** 之 user（`USER_PROMPT_TRANSCRIPTION_COURSE`）出題，與 RAG 路徑結構一致。
     出題成功後更新 public.Rag_Quiz（quiz_name、quiz_*；並清空 answer_*）。
     """
     supabase = get_supabase()
@@ -359,7 +364,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
 @router.post("/tab/unit/quiz/llm-grade", summary="Rag Grade Quiz")
 async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest, caller_person_id: PersonId):
     """
-    非同步評分：Body 含 rag_quiz_id、rag_tab_id、quiz_content、answer_user_prompt_text、quiz_answer、rag_id。
+    非同步評分：Body 以 rag_id、rag_quiz_id 為核心；quiz_content 可省略（自 Rag_Quiz 讀）。
     unit_type 2／3／4 時以 transcription 純 LLM 批改；其餘依 rag_id 載入 RAG ZIP。
     回傳 202 + job_id；輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
     """
@@ -401,7 +406,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
 
     rq_sel = (
         supabase.table("Rag_Quiz")
-        .select("rag_unit_id, quiz_user_prompt_text")
+        .select("rag_unit_id, quiz_user_prompt_text, quiz_content")
         .eq("rag_quiz_id", rag_quiz_id_int)
         .eq("deleted", False)
         .limit(1)
@@ -411,6 +416,16 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
         return JSONResponse(status_code=404, content={"error": f"找不到 rag_quiz_id={rag_quiz_id_int} 的 Rag_Quiz"})
     rq_row = rq_sel.data[0]
     quiz_user_prompt_db = (rq_row.get("quiz_user_prompt_text") or "").strip()
+    qc_from_body = (body.quiz_content or "").strip()
+    qc_from_db = (rq_row.get("quiz_content") or "").strip()
+    quiz_content_resolved = qc_from_body or qc_from_db
+    if not quiz_content_resolved:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "缺少測驗題幹：請於請求傳入 quiz_content，或先於該 Rag_Quiz 設定 quiz_content。",
+            },
+        )
     grade_unit_type = 0
     transcription_text = ""
     try:
@@ -475,20 +490,19 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     job_id = str(uuid.uuid4())
     _grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
     aup = (body.answer_user_prompt_text or "").strip()
-    qc_body = (body.quiz_content or "").strip()
     insert_fn = lambda rd, qa: update_rag_quiz_with_grade(
         rd,
         qa,
         rag_quiz_id=rag_quiz_id_int,
         answer_user_prompt_text=aup,
-        quiz_content=qc_body,
+        quiz_content=qc_from_body,
     )
     background_tasks.add_task(
         run_grade_job_background,
         job_id,
         work_dir,
         api_key,
-        body.quiz_content or "",
+        quiz_content_resolved,
         body.quiz_answer or "",
         _grade_job_results,
         insert_fn,
@@ -579,7 +593,7 @@ def mark_rag_quiz_for_exam(body: RagQuizForExamRequest, caller_person_id: Person
 async def get_grade_result(job_id: str, _person_id: PersonId):
     """
     輪詢評分結果。status: pending | ready | error；
-    ready 時 result 為 quiz_grade、quiz_comments、rag_quiz_id（另含 rag_answer_id），並自資料庫讀取 rag_quiz 整列。
+    ready 時 result 為 quiz_comments、rag_quiz_id（另含 rag_answer_id），並自資料庫讀取 rag_quiz 整列。
     """
     if job_id not in _grade_job_results:
         return JSONResponse(
