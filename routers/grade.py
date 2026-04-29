@@ -59,7 +59,7 @@ from utils.zip_storage import get_zip_path
 from utils.json_utils import to_json_safe
 # Supabase 客戶端
 from utils.supabase_client import get_supabase
-from utils.english_system_transcript import transcribe_audio_bytes_deepgram, youtube_transcript_plain_text
+from utils.media_transcript import transcribe_audio_bytes_deepgram, youtube_transcript_plain_text
 from utils.rag_transcript_from_upload_zip import (
     pick_audio_from_upload_zip,
     read_single_transcript_text_from_upload_zip,

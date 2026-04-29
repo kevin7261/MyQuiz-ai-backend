@@ -20,7 +20,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from middleware.api_log_middleware import APILogMiddleware
 
 # 引入各子模組的路由器，並以別名區分（zip_router 等）
-from routers.english_system import router as english_system_router
 from routers.zip import router as zip_router
 # 評分相關路由（含 tab/unit/quiz/create 無 LLM、tab/unit/quiz/llm-generate、tab/unit/quiz/llm-grade、tab/unit/quiz/grade-result）
 from routers.grade import router as grade_router
@@ -82,9 +81,7 @@ app.add_middleware(
 app.add_middleware(APILogMiddleware)
 
 # 依序掛載各路由至 app；順序影響 Swagger API 文件顯示（標籤先出現者排在較上）
-# english_system 須在 zip_router（rag）之前掛載，使 english system 群組顯示在 rag 之上
 # zip_router 於 grade 之前掛載，使 tab/unit/quiz/create（無 LLM）在 OpenAPI 上先於 llm-generate；仍含 tab/unit/quiz/llm-grade / grade-result
-app.include_router(english_system_router)
 app.include_router(zip_router)
 # 評分相關 API
 app.include_router(grade_router)

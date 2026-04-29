@@ -1,4 +1,4 @@
-"""English System：音檔 Deepgram 逐字稿、YouTube 字幕擷取（供 routers/english_system 使用）。"""
+"""音訊 Deepgram 逐字稿、YouTube 字幕擷取（供 RAG transcript／評分模組使用）。"""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def transcribe_audio_bytes_deepgram(
 ) -> tuple[str, float]:
     """
     以 Deepgram 預錄 API 轉錄音訊 bytes。
-    回傳 (全文逐字稿, 耗時秒數）。
+    回傳 (全文逐字稿, 耗時秒數)。
     API Key 優先序：參數 api_key → 環境變數 DEEPGRAM_API_KEY → System_Setting key=deepgram_api_key。
     模型預設 nova-2，可覆寫 DEEPGRAM_MODEL。
     """

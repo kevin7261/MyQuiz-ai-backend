@@ -12,7 +12,7 @@ from utils.supabase_client import get_supabase
 
 # System_Setting 表：key = 'llm_api_key' 存系統 LLM API Key
 SYSTEM_SETTING_LLM_KEY = "llm_api_key"
-# System_Setting 表：key = 'deepgram_api_key' 存 Deepgram API Key（English System 音檔轉文字）
+# System_Setting 表：key = 'deepgram_api_key' 存 Deepgram API Key（RAG 音檔轉文字等）
 SYSTEM_SETTING_DEEPGRAM_KEY = "deepgram_api_key"
 
 
