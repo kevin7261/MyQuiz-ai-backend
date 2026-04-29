@@ -768,6 +768,7 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
     """
     Body：**`exam_quiz_id`** 必填；選填 **`rag_unit_id`（>0）**、**`rag_quiz_id`**、**`unit_name`**、**`quiz_name`**、**`quiz_user_prompt_text`**。
     依系統測驗 RAG ZIP 由 LLM 出題後**更新**該筆 Exam_Quiz：**quiz_name**、**quiz_content／quiz_hint／quiz_answer_reference**、選填之 **unit_name／rag_unit_id／rag_quiz_id**（並清空作答欄位）。
+    **Rag_Unit.unit_type 為 2／3／4** 時不載入 RAG ZIP，改以 transcription 為 system、quiz 補充為 user 純 LLM 出題（對齊 POST /rag/tab/unit/quiz/llm-generate）。
     回傳 JSON 含 quiz_content、quiz_hint、quiz_reference_answer、exam_quiz_id、quiz_name、quiz_user_prompt_text、unit_name、rag_unit_id、rag_quiz_id 等。
     """
     supabase = get_supabase()
@@ -858,7 +859,7 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
     if rag_tab_id_for_units:
         unit_q = (
             supabase.table("Rag_Unit")
-            .select("rag_unit_id, unit_name, transcription")
+            .select("rag_unit_id, unit_name, transcription, unit_type")
             .eq("rag_tab_id", rag_tab_id_for_units)
             .eq("deleted", False)
             .order("created_at", desc=False)
@@ -883,18 +884,32 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             detail="供測驗 RAG 的 transcription 未設定：請在該 Rag 或對應 Rag_Unit 設定 transcription；單元 2／3／4 可經 POST /rag/tab/build-rag-zip 寫入 Rag_Unit.transcription",
         )
 
-    path = get_zip_path(rag_zip_tab_id)
-    if not path or not path.exists():
-        raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 rag_id={rag_id}（tab_id={rag_zip_tab_id}）")
-
     try:
-        from utils.quiz_generation import generate_quiz
-        result = generate_quiz(
-            path,
-            api_key=api_key,
-            transcription=transcription_text,
-            user_instruction=_exam_llm_generate_api_instruction(body),
-        )
+        unit_type_val = int(selected.get("unit_type") or 0) if selected else 0
+    except (TypeError, ValueError):
+        unit_type_val = 0
+
+    path: Path | None = None
+    try:
+        from utils.quiz_generation import generate_quiz, generate_quiz_transcription_only
+
+        if unit_type_val in (2, 3, 4):
+            result = generate_quiz_transcription_only(
+                api_key=api_key,
+                transcription=transcription_text,
+                user_instruction=_exam_llm_generate_api_instruction(body),
+            )
+        else:
+            path = get_zip_path(rag_zip_tab_id)
+            if not path or not path.exists():
+                raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 rag_id={rag_id}（tab_id={rag_zip_tab_id}）")
+
+            result = generate_quiz(
+                path,
+                api_key=api_key,
+                transcription=transcription_text,
+                user_instruction=_exam_llm_generate_api_instruction(body),
+            )
         result["transcription"] = transcription_text
         result["rag_output"] = {
             "rag_tab_id": stem,
@@ -955,10 +970,11 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 # --- POST /exam/tab/quiz/llm-grade（舊路徑 /tab/quiz/grade 仍註冊、僅隱藏於 OpenAPI）---
@@ -973,6 +989,7 @@ async def exam_grade_submission(
 ):
     """
     以 exam_quiz_id 定位題目，進行 RAG+LLM 非同步評分（對齊 `POST /rag/tab/unit/quiz/llm-grade` 之 202 + job_id 流程）。
+    **Rag_Unit.unit_type 為 2／3／4** 時不載入 RAG ZIP，改以 transcription 為 system、Rag_Quiz.quiz_user_prompt_text（若有 rag_quiz_id）與 body answer_user_prompt_text 等併入 user。
     Body 含 **`exam_quiz_id`**、**`quiz_answer`**、選填 **`quiz_content`**、**`answer_user_prompt_text`**（批改指引；併入評分 prompt）。
     評分完成後直接更新 Exam_Quiz.answer_content / answer_critique。
     回傳 202 與 job_id；輪詢 GET /exam/tab/quiz/grade-result/{job_id}。
@@ -982,7 +999,7 @@ async def exam_grade_submission(
     # 查詢 Exam_Quiz
     qsel = (
         supabase.table("Exam_Quiz")
-        .select("exam_quiz_id, exam_tab_id, unit_name, rag_unit_id, person_id, quiz_content")
+        .select("exam_quiz_id, exam_tab_id, unit_name, rag_unit_id, rag_quiz_id, person_id, quiz_content")
         .eq("exam_quiz_id", body.exam_quiz_id)
         .limit(1)
         .execute()
@@ -1022,10 +1039,11 @@ async def exam_grade_submission(
         rag_uid_int = int(rag_unit_id_val) if rag_unit_id_val is not None else 0
     except (TypeError, ValueError):
         rag_uid_int = 0
+    transcription_for_unit = ""
     if rag_uid_int > 0:
         unit_sel = (
             supabase.table("Rag_Unit")
-            .select("unit_name, unit_type")
+            .select("unit_name, unit_type, transcription")
             .eq("rag_unit_id", rag_uid_int)
             .eq("deleted", False)
             .limit(1)
@@ -1039,34 +1057,71 @@ async def exam_grade_submission(
                 exam_grade_unit_type = int(u0.get("unit_type") or 0)
             except (TypeError, ValueError):
                 exam_grade_unit_type = 0
+            transcription_for_unit = (u0.get("transcription") or "").strip()
 
     try:
         rag_id = int(rag_id_from_setting)
-        stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, rag_id, unit_name=grade_unit_filter)
+        row_exam, _stem, rag_zip_tab_id = get_rag_stem_from_rag_id(
+            supabase, rag_id, include_row=True, unit_name=grade_unit_filter
+        )
     except HTTPException as e:
         return JSONResponse(status_code=e.status_code, content={"error": e.detail})
 
-    rag_zip_path = get_zip_path(rag_zip_tab_id)
-    if not rag_zip_path or not rag_zip_path.exists():
-        return JSONResponse(status_code=404, content={"error": f"找不到 RAG ZIP（tab_id={rag_zip_tab_id}）"})
+    transcription_text = (transcription_for_unit or instruction_from_rag_row(row_exam)).strip()
 
-    work_dir = Path(tempfile.mkdtemp(prefix="myquizai_exam_grade_"))
-    zip_source_path = work_dir / "ref.zip"
-    extract_folder = work_dir / "extract"
-    extract_folder.mkdir(parents=True, exist_ok=True)
+    quiz_user_prompt_exam = ""
+    exam_rag_quiz_id: int | None = None
     try:
-        shutil.copy(rag_zip_path, zip_source_path)
-        if not zipfile.is_zipfile(zip_source_path):
-            _cleanup_grade_workspace(work_dir)
-            return JSONResponse(status_code=400, content={"error": "無效的 ZIP 檔"})
-    except Exception as e:
-        _cleanup_grade_workspace(work_dir)
-        return JSONResponse(status_code=500, content={"error": str(e)})
-    finally:
+        erq = qrow.get("rag_quiz_id")
+        if erq is not None:
+            erqi = int(erq)
+            if erqi > 0:
+                exam_rag_quiz_id = erqi
+                rqgx = (
+                    supabase.table("Rag_Quiz")
+                    .select("quiz_user_prompt_text")
+                    .eq("rag_quiz_id", erqi)
+                    .eq("deleted", False)
+                    .limit(1)
+                    .execute()
+                )
+                if rqgx.data:
+                    quiz_user_prompt_exam = (rqgx.data[0].get("quiz_user_prompt_text") or "").strip()
+    except (TypeError, ValueError):
+        exam_rag_quiz_id = None
+
+    transcription_grade: str | None = None
+
+    if exam_grade_unit_type in (2, 3, 4):
+        if not transcription_text:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "批改用 transcription 未設定（單元 2／3／4）；請於 Rag_Unit 或 Rag 設定 transcription"},
+            )
+        transcription_grade = transcription_text
+        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_exam_grade_tx_"))
+    else:
+        rag_zip_path = get_zip_path(rag_zip_tab_id)
+        if not rag_zip_path or not rag_zip_path.exists():
+            return JSONResponse(status_code=404, content={"error": f"找不到 RAG ZIP（tab_id={rag_zip_tab_id}）"})
+
+        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_exam_grade_"))
+        zip_source_path = work_dir / "ref.zip"
+        extract_folder = work_dir / "extract"
+        extract_folder.mkdir(parents=True, exist_ok=True)
         try:
-            rag_zip_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+            shutil.copy(rag_zip_path, zip_source_path)
+            if not zipfile.is_zipfile(zip_source_path):
+                _cleanup_grade_workspace(work_dir)
+                return JSONResponse(status_code=400, content={"error": "無效的 ZIP 檔"})
+        except Exception as e:
+            _cleanup_grade_workspace(work_dir)
+            return JSONResponse(status_code=500, content={"error": str(e)})
+        finally:
+            try:
+                rag_zip_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     job_id = str(uuid.uuid4())
     _exam_grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
@@ -1083,7 +1138,10 @@ async def exam_grade_submission(
         insert_fn,
         (body.answer_user_prompt_text or "").strip(),
         exam_quiz_id=exam_quiz_id_int,
+        rag_quiz_id=exam_rag_quiz_id,
         unit_type=exam_grade_unit_type,
+        transcription_grade=transcription_grade,
+        quiz_user_prompt_text=quiz_user_prompt_exam,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id})
 

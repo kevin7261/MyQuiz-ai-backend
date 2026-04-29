@@ -219,6 +219,89 @@ def _cleanup_grade_workspace(work_dir: Path) -> None:
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+def _run_grade_job_transcription_only(
+    api_key: str,
+    transcription: str,
+    quiz_content: str,
+    quiz_answer: str,
+    *,
+    quiz_user_prompt_text: str = "",
+    answer_user_prompt_text: str = "",
+    exam_quiz_id: int | None = None,
+    rag_quiz_id: int | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """
+    無 RAG ZIP（unit_type 2／3／4）：**system** = transcription；**user** 含 quiz_user_prompt_text、answer_user_prompt_text 與題幹／作答及評分規範。
+    回傳 (LLM 訊息原文, 解析後 JSON)。
+    """
+    ts = (transcription or "").strip()
+    if not ts:
+        raise ValueError("批改用 transcription 未設定")
+
+    course_name = get_course_name_for_prompt()
+    qc_disp = (quiz_content or "").strip() or "（未提供）"
+    qa_disp = (quiz_answer or "").strip() or "（未提供）"
+    qup_disp = (quiz_user_prompt_text or "").strip() or "（未提供）"
+    aup_disp = (answer_user_prompt_text or "").strip() or "（未提供）"
+    id_lines: list[str] = []
+    if exam_quiz_id is not None and exam_quiz_id > 0:
+        id_lines.append(f"        【exam_quiz_id】{exam_quiz_id}")
+    if rag_quiz_id is not None and rag_quiz_id > 0:
+        id_lines.append(f"        【rag_quiz_id】{rag_quiz_id}")
+    id_block = ("\n" + "\n".join(id_lines) + "\n") if id_lines else ""
+
+    user_msg = f"""
+        你是一位「{course_name}」課程的教授，請批改這道題目。
+        {id_block}        【評分規範】
+        請依下列「出題補充」（quiz_user_prompt_text）、「作答補充／批改指引」（answer_user_prompt_text）、測驗題目（quiz_content）與學生作答（quiz_answer）評分（不依賴課程向量庫檢索）。
+        【quiz_user_prompt_text 出題補充】
+        {qup_disp}
+        【answer_user_prompt_text 作答補充／批改指引】
+        {aup_disp}
+        【quiz_content 測驗題目】
+        {qc_disp}
+        【quiz_answer 學生作答】
+        {qa_disp}
+        【重要限制】
+        請使用繁體中文 (Traditional Chinese) 撰寫評語 (quiz_comments)。
+        【評分標準】
+        0-5分，一定是整數 (quiz_grade)。
+        0: 完全錯誤或未作答。
+        1: 只有少量內容正確。
+        2: 大幅缺漏，只有部分內容正確。
+        3: 部分正確，但有大幅缺漏。
+        4: 大致正確，略有不足。
+        5: 完全正確且完整。
+        【輸出 JSON】
+        請以 JSON 格式回傳：
+        {{ "quiz_grade": int,
+        "quiz_comments": str[] }}
+    """
+    combined = (ts + user_msg).lower()
+    if "json" not in combined:
+        user_msg += "\n\n請以 JSON 物件輸出 quiz_grade（整數）與 quiz_comments（字串陣列）。"
+
+    client = OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": ts},
+            {"role": "user", "content": user_msg},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.3,
+    )
+    llm_raw = response.choices[0].message.content or ""
+    try:
+        llm_json = json.loads(llm_raw)
+    except json.JSONDecodeError:
+        llm_json = {}
+    if not isinstance(llm_json, dict):
+        llm_json = {}
+    _normalize_grading_llm_json(llm_json)
+    return llm_raw, llm_json
+
+
 def _run_grade_job(
     work_dir: Path,
     api_key: str,
@@ -373,22 +456,37 @@ def _run_grade_job_background(
     exam_quiz_id: int | None = None,
     rag_quiz_id: int | None = None,
     unit_type: int = 0,
+    transcription_grade: str | None = None,
+    quiz_user_prompt_text: str = "",
 ) -> None:
     """
     通用背景評分：執行評分、可選寫入 DB、結果存 results_store。
     insert_answer_fn(result_dict, quiz_answer) 寫入 DB 並回傳 (id_key, id_val) 或 None。
+    transcription_grade 非空時改走逐字稿純 LLM 批改（不讀 RAG ZIP）。
     """
     try:
-        _, llm_json = _run_grade_job(
-            work_dir,
-            api_key,
-            quiz_content,
-            quiz_answer,
-            answer_user_prompt_text,
-            exam_quiz_id=exam_quiz_id,
-            rag_quiz_id=rag_quiz_id,
-            unit_type=unit_type,
-        )
+        if (transcription_grade or "").strip():
+            _, llm_json = _run_grade_job_transcription_only(
+                api_key,
+                transcription_grade.strip(),
+                quiz_content,
+                quiz_answer,
+                quiz_user_prompt_text=quiz_user_prompt_text,
+                answer_user_prompt_text=answer_user_prompt_text,
+                exam_quiz_id=exam_quiz_id,
+                rag_quiz_id=rag_quiz_id,
+            )
+        else:
+            _, llm_json = _run_grade_job(
+                work_dir,
+                api_key,
+                quiz_content,
+                quiz_answer,
+                answer_user_prompt_text,
+                exam_quiz_id=exam_quiz_id,
+                rag_quiz_id=rag_quiz_id,
+                unit_type=unit_type,
+            )
         result_dict: dict[str, Any] = {
             "quiz_grade": _quiz_grade_from_llm_json(llm_json),
             "quiz_comments": _quiz_comments_from_llm_json(llm_json),
@@ -582,7 +680,8 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
     Body：**`rag_quiz_id`、`quiz_name`、`quiz_user_prompt_text`**（後兩者可空字串）；
     `rag_tab_id`／`rag_unit_id` 由後端依 `rag_quiz_id` 自資料庫帶入；`quiz_name` 空則沿用 stem／單元名。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
-    程式依 rag_quiz_id 對應之 rag_unit_id 查到 Rag_Unit，再回推 Rag 查找 RAG ZIP 出題；
+    程式依 rag_quiz_id 對應之 rag_unit_id 查到 Rag_Unit，再回推 Rag；**unit_type 為 2／3／4**（文字／音訊／YouTube 逐字稿單元）時**不載入 RAG ZIP**，以 LLM 純生成：**system** = transcription、**user** = quiz_user_prompt_text。
+    其餘 unit_type 則查找 RAG ZIP（FAISS）檢索後出題。
     出題注入文字優先 **Rag_Unit.transcription**，若為空則使用 **Rag.transcription**（單元 2／3／4 於 **POST /rag/tab/build-rag-zip** 成功時寫入 **Rag_Unit.transcription**）。
     出題成功後**更新** public.Rag_Quiz 錨點列（quiz_name 空字串則沿用 stem／單元名、quiz_*；並清空 answer_* 以免舊作答留存）；回傳 JSON 含 quiz_content, quiz_hint, quiz_reference_answer、quiz_name、rag_quiz_id、transcription 等。
     """
@@ -605,7 +704,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
 
     unit_sel = (
         supabase.table("Rag_Unit")
-        .select("rag_unit_id, rag_tab_id, unit_name, transcription")
+        .select("rag_unit_id, rag_tab_id, unit_name, transcription, unit_type")
         .eq("rag_unit_id", source_rag_unit_id)
         .eq("deleted", False)
         .limit(1)
@@ -671,22 +770,35 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
             detail="出題用 transcription 未設定：請在 Rag_Unit 設定 transcription，或在 Rag 設定 transcription；單元 2／3／4 可經 POST /rag/tab/build-rag-zip 自動寫入 Rag_Unit.transcription",
         )
 
-    # 取得 RAG ZIP 的檔案路徑（下載至暫存檔）
-    path = get_zip_path(rag_zip_tab_id)
-    # 若路徑不存在，拋出 404
-    if not path or not path.exists():
-        raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 rag_id={rag_id}（rag_tab_id={rag_zip_tab_id}）")
-
     try:
-        # 動態引入 generate_quiz 避免循環 import
-        from utils.quiz_generation import generate_quiz
-        # 呼叫 generate_quiz 產生題目
-        result = generate_quiz(
-            path,  # RAG ZIP 路徑
-            api_key=api_key,  # LLM API Key
-            transcription=transcription_text,
-            user_instruction=body.quiz_user_prompt_text or "",
-        )
+        unit_type_val = int(unit_row.get("unit_type") or 0)
+    except (TypeError, ValueError):
+        unit_type_val = 0
+
+    path: Path | None = None
+    try:
+        # 動態引入避免循環 import
+        from utils.quiz_generation import generate_quiz, generate_quiz_transcription_only
+
+        if unit_type_val in (2, 3, 4):
+            result = generate_quiz_transcription_only(
+                api_key=api_key,
+                transcription=transcription_text,
+                user_instruction=body.quiz_user_prompt_text or "",
+            )
+        else:
+            path = get_zip_path(rag_zip_tab_id)
+            if not path or not path.exists():
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"找不到 RAG ZIP，請確認 rag_id={rag_id}（rag_tab_id={rag_zip_tab_id}）",
+                )
+            result = generate_quiz(
+                path,
+                api_key=api_key,
+                transcription=transcription_text,
+                user_instruction=body.quiz_user_prompt_text or "",
+            )
         result["transcription"] = transcription_text
         # 加入 rag_output 供前端參考
         result["rag_output"] = {
@@ -769,11 +881,11 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
         # 其他異常轉為 500
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        # 清理從 Supabase Storage 下載的暫存檔
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 @router.post("/tab/unit/quiz/llm-grade", summary="Rag Grade Quiz")
@@ -782,7 +894,8 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     Body 欄位順序對齊 public.Rag_Quiz（可更新／路由欄）：`rag_quiz_id`、`rag_tab_id`、`quiz_content`、
     `answer_user_prompt_text`、`quiz_answer`（→answer_content）；末欄 `rag_id` 僅供載入 RAG ZIP（非 Rag_Quiz 欄位）。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
-    程式依 rag_id 查 Rag 並依 rag_metadata.outputs 查找 RAG ZIP 評分。**rag_quiz_id 必填**。驗證後回傳 202 與 job_id；背景**更新 public.Rag_Quiz**（answer_*；若 body 帶 quiz_content 則一併寫入題幹）。輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}，ready 時除 result 外另附 **rag_quiz**（自 DB 讀回之整列）。
+    **Rag_Unit.unit_type 為 2／3／4** 時不載入 RAG ZIP：以 **system** = transcription、**user** 含 **Rag_Quiz.quiz_user_prompt_text** 與 body **answer_user_prompt_text**（並含題幹／作答）進行純 LLM 批改。
+    其餘單元型別則依 rag_id 載入 RAG ZIP 評分。**rag_quiz_id 必填**。驗證後回傳 202 與 job_id；背景**更新 public.Rag_Quiz**（answer_*；若 body 帶 quiz_content 則一併寫入題幹）。輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}，ready 時除 result 外另附 **rag_quiz**（自 DB 讀回之整列）。
     """
     # 取得 rag_id 字串並去除空白
     rag_id_str = (body.rag_id or "").strip()
@@ -828,66 +941,84 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
                 "error": "該使用者（person_id）尚未於個人設定填寫 LLM API Key，請至 User 設定",
             },
         )
-    # 取得 RAG ZIP 路徑（下載至暫存檔）
-    rag_zip_path = get_zip_path(rag_zip_tab_id)
-    if not rag_zip_path or not rag_zip_path.exists():
-        return JSONResponse(status_code=404, content={"error": f"找不到 RAG ZIP，請確認 rag_id={rag_id_str}（tab_id={rag_zip_tab_id}）"})
-
-    # 建立暫存工作目錄
-    work_dir = Path(tempfile.mkdtemp(prefix="myquizai_grade_"))
-    # 複製後 ZIP 的路徑
-    zip_source_path = work_dir / "ref.zip"
-    # 解壓目錄路徑
-    extract_folder = work_dir / "extract"
-    # 建立 extract 目錄
-    extract_folder.mkdir(parents=True, exist_ok=True)
-
-    try:
-        # 複製 RAG ZIP 到 work_dir，複製完成後立即刪除從 Supabase Storage 下載的暫存檔
-        shutil.copy(rag_zip_path, zip_source_path)
-        if not zipfile.is_zipfile(zip_source_path):
-            _cleanup_grade_workspace(work_dir)
-            return JSONResponse(status_code=400, content={"error": "無效的 ZIP 檔"})
-    except Exception as e:
-        _cleanup_grade_workspace(work_dir)
-        return JSONResponse(status_code=500, content={"error": str(e)})
-    finally:
-        # 清理從 Supabase Storage 下載的暫存檔
-        try:
-            rag_zip_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    # 由 Rag_Quiz → Rag_Unit 取得 unit_type（與 build-rag-zip 之 unit_types 一致）
+    # Rag_Quiz → Rag_Unit：unit_type、transcription、出題補充（送 LLM user）
+    rq_sel = (
+        supabase.table("Rag_Quiz")
+        .select("rag_unit_id, quiz_user_prompt_text")
+        .eq("rag_quiz_id", rag_quiz_id_int)
+        .eq("deleted", False)
+        .limit(1)
+        .execute()
+    )
+    if not rq_sel.data:
+        return JSONResponse(status_code=404, content={"error": f"找不到 rag_quiz_id={rag_quiz_id_int} 的 Rag_Quiz"})
+    rq_row = rq_sel.data[0]
+    quiz_user_prompt_db = (rq_row.get("quiz_user_prompt_text") or "").strip()
     grade_unit_type = 0
+    transcription_text = ""
     try:
-        qru = (
-            supabase.table("Rag_Quiz")
-            .select("rag_unit_id")
-            .eq("rag_quiz_id", rag_quiz_id_int)
+        ruid_raw = rq_row.get("rag_unit_id")
+        ruid_i = int(ruid_raw) if ruid_raw is not None else 0
+    except (TypeError, ValueError):
+        ruid_i = 0
+    if ruid_i > 0:
+        uu = (
+            supabase.table("Rag_Unit")
+            .select("unit_type, transcription")
+            .eq("rag_unit_id", ruid_i)
             .eq("deleted", False)
             .limit(1)
             .execute()
         )
-        ruid = (qru.data or [{}])[0].get("rag_unit_id")
-        if ruid is not None:
-            ruid_i = int(ruid)
-            if ruid_i > 0:
-                uu = (
-                    supabase.table("Rag_Unit")
-                    .select("unit_type")
-                    .eq("rag_unit_id", ruid_i)
-                    .eq("deleted", False)
-                    .limit(1)
-                    .execute()
-                )
-                if uu.data:
-                    try:
-                        grade_unit_type = int(uu.data[0].get("unit_type") or 0)
-                    except (TypeError, ValueError):
-                        grade_unit_type = 0
-    except Exception:
-        grade_unit_type = 0
+        if uu.data:
+            u0 = uu.data[0]
+            try:
+                grade_unit_type = int(u0.get("unit_type") or 0)
+            except (TypeError, ValueError):
+                grade_unit_type = 0
+            transcription_text = (u0.get("transcription") or "").strip()
+    if not transcription_text:
+        transcription_text = instruction_from_rag_row(row)
+
+    transcription_grade: str | None = None
+
+    if grade_unit_type in (2, 3, 4):
+        if not transcription_text.strip():
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "批改用 transcription 未設定：請於 Rag_Unit 或 Rag 設定 transcription（單元 2／3／4）",
+                },
+            )
+        transcription_grade = transcription_text
+        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_grade_tx_"))
+    else:
+        # 取得 RAG ZIP 路徑（下載至暫存檔）
+        rag_zip_path = get_zip_path(rag_zip_tab_id)
+        if not rag_zip_path or not rag_zip_path.exists():
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"找不到 RAG ZIP，請確認 rag_id={rag_id_str}（tab_id={rag_zip_tab_id}）"},
+            )
+
+        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_grade_"))
+        zip_source_path = work_dir / "ref.zip"
+        extract_folder = work_dir / "extract"
+        extract_folder.mkdir(parents=True, exist_ok=True)
+
+        try:
+            shutil.copy(rag_zip_path, zip_source_path)
+            if not zipfile.is_zipfile(zip_source_path):
+                _cleanup_grade_workspace(work_dir)
+                return JSONResponse(status_code=400, content={"error": "無效的 ZIP 檔"})
+        except Exception as e:
+            _cleanup_grade_workspace(work_dir)
+            return JSONResponse(status_code=500, content={"error": str(e)})
+        finally:
+            try:
+                rag_zip_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     # 產生唯一 job_id
     job_id = str(uuid.uuid4())
@@ -904,17 +1035,19 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     )
     # 加入背景任務
     background_tasks.add_task(
-        _run_grade_job_background,  # 背景任務函數
-        job_id,  # job 識別
-        work_dir,  # 暫存工作目錄
-        api_key,  # LLM API Key
-        body.quiz_content or "",  # 題目內容
+        _run_grade_job_background,
+        job_id,
+        work_dir,
+        api_key,
+        body.quiz_content or "",
         body.quiz_answer or "",
-        _grade_job_results,  # 結果存放的 dict
-        insert_fn,  # 更新 Rag_Quiz 評分欄位
+        _grade_job_results,
+        insert_fn,
         aup,
         rag_quiz_id=rag_quiz_id_int,
         unit_type=grade_unit_type,
+        transcription_grade=transcription_grade,
+        quiz_user_prompt_text=quiz_user_prompt_db,
     )
     # 回傳 202 與 job_id，供前端輪詢
     return JSONResponse(status_code=202, content={"job_id": job_id})

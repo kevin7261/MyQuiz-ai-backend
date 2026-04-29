@@ -103,18 +103,35 @@ def get_rag_stem_from_rag_id(
     unit_name 若指定（非空白），則選取該名稱的單元；未指定則使用第一筆。
     """
     # 勿在主要 SELECT 含 rag_metadata：部分環境尚未 migration 該欄，會導致整筆查詢 42703。
+    # 部分環境 Rag 表尚無 transcription 欄位（42703）時改選不含該欄。
     select_cols = (
         "rag_tab_id, transcription, person_id, rag_id"
         if include_row
         else "rag_tab_id"
     )
-    rag_rows = (
-        supabase.table("Rag")
-        .select(select_cols)
-        .eq("rag_id", rag_id)
-        .eq("deleted", False)
-        .execute()
+    select_cols_no_transcription = (
+        "rag_tab_id, person_id, rag_id" if include_row else "rag_tab_id"
     )
+    try:
+        rag_rows = (
+            supabase.table("Rag")
+            .select(select_cols)
+            .eq("rag_id", rag_id)
+            .eq("deleted", False)
+            .execute()
+        )
+    except APIError as e:
+        msg = (e.message or "").lower()
+        if e.code == "42703" and "transcription" in msg and include_row:
+            rag_rows = (
+                supabase.table("Rag")
+                .select(select_cols_no_transcription)
+                .eq("rag_id", rag_id)
+                .eq("deleted", False)
+                .execute()
+            )
+        else:
+            raise
     if not rag_rows.data or len(rag_rows.data) == 0:
         raise HTTPException(status_code=404, detail=f"找不到 rag_id={rag_id} 的 Rag 資料")
     row = rag_rows.data[0]
