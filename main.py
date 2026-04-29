@@ -31,7 +31,7 @@ from routers.person_analysis import router as person_analysis_router
 from routers.course_analysis import router as course_analysis_router
 # 使用者相關路由（登入、個人資料、使用者列表）
 from routers.users import router as users_router
-# 系統設定路由（LLM API Key 的 GET/PUT）
+# 系統設定路由（course_name 等；LLM／Deepgram key 僅用環境變數）
 from routers.system_settings import router as system_settings_router
 # Log 表查詢路由
 from routers.log import router as log_router

@@ -636,7 +636,7 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
     if not api_key:
         raise HTTPException(
             status_code=400,
-            detail="請先於系統設定（/system-settings/llm-api-key）填寫 LLM API Key",
+            detail="請設定 LLM API Key：環境變數 LLM_API_KEY 或 OPENAI_API_KEY（本機可寫入 .env）",
         )
 
     _, rag_id_from_setting = fetch_exam_rag_id_from_settings(supabase, request)
@@ -733,7 +733,7 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             result = generate_quiz(
                 path,
                 api_key=api_key,
-                transcription=transcription_for_rag_zip,
+                system_supplement=transcription_for_rag_zip,
                 user_instruction=_exam_llm_generate_api_instruction(body, quiz_user_prompt_resolved),
             )
         result["transcription"] = transcription_text if unit_type_val in (2, 3, 4) else transcription_for_rag_zip
@@ -835,7 +835,9 @@ async def exam_grade_submission(
     if not api_key:
         return JSONResponse(
             status_code=400,
-            content={"error": "請先於系統設定（/system-settings/llm-api-key）填寫 LLM API Key"},
+            content={
+                "error": "請設定 LLM API Key：環境變數 LLM_API_KEY 或 OPENAI_API_KEY（本機可寫入 .env）",
+            },
         )
 
     _, rag_id_from_setting = fetch_exam_rag_id_from_settings(supabase, request)

@@ -28,7 +28,6 @@ from services.grading import (
     run_grade_job_background,
     update_rag_quiz_with_grade,
 )
-from utils.course_name_utils import get_course_name_for_prompt
 from utils.datetime_utils import now_taipei_iso
 from utils.json_utils import to_json_safe
 from utils.llm_api_key_utils import get_llm_api_key_for_person
@@ -227,7 +226,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
     if not api_key:
         raise HTTPException(
             status_code=400,
-            detail="該使用者（person_id）尚未於個人設定填寫 LLM API Key，請至 User 設定",
+            detail="該使用者尚未填寫 LLM API Key：請至個人設定填寫，或本機在 .env 設定 LLM_API_KEY／OPENAI_API_KEY",
         )
     transcription_text = (unit_row.get("transcription") or "").strip()
     if not transcription_text:
@@ -266,7 +265,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
             result = generate_quiz(
                 path,
                 api_key=api_key,
-                transcription=transcription_for_rag_zip,
+                system_supplement=transcription_for_rag_zip,
                 user_instruction=qup_for_llm,
             )
         result["transcription"] = transcription_text if unit_type_val in (2, 3, 4) else transcription_for_rag_zip
@@ -398,7 +397,9 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     if not api_key:
         return JSONResponse(
             status_code=400,
-            content={"error": "該使用者（person_id）尚未於個人設定填寫 LLM API Key，請至 User 設定"},
+            content={
+                "error": "該使用者尚未填寫 LLM API Key：請至個人設定填寫，或本機在 .env 設定 LLM_API_KEY／OPENAI_API_KEY",
+            },
         )
 
     rq_sel = (

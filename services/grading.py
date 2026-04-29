@@ -18,7 +18,6 @@ from openai import OpenAI
 
 from postgrest.exceptions import APIError
 
-from utils.course_name_utils import get_course_name_for_prompt
 from utils.datetime_utils import now_taipei_iso
 from utils.rag_faiss_zip import process_zip_to_docs
 from utils.supabase_client import get_supabase
@@ -169,7 +168,6 @@ def run_grade_job_transcription_only(
     if not ts:
         raise ValueError("批改用 transcription 未設定")
 
-    course_name = get_course_name_for_prompt()
     qc_disp = (quiz_content or "").strip() or "（未提供）"
     qa_disp = (quiz_answer or "").strip() or "（未提供）"
     qup_disp = (quiz_user_prompt_text or "").strip() or "（未提供）"
@@ -177,7 +175,7 @@ def run_grade_job_transcription_only(
     blk = _id_block(exam_quiz_id, rag_quiz_id)
 
     user_msg = f"""
-        你是一位「{course_name}」課程的教授，請批改這道題目。
+        你是一位教授，請批改這道題目。
         {blk}        【評分規範】
         請依下列「出題補充」（quiz_user_prompt_text）、「作答補充／批改指引」（answer_user_prompt_text）、測驗題目（quiz_content）與學生作答（quiz_answer）評分（不依賴課程向量庫檢索）。
         【quiz_user_prompt_text 出題補充】
@@ -268,14 +266,13 @@ def run_grade_job(
     docs = retriever.invoke(quiz_content)
     context_text = "\n\n".join([d.page_content for d in docs])
 
-    course_name = get_course_name_for_prompt()
     qc_disp = (quiz_content or "").strip() or "（未提供）"
     qa_disp = (quiz_answer or "").strip() or "（未提供）"
     aup_disp = (answer_user_prompt_text or "").strip() or "（未提供）"
     blk = _id_block(exam_quiz_id, rag_quiz_id)
 
     prompt = f"""
-        你是一位「{course_name}」課程的教授，請批改這道題目。
+        你是一位教授，請批改這道題目。
         {blk}        【評分規範】
         請依下列「API 傳入」之測驗題目、學生作答、作答補充／批改指引，以及「課程內容（RAG 檢索）」，評估學生答案是否正確。
         【quiz_content 測驗題目】

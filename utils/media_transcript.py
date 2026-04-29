@@ -11,8 +11,6 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
-from utils.llm_api_key_utils import get_deepgram_api_key
-
 logger = logging.getLogger(__name__)
 
 _DEEPGRAM_LISTEN_URL = "https://api.deepgram.com/v1/listen"
@@ -46,16 +44,13 @@ def transcribe_audio_bytes_deepgram(
     """
     以 Deepgram 預錄 API 轉錄音訊 bytes。
     回傳 (全文逐字稿, 耗時秒數)。
-    API Key 優先序：參數 api_key → 環境變數 DEEPGRAM_API_KEY → System_Setting key=deepgram_api_key。
+    API Key 優先序：參數 api_key → 環境變數 DEEPGRAM_API_KEY。
     模型預設 nova-2，可覆寫 DEEPGRAM_MODEL。
     """
     k = (api_key or "").strip() or (os.environ.get("DEEPGRAM_API_KEY") or "").strip()
     if not k:
-        k = (get_deepgram_api_key() or "").strip()
-    if not k:
         raise RuntimeError(
-            "未設定 Deepgram API Key：請在 System_Setting 新增 key=deepgram_api_key 的 value，"
-            "或設定環境變數 DEEPGRAM_API_KEY。"
+            "未設定 Deepgram API Key：請設定環境變數 DEEPGRAM_API_KEY（例如 .env 或部署平台 Environment）。"
         )
     m = (model or os.environ.get("DEEPGRAM_MODEL") or "nova-2").strip()
     if not re.match(r"^[\w.-]+$", m):

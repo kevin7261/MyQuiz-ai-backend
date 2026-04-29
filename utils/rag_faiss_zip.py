@@ -170,7 +170,7 @@ def _empty_docs_user_message(unit_type: int) -> str:
     if ut == UNIT_TYPE_MP3:
         return (
             "ZIP 內無 .mp3，或 Deepgram 逐字稿為空。聽力單元須含音檔；並請設定 Deepgram API Key "
-            "（DEEPGRAM_API_KEY 或 System_Setting deepgram_api_key）"
+            "（環境變數 DEEPGRAM_API_KEY）"
         )
     return "ZIP 內無可讀文件（支援：.pdf .doc .docx .ppt .pptx .md）"
 

@@ -17,7 +17,7 @@ FastAPI 後端（MyQuiz.ai）：使用者登入（Supabase）、ZIP RAG、出題
    uvicorn main:app --reload
    ```
 
-LLM API key 由使用者於系統設定（`GET/PUT /system-settings/llm-api-key`，表僅一筆、不需 person_id）填寫，不需在 API 請求中傳入，也不需寫入 `.env`。
+LLM／Deepgram API key 請在 `.env`（本機）或部署平台 **Environment** 設定 `LLM_API_KEY` 或 `OPENAI_API_KEY`、`DEEPGRAM_API_KEY`。Rag 相關出題／評分可另於使用者資料 `User.llm_api_key` 填寫；未填時 fallback 至上述環境變數。
 
 評分請求（`POST /rag/tab/unit/quiz/llm-grade`、`POST /exam/tab/quiz/grade` 等）學生作答欄位為 **`quiz_answer`**（仍相容舊欄位名 `answer`）；寫入資料庫 **`Rag_Answer`／`Exam_Answer` 的 `quiz_answer` 欄**。若 `Exam_Answer` 尚未有該欄，請在 Supabase 將作答欄更名或新增為 `quiz_answer`。
 

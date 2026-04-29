@@ -1,35 +1,32 @@
 """
-從 RAG ZIP（FAISS）載入、檢索後以 LLM 生成測驗內容（generate_quiz），
-或無向量庫時以逐字稿為 system 純 LLM 生成（generate_quiz_transcription_only）。
+測驗題 LLM 生成（兩條路徑）：
+
+1. generate_quiz — 有 FAISS RAG ZIP：向量檢索 → 以檢索片段為「課程內容」出題。
+2. generate_quiz_transcription_only — 無向量庫（unit_type 2/3/4）：整段文字當 system 出題。
+
+純 RAG（unit_type=1）請傳空的 system_supplement；與「逐字稿全文當唯一依據」不同。
 """
 
-# 引入 json 用於解析 LLM 回傳
 import json
-# 引入 os 用於 os.walk
 import os
-# 引入 shutil 用於刪除暫存目錄
 import shutil
-# 引入 sys 用於 version_info 判斷
 import sys
-# 引入 tempfile 建立暫存目錄
 import tempfile
-# 引入 zipfile 讀取 ZIP
 import zipfile
-# 引入 Path 用於路徑操作
 from pathlib import Path
 
-# LangChain OpenAI Embeddings
-from langchain_openai import OpenAIEmbeddings
-# FAISS 向量庫
 from langchain_community.vectorstores import FAISS
-# OpenAI 客戶端
+from langchain_openai import OpenAIEmbeddings
 from openai import OpenAI
 
-from utils.course_name_utils import get_course_name_for_prompt
+QUIZ_LLM_MODEL = "gpt-4o"
+EMBEDDING_MODEL = "text-embedding-3-small"
+RETRIEVAL_K = 5
+DEFAULT_RETRIEVAL_QUERY = "課程重點概念"
 
 
 def _normalize_quiz_llm_json(data: dict) -> dict:
-    """統一 quiz_reference_answer／quiz_hint 鍵名（與 generate_quiz 一致）。"""
+    """統一 LLM 可能回傳的別名鍵為 quiz_reference_answer、quiz_hint。"""
     if "quiz_reference_answer" not in data and "reference_answer" in data:
         data["quiz_reference_answer"] = data.pop("reference_answer")
     if "quiz_reference_answer" not in data and "answer" in data:
@@ -39,140 +36,146 @@ def _normalize_quiz_llm_json(data: dict) -> dict:
     return data
 
 
+def _invoke_quiz_json_llm(client: OpenAI, messages: list) -> dict:
+    response = client.chat.completions.create(
+        model=QUIZ_LLM_MODEL,
+        messages=messages,
+        response_format={"type": "json_object"},
+        temperature=0.7,
+    )
+    raw = response.choices[0].message.content
+    data = json.loads(raw or "{}")
+    if not isinstance(data, dict):
+        data = {}
+    return _normalize_quiz_llm_json(data)
+
+
 def generate_quiz_transcription_only(
     api_key: str,
     transcription: str,
     user_instruction: str = "",
 ) -> dict:
     """
-    無 RAG ZIP／向量庫時，以 LLM 純生成題目（Rag_Unit.unit_type 為 2／3／4 時）。
-    **system** = transcription；**user** = user_instruction（對應 quiz_user_prompt_text，可空字串）。
-    若 system 與 user 皆未含「json」字樣，會於 user 末尾加上一行 JSON 輸出說明（OpenAI API 要求）。
-    回傳 {"quiz_content", "quiz_hint", "quiz_reference_answer"}。
+    無 FAISS 時：system = 整段 transcription；user = user_instruction（可空）。
+
+    用於 Rag_Unit.unit_type 為 2／3／4。若兩段文字皆不含「json」，會在 user 末尾補一行以符合
+    OpenAI json_object 對 messages 須含「json」的要求。
+
+    回傳：quiz_content, quiz_hint, quiz_reference_answer。
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 llm_api_key")
-    ts = (transcription or "").strip()
-    if not ts:
+    system_text = (transcription or "").strip()
+    if not system_text:
         raise ValueError("請傳入 transcription（作為 system 訊息，必填）")
 
-    client = OpenAI(api_key=api_key)
     user_content = user_instruction if user_instruction is not None else ""
-    # OpenAI：使用 response_format json_object 時，messages 須出現「json」字樣（不分大小寫）
-    if "json" not in (ts + user_content).lower():
+    if "json" not in (system_text + user_content).lower():
         sep = "\n\n" if (user_content or "").strip() else ""
         user_content = (
             user_content
             + sep
             + "請以 JSON 物件格式回傳 quiz_content、quiz_hint、quiz_reference_answer（鍵名請沿用英文）。"
         )
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": ts},
+
+    client = OpenAI(api_key=api_key)
+    return _invoke_quiz_json_llm(
+        client,
+        [
+            {"role": "system", "content": system_text},
             {"role": "user", "content": user_content},
         ],
-        response_format={"type": "json_object"},
-        temperature=0.7,
     )
-    content = response.choices[0].message.content
-    data = json.loads(content or "{}")
-    if not isinstance(data, dict):
-        data = {}
-    _normalize_quiz_llm_json(data)
-    return data
+
+
+def _system_prompt_faiss_quiz(system_supplement: str) -> str:
+    """組出 FAISS 路徑的 system 訊息；system_supplement 為空時不帶「出題補充」區塊。"""
+    extra = (system_supplement or "").strip()
+    supplement_block = ""
+    if extra:
+        supplement_block = f"""
+                【出題補充／參考文字】（與下方檢索到的課程內容並陳時，仍以課程內容為出題依據）
+                {extra}
+                """
+    return f"""
+                你是一位教授，請給學生設計測驗題目：
+                【出題規範】
+                根據輸入的「課程內容」設計測驗題目。
+                使用繁體中文 (Traditional Chinese) 出題與撰寫答案提示 (quiz_hint) 及參考答案 (quiz_reference_answer)。
+                {supplement_block}
+                【回傳格式】
+                以 JSON 格式回傳：
+                {{ "quiz_content": "題目內容", 
+                "quiz_hint": "答案提示內容", 
+                "quiz_reference_answer": "參考答案內容" }}
+            """
 
 
 def generate_quiz(
     zip_path: Path,
     api_key: str,
-    transcription: str,
+    system_supplement: str = "",
     user_instruction: str = "",
 ) -> dict:
     """
-    從現成 RAG ZIP（含 FAISS 向量庫）解壓 → 載入向量庫 → 檢索 → 呼叫 GPT-4o 出題。
-    僅支援由 POST /rag/tab/build-rag-zip 產出的 RAG ZIP，不支援一般講義 ZIP。
-    transcription 為選填：Rag_Unit.unit_type=1（純 RAG 單元）時宜留空，題目僅依向量檢索內容；
-    非空時併入 system 作為出題補充（例如 unit_type=0 或未分類時沿用 Rag／單元補充文字）。
-    user_instruction 為選填；非空時置於「課程內容」user 訊息之前。
-    回傳 {"quiz_content", "quiz_hint", "quiz_reference_answer"}；API 層可再加上 transcription 等。
+    有 FAISS RAG ZIP：解壓 → 載入向量庫 → 檢索 → GPT 出題。
+
+    僅支援 POST /rag/tab/build-rag-zip 產出的 RAG ZIP。
+
+    Args:
+        system_supplement: 選填。併入 system 的補充說明（例如單元／Rag 表層文字）。
+            **純 RAG（unit_type=1）應傳空字串**，題目只依向量檢索到的片段；此欄位**不是**
+            「向量庫內建的逐字稿」，也不取代檢索內容。
+        user_instruction: 選填；非空時置於 user「課程內容」段落之前。
+
+    回傳：quiz_content, quiz_hint, quiz_reference_answer（API 層可再附加 transcription 等）。
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 llm_api_key")
 
-    extract_folder = Path(tempfile.mkdtemp())  # 建立暫存目錄
+    extract_folder = Path(tempfile.mkdtemp())
     try:
         if not zipfile.is_zipfile(zip_path):
             raise ValueError("無效的 ZIP 檔")
 
-        # 使用 UTF-8 解壓，避免非 ASCII 檔名或路徑造成 'ascii' codec can't encode 錯誤（Python 3.11+）
         zip_kw: dict = {}
         if sys.version_info >= (3, 11):
-            zip_kw["metadata_encoding"] = "utf-8"  # Python 3.11+ 支援 UTF-8 檔名
+            zip_kw["metadata_encoding"] = "utf-8"
         with zipfile.ZipFile(zip_path, "r", **zip_kw) as z:
             z.extractall(extract_folder)
 
-        # 尋找含 index.faiss 與 index.pkl 的目錄（FAISS 向量庫）
         db_folder = None
         for root, _dirs, files in os.walk(extract_folder):
             if "index.faiss" in files and "index.pkl" in files:
                 db_folder = root
                 break
         if not db_folder:
-            raise ValueError("此 API 僅支援 RAG ZIP（由 POST /rag/tab/build-rag-zip 產出），請上傳含 FAISS 向量庫的 ZIP")
+            raise ValueError(
+                "此 API 僅支援 RAG ZIP（由 POST /rag/tab/build-rag-zip 產出），請上傳含 FAISS 向量庫的 ZIP"
+            )
 
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=api_key)
-        vectorstore = FAISS.load_local(  # 載入 FAISS 向量庫
+        embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL, api_key=api_key)
+        vectorstore = FAISS.load_local(
             db_folder, embeddings, allow_dangerous_deserialization=True
         )
 
-        # 檢索查詢：課程重點概念與操作步驟
-        query = "課程重點概念"
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
-        docs = retriever.invoke(query)
-        context_text = "\n\n".join([d.page_content for d in docs])
+        retriever = vectorstore.as_retriever(search_kwargs={"k": RETRIEVAL_K})
+        docs = retriever.invoke(DEFAULT_RETRIEVAL_QUERY)
+        context_text = "\n\n".join(d.page_content for d in docs)
 
-        course_name = get_course_name_for_prompt()
-        tx = (transcription or "").strip()
-        supplement = ""
-        if tx:
-            supplement = f"""
-            【出題補充／參考文字】（與下方檢索到的課程內容並陳時，仍以課程內容為出題依據）
-            {tx}
-"""
-        final_system_prompt = f"""
-            你是一個「{course_name}」課程的教授，請給學生設計測驗題目：
-            【出題規範】
-            請根據輸入的「課程內容」設計測驗題目。
-            請使用繁體中文 (Traditional Chinese) 出題與撰寫答案提示 (quiz_hint) 及參考答案 (quiz_reference_answer)。
-            {supplement}
-            【回傳格式】
-            請以 JSON 格式回傳：
-            {{ "quiz_content": "題目內容", 
-              "quiz_hint": "答案提示內容", 
-              "quiz_reference_answer": "參考答案內容" }}
-        """
-        user_prompt_text = f"課程內容：\n{context_text}"
-        extra_ui = (user_instruction or "").strip()
-        if extra_ui:
-            user_prompt_text = f"{extra_ui}\n\n{user_prompt_text}"
+        system_prompt = _system_prompt_faiss_quiz(system_supplement)
+        user_prompt = f"課程內容：\n{context_text}"
+        extra = (user_instruction or "").strip()
+        if extra:
+            user_prompt = f"{extra}\n\n{user_prompt}"
 
         client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": final_system_prompt},
-                {"role": "user", "content": user_prompt_text},
+        return _invoke_quiz_json_llm(
+            client,
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ],
-            response_format={"type": "json_object"},
-            temperature=0.7,
         )
-
-        content = response.choices[0].message.content
-        data = json.loads(content or "{}")  # 解析 JSON
-        if not isinstance(data, dict):
-            data = {}
-        _normalize_quiz_llm_json(data)
-        return data
     finally:
-        shutil.rmtree(extract_folder, ignore_errors=True)  # 清理暫存
+        shutil.rmtree(extract_folder, ignore_errors=True)
