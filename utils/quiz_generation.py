@@ -146,9 +146,10 @@ def generate_quiz_transcription_only(
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 llm_api_key")
-    context_text = (transcription or "").strip()
-    if not context_text:
+    raw_tc = transcription if transcription is not None else ""
+    if not raw_tc.strip():
         raise ValueError("請傳入 transcription（課程內容區塊，必填）")
+    context_text = raw_tc
 
     user_prompt = USER_PROMPT_TRANSCRIPTION_COURSE.format(context_text=context_text)
     prefix_md = (user_instruction or "").strip()

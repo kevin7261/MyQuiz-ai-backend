@@ -33,7 +33,11 @@ def _is_transcript_text_path(decoded_path: str) -> bool:
 
 
 def _decode_transcript_file_bytes(raw_bytes: bytes, ext: str) -> str:
-    """依副檔名將 ZIP 內檔案 bytes 轉成純文字（供 /rag/transcript/text、youtube）。"""
+    """依副檔名將 ZIP 內檔案 bytes 轉成 str（供 /rag/transcript、build-rag-zip）。
+
+    `.md`／`.txt`：僅 UTF-8 解碼，**不**解析或剝除 Markdown（`#`、清單、code fence 等皆原樣保留）。
+    `.docx`／`.doc`：經 extractor 轉為純文字（通常不含 MD 語法）。
+    """
     suf = (ext or "").lower()
     if suf in (".md", ".markdown", ".txt"):
         try:
@@ -270,11 +274,48 @@ def _audio_members_in_zip(z: zipfile.ZipFile) -> list[tuple[str, str, str]]:
     return rows
 
 
+def infer_unit_type_when_unspecified(declared_unit_type: int, zip_bytes: bytes) -> int:
+    """
+    POST /rag/tab/build-rag-zip：若請求未帶對齊的 unit_types，`declared_unit_type` 會是 0。
+    此時 Rag_Unit.transcription **不會**寫入（僅複製 ZIP），易被誤以為「沒存 MD」。
+
+    規則（僅在 declared_unit_type == 0 時推斷；已明確傳 2／3／4 則不覆寫）：
+    - 有音訊檔 → 3（與使用者明確選 mp3 單元一致）。
+    - 否則若 ZIP 內**恰好一個**可辨識之文字檔（.md／.txt／…）→ 2，逐字稿以檔案 UTF-8 **原文**寫入 DB（Markdown 保留）。
+
+    **不**自 0 推成 4（YouTube）；請明確傳 unit_types 分段含 4，否則單檔連結檔易被誤當教材 MD。
+    """
+    try:
+        d = int(declared_unit_type)
+    except (TypeError, ValueError):
+        d = 0
+    if d != 0:
+        return d
+    try:
+        with zipfile.ZipFile(BytesIO(zip_bytes), "r") as z:
+            if _audio_members_in_zip(z):
+                return 3
+            text_rows = _transcript_text_members_in_zip(z)
+            if len(text_rows) != 1:
+                return 0
+            raw, dec = text_rows[0]
+            raw_b = z.read(raw)
+            suf = Path(dec).suffix.lower()
+            text = _decode_transcript_file_bytes(raw_b, suf) or ""
+            if not text.strip():
+                return 0
+            return 2
+    except (zipfile.BadZipFile, OSError, ValueError):
+        logger.debug("infer_unit_type_when_unspecified: 無法解析 ZIP", exc_info=True)
+    return 0
+
+
 def extract_transcript_for_rag_build(zip_bytes: bytes, unit_type: int) -> dict[str, str]:
     """
     自 build-rag-zip 產出之「單元小 ZIP」擷取逐字稿與 Rag_Unit 附帶欄位。
     回傳 transcript、text_file_name、mp3_file_name、youtube_url（非適用之欄位為空字串）。
-    unit_type：2=文字（**恰好一個** .md/.txt/.doc/.docx；**text_file_name** 為該檔 basename）、
+    unit_type：2=文字（**恰好一個** .md/.txt/.doc/.docx；**text_file_name** 為該檔 basename；
+    `.md`/`.txt` 內容以 UTF-8 **原文**寫入 `transcript`，含 Markdown 語法）、
     3=音訊（第一個支援副檔名＋Deepgram）、4=YouTube（**恰好一個**上述文字檔含連結＋en 字幕）。
     """
     out: dict[str, str] = {
@@ -302,10 +343,10 @@ def extract_transcript_for_rag_build(zip_bytes: bytes, unit_type: int) -> dict[s
             raw, dec = text_rows[0]
             raw_b = z.read(raw)
             suf = Path(dec).suffix.lower()
-            text = _decode_transcript_file_bytes(raw_b, suf)
-            text = (text or "").strip()
-            if not text:
+            text = _decode_transcript_file_bytes(raw_b, suf) or ""
+            if not text.strip():
                 raise ValueError(f"{Path(dec).name} 內容為空")
+            # 寫入 DB／Rag_Unit.transcription 時保留檔案原文（含首尾換行與 MD 語法），勿 .strip() 整份。
             out["transcript"] = text
             out["text_file_name"] = Path(dec).name
             return out
