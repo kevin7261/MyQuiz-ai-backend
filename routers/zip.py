@@ -6,7 +6,7 @@ ZIP 與 RAG 相關 API 模組。
 - POST /rag/tab/create：建立一筆 Rag（可傳 local）
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
 - POST /rag/tab/upload-zip：上傳 ZIP
-- POST /rag/tab/build-rag-zip：依 unit_list 打包；預設 user_type==1 建 FAISS 並上傳 rag，否則 repack 並複製同檔至 rag；可選 body.build_faiss 覆寫；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
+- POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿內容之單檔 .md」所包成的 ZIP（非 repack 複製）；可選 body.build_faiss 覆寫；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
 - POST /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除 Rag 及其 Rag_Unit，並刪除儲存（須傳 query person_id）
 - PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
 - POST /rag/tab/unit/quiz/create：body `rag_tab_id`、`rag_unit_id` 定位 Rag_Unit 後新增一筆 Rag_Quiz（無 LLM）；`rag_quiz_id` 由資料庫產生。
@@ -50,6 +50,10 @@ from utils.zip_storage import (
 from utils.supabase_client import get_supabase
 from utils.db_tables import USER_TABLE
 from utils.rag_exam_setting import is_localhost_request
+from utils.rag_transcript_from_upload_zip import (
+    build_transcript_md_zip_bytes,
+    extract_transcript_for_rag_build,
+)
 from routers.grade import _quiz_grade_from_answer_critique
 
 router = APIRouter(prefix="/rag", tags=["rag"])
@@ -157,6 +161,7 @@ def _rag_unit_default_row(
     rag_file_name: str = "",
     rag_file_size: float = 0.0,
     quiz_system_prompt_text: str = "",
+    text_file_name: str = "",
     mp3_file_name: str = "",
     youtube_url: str = "",
 ) -> dict[str, Any]:
@@ -171,6 +176,7 @@ def _rag_unit_default_row(
         "rag_file_name": rag_file_name,
         "rag_file_size": rag_file_size,
         "quiz_system_prompt_text": quiz_system_prompt_text,
+        "text_file_name": text_file_name,
         "mp3_file_name": mp3_file_name,
         "youtube_url": youtube_url,
         "deleted": False,
@@ -386,8 +392,9 @@ def _build_one_rag_zip_output_item(
     """
     將單一 repack 單元上傳至 repack。
     do_rag 為 True：另以 FAISS 建 RAG ZIP 上傳至 rag。
-    do_rag 為 False：仍將與 repack 相同內容之上傳至 rag（原檔複製、非向量庫）。
-    註：bucket 內檔名仍為 stem_rag.zip（metadata 之 tab_id 須與 repack 區隔，與是否為 FAISS 無關）；請看 output.rag_mode。
+    do_rag 為 False 且 unit_type 為 2/3/4：repack 照舊，rag 區上傳逐字稿之 transcript.md ZIP（rag_mode=transcript_md），output 含 transcript_plain 與對應檔名／url 欄位。
+    do_rag 為 False 且非上述：將與 repack 相同內容複製至 rag（rag_mode=repack_copy）。
+    註：bucket 內檔名仍為 stem_rag.zip；請看 output.rag_mode。
     回傳與 build-rag-zip outputs[] 單筆相同結構；失敗時含 rag_error。
     """
     repack_tab_id = Path(filename).stem if filename else None
@@ -402,6 +409,10 @@ def _build_one_rag_zip_output_item(
             "rag_filename": "",
             "unit_type": unit_type,
             "rag_mode": "repack_copy",
+            "transcript_plain": "",
+            "text_file_name": "",
+            "mp3_file_name": "",
+            "youtube_url": "",
         }
         try:
             tab_id = save_zip(
@@ -416,18 +427,44 @@ def _build_one_rag_zip_output_item(
             item_zip["repack_filename"] = f"{tab_id}.zip"
             rag_zip_tab_id = f"{tab_id}_rag"
             item_zip["rag_filename"] = f"{rag_zip_tab_id}.zip"
-            save_zip(
-                zip_bytes,
-                f"{tab_id}.zip",
-                folder=FOLDER_RAG,
-                person_id=pid,
-                parent_tab_id=body.rag_tab_id,
-                tab_id=rag_zip_tab_id,
+            rag_payload: bytes | None = None
+            if unit_type in (RAG_UNIT_TYPE_TEXT, RAG_UNIT_TYPE_MP3, RAG_UNIT_TYPE_YOUTUBE):
+                item_zip["rag_mode"] = "transcript_md"
+                try:
+                    extracted = extract_transcript_for_rag_build(zip_bytes, unit_type)
+                except ValueError as e:
+                    item_zip["rag_error"] = str(e)
+                else:
+                    item_zip["transcript_plain"] = extracted.get("transcript") or ""
+                    item_zip["text_file_name"] = extracted.get("text_file_name") or ""
+                    item_zip["mp3_file_name"] = extracted.get("mp3_file_name") or ""
+                    item_zip["youtube_url"] = extracted.get("youtube_url") or ""
+                    rag_payload = build_transcript_md_zip_bytes(item_zip["transcript_plain"])
+                    save_zip(
+                        rag_payload,
+                        f"{tab_id}.zip",
+                        folder=FOLDER_RAG,
+                        person_id=pid,
+                        parent_tab_id=body.rag_tab_id,
+                        tab_id=rag_zip_tab_id,
+                    )
+            else:
+                rag_payload = zip_bytes
+                save_zip(
+                    zip_bytes,
+                    f"{tab_id}.zip",
+                    folder=FOLDER_RAG,
+                    person_id=pid,
+                    parent_tab_id=body.rag_tab_id,
+                    tab_id=rag_zip_tab_id,
+                )
+            if not item_zip.get("rag_error"):
+                verify_err = _verify_saved_rag_zip_readable(rag_zip_tab_id)
+                if verify_err:
+                    item_zip["rag_error"] = verify_err
+            item_zip["file_size"] = _bytes_to_mb(
+                len(rag_payload) if rag_payload is not None else len(zip_bytes)
             )
-            verify_err = _verify_saved_rag_zip_readable(rag_zip_tab_id)
-            if verify_err:
-                item_zip["rag_error"] = verify_err
-            item_zip["file_size"] = _bytes_to_mb(len(zip_bytes))
         except Exception as e:
             item_zip["rag_error"] = str(e)
         return item_zip
@@ -544,6 +581,17 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
             unit_type_val = RAG_UNIT_TYPE_DEFAULT
         if unit_type_val < 0 or unit_type_val > 4:
             unit_type_val = RAG_UNIT_TYPE_DEFAULT
+        quiz_prompt = body.system_prompt_instruction or ""
+        text_fn = ""
+        mp3_fn = ""
+        yt_url = ""
+        if unit_type_val in (RAG_UNIT_TYPE_TEXT, RAG_UNIT_TYPE_MP3, RAG_UNIT_TYPE_YOUTUBE):
+            tp = (output.get("transcript_plain") or "").strip()
+            if tp:
+                quiz_prompt = tp
+            text_fn = output.get("text_file_name") or ""
+            mp3_fn = output.get("mp3_file_name") or ""
+            yt_url = output.get("youtube_url") or ""
         unit_row = _rag_unit_default_row(
             body.rag_tab_id,
             pid,
@@ -552,7 +600,10 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
             repack_file_name=output.get("repack_filename", ""),
             rag_file_name=output.get("rag_filename", ""),
             rag_file_size=float(output.get("file_size") or 0),
-            quiz_system_prompt_text=body.system_prompt_instruction or "",
+            quiz_system_prompt_text=quiz_prompt,
+            text_file_name=text_fn,
+            mp3_file_name=mp3_fn,
+            youtube_url=yt_url,
         )
         try:
             supabase.table("Rag_Unit").insert(unit_row).execute()
@@ -801,26 +852,26 @@ def build_rag_zip(
     caller_person_id: PersonId,
     repack_only: bool = Query(
         False,
-        description="為 True 時強制不建 FAISS（rag 僅上傳與 repack 相同之 ZIP），優先於 build_faiss 與 User.user_type",
+        description="為 True 時強制不建 FAISS（unit_type=1 時 rag 改為 repack 複製）；不影響 unit_type=2/3/4 之逐字稿 rag ZIP",
     ),
 ):
     """
     依先前上傳的 ZIP（rag_tab_id）與 unit_list 重新打包。
-    **FAISS 建置規則（逐 unit 判斷）**：`user_type==1`（且未強制關閉）且該 unit 之 `unit_type==1 (rag)` → 建 FAISS；其他 unit_type（2=文字、3=mp3、4=youtube）或 user_type!=1 → 僅複製 repack 至 rag，不建向量。
-    可選 query **repack_only=true**：強制全部 unit 不建 FAISS，適用無法改 JSON body 的客戶端。
+    **FAISS 建置規則（逐 unit 判斷）**：`user_type==1`（且未強制關閉）且該 unit 之 `unit_type==1 (rag)` → 建 FAISS 並上傳至 rag；`unit_type` 為 2／3／4 時仍 repack 原 ZIP，但 **rag 區上傳內含單一 `transcript.md`（逐字稿全文）之 ZIP**，非 repack 複製；其餘 unit_type==0 等 → repack 同內容複製至 rag。
+    可選 query **repack_only=true**：強制全部 unit 不建 FAISS；**不影響** 2／3／4 之逐字稿 rag ZIP 行為。
     可選 body **build_faiss**：`false` 同 repack_only；`true` 強制允許 FAISS（仍需 unit_type==1 觸發）；省略時依 user_type 判定。
     LLM API Key 僅在「最終會建 FAISS」（do_rag 為 True）時必填（依 person_id 自 User 表取得）。
-    body.unit_types 為選填，與 unit_list 逗號分段對齊，寫入各 Rag_Unit.unit_type：0=未選、1=rag、2=文字、3=mp3、4=youtube。
+    body.unit_types 為選填，與 unit_list 逗號分段對齊，寫入各 Rag_Unit.unit_type：0=未選、1=rag、2=文字、3=mp3、4=youtube。單元 2／3／4 成功時 **Rag_Unit.quiz_system_prompt_text** 寫入逐字稿；**text_file_name**／**mp3_file_name**／**youtube_url** 依類型寫入對應欄位。
 
     **回應為 NDJSON 串流**（`application/x-ndjson`），請以 `fetch` 讀取 `response.body`，勿使用單次 `response.json()`。
-    每一輸出單元須 **成功上傳 repack**；rag 資料夾須 **成功寫入**（user_type==1 為向量庫 ZIP；否則為 repack 同內容之 ZIP），且**上傳後能自儲存讀回非空檔**。
+    每一輸出單元須 **成功上傳 repack**；rag 資料夾須 **成功寫入**（unit_type=1 且建 FAISS 為向量庫 ZIP；2／3／4 為逐字稿 md ZIP；其餘為 repack 同內容），且**上傳後能自儲存讀回非空檔**。
     整批成功時自動在 Rag_Unit 表建立對應記錄（每個輸出單元一筆）並更新 Rag.rag_metadata。
     整批任一有 `rag_error` 則 `complete.success` 為 false（不寫入 Rag 表，不建立 Rag_Unit）。
 
     事件列舉（每行一個物件）：
     - `{"type":"start","total":N,"source_rag_tab_id":"...","unit_list":"...","user_type":int,"build_faiss_request":bool|null,"repack_only":bool,"allow_faiss":bool}`（allow_faiss=各 unit 是否可建 FAISS，仍需 unit_type==1 才實際建）
     - `{"type":"building","index":i,"total":N,"completed_before":i-1,"filename":"..."}`
-    - `{"type":"unit",...,"output":{...}}`：output 含 rag_mode（`faiss`＝向量庫；`repack_copy`＝與 repack 同內容複製）、rag_filename（物件鍵仍為 *_rag.zip）
+    - `{"type":"unit",...,"output":{...}}`：output 含 rag_mode（`faiss`＝向量庫；`transcript_md`＝逐字稿 md ZIP；`repack_copy`＝與 repack 同內容複製）、`transcript_plain`／`text_file_name`／`mp3_file_name`／`youtube_url`（2／3／4 時）、rag_filename（物件鍵仍為 *_rag.zip）
     - `{"type":"complete","success":bool,"total","built_ok","built_failed","source_rag_tab_id","unit_list","outputs"}`
 
     串流階段 HTTP 狀態碼固定 **200**；請以最後一則 `type===complete` 的 `success` 判斷整批成敗。
@@ -878,7 +929,7 @@ def build_rag_zip(
     unit_types_per_task = _unit_types_per_task(body.unit_types, total)
 
     def _do_rag_for_unit(ut: int) -> bool:
-        """只有 allow_faiss 且 unit_type==1 (rag) 時才建 FAISS；其餘一律複製 repack。"""
+        """只有 allow_faiss 且 unit_type==1 (rag) 時才建 FAISS；其餘走 repack 分支（2/3/4 時 rag 為逐字稿 ZIP）。"""
         return allow_faiss and (ut == RAG_UNIT_TYPE_RAG)
 
     def ndjson_events():

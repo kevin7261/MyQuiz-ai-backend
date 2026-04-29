@@ -1,15 +1,20 @@
-"""從 RAG Storage（upload ZIP）依單元資料夾名擷取音訊、YouTube 或文字（.md），供 /rag/transcript/* 使用。"""
+"""從 RAG Storage（upload ZIP）依單元資料夾名擷取音訊、YouTube 或文字檔，供 /rag/transcript/* 使用。"""
 
 from __future__ import annotations
 
 import logging
 import re
+import tempfile
 import zipfile
 from io import BytesIO
 from pathlib import Path
 from typing import Iterator
 
-from utils.english_system_transcript import parse_youtube_video_id
+from utils.english_system_transcript import (
+    parse_youtube_video_id,
+    transcribe_audio_bytes_deepgram,
+    youtube_transcript_plain_text,
+)
 from utils.zip_storage import UPLOAD_DEFAULT_PERSON, get_zip_path_by_person
 from utils.zip_utils import fix_encoding
 
@@ -19,11 +24,45 @@ _AUDIO_EXTS = frozenset({
     ".mp3", ".wav", ".m4a", ".webm", ".ogg", ".flac", ".opus", ".mp4", ".mpeg", ".mpga", ".aac", ".wma",
 })
 
-_MD_SUFFIXES = frozenset({".md", ".markdown"})
+# 文字單元／YouTube 連結檔：該資料夾下僅允許一個此類檔案
+_TRANSCRIPT_TEXT_EXTS = frozenset({".md", ".markdown", ".txt", ".doc", ".docx"})
 
 
-def _is_markdown_path(decoded_path: str) -> bool:
-    return Path(decoded_path).suffix.lower() in _MD_SUFFIXES
+def _is_transcript_text_path(decoded_path: str) -> bool:
+    return Path(decoded_path).suffix.lower() in _TRANSCRIPT_TEXT_EXTS
+
+
+def _decode_transcript_file_bytes(raw_bytes: bytes, ext: str) -> str:
+    """依副檔名將 ZIP 內檔案 bytes 轉成純文字（供 /rag/transcript/text、youtube）。"""
+    suf = (ext or "").lower()
+    if suf in (".md", ".markdown", ".txt"):
+        try:
+            return raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return raw_bytes.decode("utf-8", errors="replace")
+    if suf == ".docx":
+        import docx2txt
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+            try:
+                tmp.write(raw_bytes)
+                tmp.flush()
+                t = docx2txt.process(tmp.name)
+            finally:
+                Path(tmp.name).unlink(missing_ok=True)
+        return (t or "").strip()
+    if suf == ".doc":
+        from langchain_community.document_loaders import UnstructuredWordDocumentLoader
+
+        with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp:
+            try:
+                tmp.write(raw_bytes)
+                tmp.flush()
+                docs = UnstructuredWordDocumentLoader(tmp.name).load()
+            finally:
+                Path(tmp.name).unlink(missing_ok=True)
+        return "\n\n".join((d.page_content or "").strip() for d in docs).strip()
+    raise ValueError(f"不支援的文字檔副檔名: {suf}")
 
 
 def _zip_members(z: zipfile.ZipFile) -> Iterator[tuple[str, str]]:
@@ -83,14 +122,14 @@ def pick_audio_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[byte
 
         candidates.sort(key=lambda x: x[1])
         if not candidates:
-            has_md = any(
-                path_has_folder_segment(dec, fn) and _is_markdown_path(dec)
+            has_text = any(
+                path_has_folder_segment(dec, fn) and _is_transcript_text_path(dec)
                 for _raw, dec in _zip_members(z)
             )
-            if has_md:
+            if has_text:
                 raise ValueError(
-                    f"於資料夾「{fn}」下沒有音訊檔，但偵測到 Markdown（.md）。"
-                    "若為 **YouTube 單元**（.md 內含影片連結），請改呼叫 **GET /rag/transcript/youtube**，"
+                    f"於資料夾「{fn}」下沒有音訊檔，但偵測到文字檔（.md .txt .doc .docx 等）。"
+                    "若為 **YouTube 單元**（檔內為影片連結），請改呼叫 **GET /rag/transcript/youtube**，"
                     "使用相同的 person_id、rag_tab_id、folder_name。"
                 )
             raise ValueError(
@@ -110,7 +149,7 @@ _YT_URL_RE = re.compile(
 
 
 def extract_video_id_from_unit_md(text: str) -> str | None:
-    """自 Markdown 內容解析 YouTube video_id。"""
+    """自文字檔內容解析 YouTube video_id（連結或純 id）。"""
     t = (text or "").strip()
     if not t:
         return None
@@ -126,8 +165,8 @@ def extract_video_id_from_unit_md(text: str) -> str | None:
 
 def read_youtube_video_id_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[str, str]:
     """
-    該資料夾下須**恰好一個** .md；自其內文解析 YouTube。
-    回傳 (video_id, 該 .md 在 ZIP 內的解碼路徑)。
+    該資料夾下須**恰好一個**文字檔（.md .txt .doc .docx 等）；自其內文解析 YouTube（通常檔內僅連結）。
+    回傳 (video_id, 該檔在 ZIP 內的解碼路徑)。
     """
     fn = (folder_name or "").strip()
     if not fn:
@@ -136,39 +175,37 @@ def read_youtube_video_id_from_upload_zip(zip_bytes: bytes, folder_name: str) ->
         raise ValueError("folder_name 不可含路徑分隔字元")
 
     with zipfile.ZipFile(BytesIO(zip_bytes), "r") as z:
-        md_files: list[tuple[str, str]] = []
+        text_files: list[tuple[str, str]] = []
         for raw, dec in _zip_members(z):
             if not path_has_folder_segment(dec, fn):
                 continue
-            if not _is_markdown_path(dec):
+            if not _is_transcript_text_path(dec):
                 continue
-            md_files.append((raw, dec))
-        md_files.sort(key=lambda x: x[1])
-        if not md_files:
+            text_files.append((raw, dec))
+        text_files.sort(key=lambda x: x[1])
+        if not text_files:
             raise ValueError(
-                f"於資料夾「{fn}」下找不到 .md／.markdown（請放**一個**含 YouTube 連結或 video_id 的檔案）"
+                f"於資料夾「{fn}」下找不到文字檔（請放**一個** .md／.txt／.doc／.docx，內含 YouTube 連結或 video_id）"
             )
-        if len(md_files) > 1:
-            names = ", ".join(d for _, d in md_files[:5])
-            more = f" 等共 {len(md_files)} 個" if len(md_files) > 5 else ""
+        if len(text_files) > 1:
+            names = ", ".join(d for _, d in text_files[:5])
+            more = f" 等共 {len(text_files)} 個" if len(text_files) > 5 else ""
             raise ValueError(
-                f"於資料夾「{fn}」下僅允許**一個** .md，目前有 {len(md_files)} 個：{names}{more}"
+                f"於資料夾「{fn}」下僅允許**一個**文字檔，目前有 {len(text_files)} 個：{names}{more}"
             )
-        raw, dec = md_files[0]
-        try:
-            raw_bytes = z.read(raw)
-            text = raw_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            text = raw_bytes.decode("utf-8", errors="replace")
+        raw, dec = text_files[0]
+        raw_bytes = z.read(raw)
+        suf = Path(dec).suffix.lower()
+        text = _decode_transcript_file_bytes(raw_bytes, suf)
         vid = extract_video_id_from_unit_md(text)
         if not vid:
             raise ValueError(f"於「{dec}」內找不到有效的 YouTube 連結或 video_id")
         return vid, dec
 
 
-def read_single_text_md_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[str, str]:
+def read_single_transcript_text_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[str, str]:
     """
-    該資料夾下須**恰好一個** .md；回傳 (檔案全文, ZIP 內解碼路徑)。
+    該資料夾下須**恰好一個**文字檔（.md .txt .doc .docx 等）；回傳 (正文, ZIP 內解碼路徑)。
     """
     fn = (folder_name or "").strip()
     if not fn:
@@ -177,26 +214,149 @@ def read_single_text_md_from_upload_zip(zip_bytes: bytes, folder_name: str) -> t
         raise ValueError("folder_name 不可含路徑分隔字元")
 
     with zipfile.ZipFile(BytesIO(zip_bytes), "r") as z:
-        md_files: list[tuple[str, str]] = []
+        text_files: list[tuple[str, str]] = []
         for raw, dec in _zip_members(z):
             if not path_has_folder_segment(dec, fn):
                 continue
-            if not _is_markdown_path(dec):
+            if not _is_transcript_text_path(dec):
                 continue
-            md_files.append((raw, dec))
-        md_files.sort(key=lambda x: x[1])
-        if not md_files:
-            raise ValueError(f"於資料夾「{fn}」下找不到 .md／.markdown（請放**一個** Markdown 檔）")
-        if len(md_files) > 1:
-            names = ", ".join(d for _, d in md_files[:5])
-            more = f" 等共 {len(md_files)} 個" if len(md_files) > 5 else ""
+            text_files.append((raw, dec))
+        text_files.sort(key=lambda x: x[1])
+        if not text_files:
             raise ValueError(
-                f"於資料夾「{fn}」下僅允許**一個** .md，目前有 {len(md_files)} 個：{names}{more}"
+                f"於資料夾「{fn}」下找不到文字檔（請放**一個** .md／.txt／.doc／.docx）"
             )
-        raw, dec = md_files[0]
+        if len(text_files) > 1:
+            names = ", ".join(d for _, d in text_files[:5])
+            more = f" 等共 {len(text_files)} 個" if len(text_files) > 5 else ""
+            raise ValueError(
+                f"於資料夾「{fn}」下僅允許**一個**文字檔，目前有 {len(text_files)} 個：{names}{more}"
+            )
+        raw, dec = text_files[0]
+        raw_b = z.read(raw)
+        suf = Path(dec).suffix.lower()
+        text = _decode_transcript_file_bytes(raw_b, suf)
+        return (text or "").strip(), dec
+
+
+def build_transcript_md_zip_bytes(transcript: str, arcname: str = "transcript.md") -> bytes:
+    """將逐字稿包成單檔 ZIP（供 Storage `rag` 區仍使用 .zip 物件鍵）。"""
+    body = transcript if transcript is not None else ""
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(arcname.strip() or "transcript.md", body.encode("utf-8"))
+    return buf.getvalue()
+
+
+def _md_members_in_zip(z: zipfile.ZipFile) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for raw, dec in _zip_members(z):
+        if Path(dec).suffix.lower() not in (".md", ".markdown"):
+            continue
+        rows.append((raw, dec))
+    rows.sort(key=lambda x: x[1])
+    return rows
+
+
+def _audio_members_in_zip(z: zipfile.ZipFile) -> list[tuple[str, str, str]]:
+    rows: list[tuple[str, str, str]] = []
+    for raw, dec in _zip_members(z):
+        suf = Path(dec).suffix.lower()
+        if suf not in _AUDIO_EXTS:
+            continue
+        rows.append((raw, dec, suf))
+    rows.sort(key=lambda x: x[1])
+    return rows
+
+
+def extract_transcript_for_rag_build(zip_bytes: bytes, unit_type: int) -> dict[str, str]:
+    """
+    自 build-rag-zip 產出之「單元小 ZIP」擷取逐字稿與 Rag_Unit 附帶欄位。
+    回傳 transcript、text_file_name、mp3_file_name、youtube_url（非適用之欄位為空字串）。
+    unit_type：2=文字（僅一個 .md）、3=音訊（第一個支援副檔名＋Deepgram）、4=YouTube（僅一個 .md 含連結＋en 字幕）。
+    """
+    out: dict[str, str] = {
+        "transcript": "",
+        "text_file_name": "",
+        "mp3_file_name": "",
+        "youtube_url": "",
+    }
+    if unit_type not in (2, 3, 4):
+        raise ValueError(f"extract_transcript_for_rag_build 僅支援 unit_type 2/3/4，收到 {unit_type}")
+
+    with zipfile.ZipFile(BytesIO(zip_bytes), "r") as z:
+        if unit_type == 2:
+            md = _md_members_in_zip(z)
+            if not md:
+                raise ValueError("單元 ZIP 內找不到 .md／.markdown（unit_type=2 須恰好一個 Markdown）")
+            if len(md) > 1:
+                raise ValueError(
+                    f"unit_type=2 須恰好一個 .md，目前有 {len(md)} 個："
+                    + ", ".join(d for _, d in md[:5])
+                )
+            raw, dec = md[0]
+            raw_b = z.read(raw)
+            try:
+                text = raw_b.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw_b.decode("utf-8", errors="replace")
+            text = (text or "").strip()
+            if not text:
+                raise ValueError(f"{Path(dec).name} 內容為空")
+            out["transcript"] = text
+            out["text_file_name"] = Path(dec).name
+            return out
+
+        if unit_type == 3:
+            aud = _audio_members_in_zip(z)
+            if not aud:
+                raise ValueError(
+                    "單元 ZIP 內找不到音訊檔（unit_type=3；支援副檔名: "
+                    + ", ".join(sorted(_AUDIO_EXTS))
+                    + "）"
+                )
+            raw, dec, suf = aud[0]
+            data = z.read(raw)
+            if not data:
+                raise ValueError("音訊檔為空")
+            try:
+                transcript, _elapsed = transcribe_audio_bytes_deepgram(data, suffix=suf or ".mp3")
+            except RuntimeError as e:
+                raise ValueError(str(e)) from e
+            except ValueError as e:
+                raise ValueError(str(e)) from e
+            transcript = (transcript or "").strip()
+            if not transcript:
+                raise ValueError("Deepgram 逐字稿為空（unit_type=3）")
+            out["transcript"] = transcript
+            out["mp3_file_name"] = Path(dec).name
+            return out
+
+        # unit_type == 4
+        md = _md_members_in_zip(z)
+        if not md:
+            raise ValueError("單元 ZIP 內找不到 .md／.markdown（unit_type=4 須一個含 YouTube 連結的 Markdown）")
+        if len(md) > 1:
+            raise ValueError(
+                f"unit_type=4 須恰好一個 .md，目前有 {len(md)} 個："
+                + ", ".join(d for _, d in md[:5])
+            )
+        raw, dec = md[0]
         raw_b = z.read(raw)
         try:
-            text = raw_b.decode("utf-8")
+            raw_text = raw_b.decode("utf-8")
         except UnicodeDecodeError:
-            text = raw_b.decode("utf-8", errors="replace")
-        return (text or "").strip(), dec
+            raw_text = raw_b.decode("utf-8", errors="replace")
+        vid = extract_video_id_from_unit_md(raw_text)
+        if not vid:
+            raise ValueError(f"{Path(dec).name} 內找不到有效的 YouTube 連結或 video_id")
+        try:
+            cap, _elapsed = youtube_transcript_plain_text(vid, languages=["en"])
+        except Exception as e:
+            raise ValueError(f"擷取 YouTube 英文字幕失敗: {e!s}") from e
+        cap = (cap or "").strip()
+        if not cap:
+            raise ValueError("YouTube 英文字幕為空（請確認影片有 en 字幕）")
+        out["transcript"] = cap
+        out["youtube_url"] = f"https://www.youtube.com/watch?v={vid}"
+        return out

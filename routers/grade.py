@@ -1,7 +1,7 @@
 """
 評分 API 模組。
 依 rag_id 自 rag_metadata.outputs 取得 repack stem，再以 {stem}_rag 載入 RAG ZIP 檢索講義後由 GPT-4o 評分。
-非同步：POST /rag/tab/unit/quiz/llm-grade 回傳 202 + job_id，背景執行評分並更新 public.Rag_Quiz 之 answer_* 欄位；前端以 GET /rag/tab/unit/quiz/grade-result/{job_id} 輪詢（寫入失敗時 status 為 error）。POST /rag/tab/unit/quiz/for-exam 將 Rag_Quiz.for_exam 設為 true。列出 for_exam 之 Rag_Unit／Rag_Quiz 請用 GET /exam/rag-for-exams（exam 模組）。RAG+LLM 出題為 POST /rag/tab/unit/quiz/llm-generate；純建 Rag_Quiz 列為 POST /rag/tab/unit/quiz/create（見 zip 路由）。OpenAPI 上 **GET /rag/transcript/text**、**GET /rag/transcript/audio**、**GET /rag/transcript/youtube** 掛於本模組末尾（自 Storage upload ZIP；文字／YouTube 單元該資料夾下**僅一個** .md），回傳 JSON 之 **markdown** 僅為正文無額外標頭。
+非同步：POST /rag/tab/unit/quiz/llm-grade 回傳 202 + job_id，背景執行評分並更新 public.Rag_Quiz 之 answer_* 欄位；前端以 GET /rag/tab/unit/quiz/grade-result/{job_id} 輪詢（寫入失敗時 status 為 error）。POST /rag/tab/unit/quiz/for-exam 將 Rag_Quiz.for_exam 設為 true。列出 for_exam 之 Rag_Unit／Rag_Quiz 請用 GET /exam/rag-for-exams（exam 模組）。RAG+LLM 出題為 POST /rag/tab/unit/quiz/llm-generate；純建 Rag_Quiz 列為 POST /rag/tab/unit/quiz/create（見 zip 路由）。OpenAPI 上 **GET /rag/transcript/text**、**GET /rag/transcript/audio**、**GET /rag/transcript/youtube** 掛於本模組末尾（自 Storage upload ZIP；文字／YouTube 單元該資料夾下**僅一個**文字檔：.md .txt .doc .docx），回傳 JSON 之 **markdown** 僅為正文無額外標頭。
 """
 
 # 引入 json 用於解析 GPT 回傳與序列化
@@ -62,7 +62,7 @@ from utils.supabase_client import get_supabase
 from utils.english_system_transcript import transcribe_audio_bytes_deepgram, youtube_transcript_plain_text
 from utils.rag_transcript_from_upload_zip import (
     pick_audio_from_upload_zip,
-    read_single_text_md_from_upload_zip,
+    read_single_transcript_text_from_upload_zip,
     read_upload_zip_bytes,
     read_youtube_video_id_from_upload_zip,
 )
@@ -1048,11 +1048,11 @@ async def get_grade_result(job_id: str, _person_id: PersonId):  # 路徑參數 j
 
 
 class RagTranscriptMarkdownResponse(BaseModel):
-    """GET /rag/transcript/text、audio、youtube 共用回傳：`markdown` 僅為正文（逐字稿／字幕／.md 全文），無額外標題或 meta 區塊。"""
+    """GET /rag/transcript/text、audio、youtube 共用回傳：`markdown` 僅為正文（逐字稿／字幕／文字檔全文），無額外標題或 meta 區塊。"""
 
     markdown: str = Field(
         ...,
-        description="正文純文字或 Markdown 原檔內容（無 # Transcript 包裝）",
+        description="正文純文字或原檔內容（無 # Transcript 包裝）",
     )
 
 
@@ -1084,11 +1084,11 @@ def rag_transcript_text(
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id"),
     folder_name: str = Query(
         ...,
-        description="ZIP 內單元資料夾名；該資料夾下須**恰好一個** .md，回傳其全文為 markdown",
+        description="ZIP 內單元資料夾名；該資料夾下須**恰好一個**文字檔（.md .txt .doc .docx），回傳正文為 markdown",
     ),
 ):
     """
-    自 upload ZIP 之 **folder_name** 路徑下讀取**唯一一個** .md 的全文；`markdown` 僅為檔案內容，不寫回資料庫。
+    自 upload ZIP 之 **folder_name** 路徑下讀取**唯一一個**文字檔的全文；`markdown` 僅為檔案內容，不寫回資料庫。
     """
     _require_rag_tab_owner(caller_person_id, rag_tab_id)
     try:
@@ -1102,7 +1102,7 @@ def rag_transcript_text(
         raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
 
     try:
-        body, _path = read_single_text_md_from_upload_zip(zip_bytes, folder_name)
+        body, _path = read_single_transcript_text_from_upload_zip(zip_bytes, folder_name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -1115,12 +1115,12 @@ def rag_transcript_audio(
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（對應 Storage 路徑 {person_id}/{rag_tab_id}/upload/…）"),
     folder_name: str = Query(
         ...,
-        description="ZIP 內單元資料夾名；該資料夾下須有音訊檔。**若僅有 .md（內含 YouTube 連結）請改呼叫 GET /rag/transcript/youtube**",
+        description="ZIP 內單元資料夾名；該資料夾下須有音訊檔。**若僅有文字檔（內含 YouTube 連結）請改呼叫 GET /rag/transcript/youtube**",
     ),
 ):
     """
     自 upload ZIP 內 **folder_name** 路徑找音訊檔，**Deepgram** 轉文字；**markdown** 僅為逐字稿正文。
-    若該資料夾只有 Markdown、無音檔，後端會回傳錯誤並提示改用 **GET /rag/transcript/youtube**。
+    若該資料夾只有文字檔、無音檔，後端會回傳錯誤並提示改用 **GET /rag/transcript/youtube**。
     """
     _require_rag_tab_owner(caller_person_id, rag_tab_id)
     try:
@@ -1162,11 +1162,11 @@ def rag_transcript_youtube(
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id"),
     folder_name: str = Query(
         ...,
-        description="ZIP 內單元資料夾名；該資料夾下須**恰好一個** .md（內含 YouTube 連結或 video_id），擷取 **en** 字幕為正文",
+        description="ZIP 內單元資料夾名；該資料夾下須**恰好一個**文字檔（.md .txt .doc .docx，內含 YouTube 連結或 video_id），擷取 **en** 字幕為正文",
     ),
 ):
     """
-    自 upload ZIP 內 **folder_name** 下**唯一** .md 讀取連結，擷取 **en** 字幕；`markdown` 僅為字幕合併文字。
+    自 upload ZIP 內 **folder_name** 下**唯一**文字檔讀取連結（通常檔內僅連結），擷取 **en** 字幕；`markdown` 僅為字幕合併文字。
     """
     _require_rag_tab_owner(caller_person_id, rag_tab_id)
     try:
@@ -1180,7 +1180,7 @@ def rag_transcript_youtube(
         raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
 
     try:
-        vid, _md_path = read_youtube_video_id_from_upload_zip(zip_bytes, folder_name)
+        vid, _text_path = read_youtube_video_id_from_upload_zip(zip_bytes, folder_name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
