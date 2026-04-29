@@ -8,7 +8,7 @@ Exam API 模組。對應 public.Exam、public.Exam_Quiz。
 - POST /exam/tab/create：建立一筆 Exam。
 - PUT /exam/tab/tab-name：更新既有 Exam 的 tab_name。
 - POST /exam/tab/quiz/create：新增空白 Exam_Quiz（不呼叫 LLM）。
-- POST /exam/tab/quiz/llm-generate：依 exam_quiz_id 出題（LLM）；rag_unit_id／unit_name 可寫回。
+- POST /exam/tab/quiz/llm-generate：出題請求須含 `rag_tab_id` 與單／題鍵；自該 RAG Tab 載入資料，不依賴 System_Setting。
 - POST /exam/tab/quiz/llm-grade：非同步 RAG+LLM 評分；回傳 202 + job_id，輪詢 GET /exam/tab/quiz/grade-result/{job_id}。
 - POST /exam/tab/delete/{exam_tab_id}：軟刪除 Exam。
 - POST /exam/tab/quiz/rate：更新 Exam_Quiz.quiz_rate（僅 -1、0、1）。
@@ -51,7 +51,7 @@ from services.grading import (
 from utils.datetime_utils import now_taipei_iso, to_taipei_iso
 from utils.json_utils import to_json_safe
 from utils.llm_api_key_utils import get_llm_api_key
-from utils.rag_exam_setting import fetch_exam_rag_id_from_settings, is_localhost_request
+from utils.rag_exam_setting import is_localhost_request, rag_id_from_rag_tab_id, resolve_exam_content_rag_id
 from utils.rag_stem_utils import get_rag_stem_from_rag_id, instruction_from_rag_row
 from utils.supabase_client import get_supabase
 from utils.zip_storage import generate_tab_id, get_zip_path
@@ -137,29 +137,35 @@ class ExamCreateQuizRequest(BaseModel):
 
 
 class ExamLlmGenerateQuizRequest(BaseModel):
-    """POST /exam/tab/quiz/llm-generate；exam_quiz_id 必填；其餘選填；欄位順序對齊 public.Exam_Quiz 關聯欄（略 exam_tab_id／person_id）。"""
+    """POST /exam/tab/quiz/llm-generate：`exam_quiz_id`、`rag_tab_id`、`rag_unit_id`、`rag_quiz_id` 皆必填。
+    請求中之 `rag_unit_id`、`rag_quiz_id` 所隸 `rag_tab_id` 須與 `rag_tab_id` 相符；Exam_Quiz 列鎖鍵規則同後述說明。"""
 
     model_config = ConfigDict(
-        json_schema_extra={"example": {"exam_quiz_id": 1}},
+        json_schema_extra={
+            "example": {
+                "exam_quiz_id": 1,
+                "rag_tab_id": "string",
+                "rag_unit_id": 1,
+                "rag_quiz_id": 1,
+            },
+        },
     )
 
-    exam_quiz_id: int = Field(..., gt=0, description="Exam_Quiz 主鍵（須已存在，通常為 create 後之錨點列）")
-    unit_name: str | None = Field(
-        default=None,
-        description="選填；可省略。非空字串時作為單元篩選並寫入 Exam_Quiz.unit_name（若未同時傳 rag_unit_id>0）",
+    exam_quiz_id: int = Field(..., gt=0, description="Exam_Quiz 主鍵")
+    rag_tab_id: str = Field(
+        ...,
+        min_length=1,
+        description="Rag.rag_tab_id（與 POST /rag/tab/create 等相同之 tab 識別字串）",
     )
     rag_unit_id: int = Field(
-        0,
-        ge=0,
-        description="選填；>0 時依 Rag_Unit 解析並寫入 Exam_Quiz.rag_unit_id／unit_name，並優先用於 RAG 單元篩選；0 表示此請求不更新 rag_unit_id",
+        ...,
+        gt=0,
+        description="Rag_Unit 主鍵（>0）。列尚未寫入時以此綁定；列已寫入須完全一致",
     )
-    rag_quiz_id: int | None = Field(
-        None,
-        description="選填；來源 Rag_Quiz 主鍵，寫入 Exam_Quiz.rag_quiz_id；請求未帶此欄時不改 DB；可傳 null 清空",
-    )
-    quiz_name: str | None = Field(
-        default=None,
-        description="選填；可省略。有值時為顯示用測驗名稱並寫入 Exam_Quiz.quiz_name；省略時由 repack stem／單元 unit_name 推算",
+    rag_quiz_id: int = Field(
+        ...,
+        gt=0,
+        description="Rag_Quiz 主鍵（>0），出題 user prompt 由此讀取。列鎖鍵規則同 rag_unit_id",
     )
 
 
@@ -226,53 +232,28 @@ def _load_exam_for_quiz(
     return out_tab, person_id
 
 
-def _resolve_unit_name_and_rag_for_new_quiz(
-    supabase: Any,
+def _exam_llm_generate_api_instruction(
     *,
-    unit_name: str,
+    exam_quiz_id: int,
     rag_unit_id: int,
-) -> tuple[str, int | None]:
-    """
-    回傳 (unit_name, rag_unit_id)。
-    rag_unit_id>0 時自 Rag_Unit 解析；否則直接回傳 unit_name。
-    """
-    un = (unit_name or "").strip()
-    if rag_unit_id > 0:
-        ru_sel = (
-            supabase.table("Rag_Unit")
-            .select("rag_unit_id, unit_name")
-            .eq("rag_unit_id", rag_unit_id)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
-        )
-        if not ru_sel.data:
-            raise HTTPException(status_code=404, detail=f"找不到 rag_unit_id={rag_unit_id} 的 Rag_Unit，或已刪除")
-        ru_row = ru_sel.data[0]
-        un_db = (ru_row.get("unit_name") or "").strip()
-        resolved_name = un_db or un
-        if not resolved_name:
-            raise HTTPException(status_code=400, detail="Rag_Unit 無 unit_name，請在 body 傳入 unit_name")
-        return resolved_name, rag_unit_id
-    if un:
-        return un, None
-    raise HTTPException(status_code=400, detail="請傳入 rag_unit_id（>0），或非空 unit_name")
-
-
-def _exam_llm_generate_api_instruction(body: ExamLlmGenerateQuizRequest, quiz_user_prompt_resolved: str) -> str:
+    rag_quiz_id: int | None,
+    unit_name: str | None,
+    quiz_name: str | None,
+    quiz_user_prompt_resolved: str,
+) -> str:
     """
     組出 POST /exam/tab/quiz/llm-generate 送進 utils.generate_quiz* 的 quiz_user_prompt_text 前綴。
 
-    quiz_user_prompt_resolved：已自 Rag_Quiz 或請求解析之最終出題 user prompt 文字（可能空，模板內顯示未提供）。
+    quiz_user_prompt_resolved：自 Rag_Quiz（effective rag_quiz_id 來自 Exam_Quiz）解析之出題 prompt（可能空）。
     """
-    rq = body.rag_quiz_id
-    rq_md = f"`{rq}`" if rq is not None else "（請求未傳入）"
-    un = (body.unit_name or "").strip()
-    qn = (body.quiz_name or "").strip()
+    rq = rag_quiz_id
+    rq_md = f"`{rq}`" if rq is not None and rq > 0 else "（Exam_Quiz 未關聯 rag_quiz_id）"
+    un = (unit_name or "").strip()
+    qn = (quiz_name or "").strip()
     qup = (quiz_user_prompt_resolved or "").strip()
     return PROMPT_EXAM_LLM_GENERATE_USER_PREFIX.format(
-        exam_quiz_id=body.exam_quiz_id,
-        rag_unit_id=int(body.rag_unit_id or 0),
+        exam_quiz_id=exam_quiz_id,
+        rag_unit_id=int(rag_unit_id or 0),
         rag_quiz_md=rq_md,
         unit_name_md=un if un else "（未提供）",
         quiz_name_md=qn if qn else "（未提供）",
@@ -559,20 +540,30 @@ def exam_insert_empty_quiz(body: ExamCreateQuizRequest, caller_person_id: Person
 # POST /exam/tab/quiz/llm-generate
 # ---------------------------------------------------------------------------
 
-@router.post("/tab/quiz/llm-generate", summary="Rag LLM Generate Quiz", operation_id="exam_llm_generate_quiz")
+_EXAM_LLM_GEN_DESCRIPTION = """\
+Body：`exam_quiz_id`、`rag_tab_id`、`rag_unit_id`、`rag_quiz_id` 皆必填。
+`rag_tab_id` 須對應 `public.Rag.rag_tab_id`，且與所列 `rag_unit_id`、`rag_quiz_id` 在 DB 上所隸屬之 Tab 一致；並用此載入 ZIP／單元（**不依賴** System_Setting 之 `rag_localhost`/`rag_deploy`）。
+若該 Exam_Quiz 列**已有**有效的 `rag_unit_id`、`rag_quiz_id`，請求兩鍵須與列**完全一致**，否則 400。
+若列**尚未**寫入（缺其一或為 0），則以此請求綁定，出題成功後一併寫回。
+`quiz_user_prompt_text` 僅自 Rag_Quiz（請求中的 `rag_quiz_id`）讀取，不另由 body 帶入文字。
+unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcription。
+unit_type 2／3／4 時不載入 RAG ZIP，改以 transcription 純 LLM 出題。
+出題成功後更新該筆 Exam_Quiz（`rag_tab_id`、`quiz_name`、quiz_content／quiz_hint／quiz_answer_reference、rag_unit_id、rag_quiz_id；清空作答欄位）。
+"""
+
+@router.post(
+    "/tab/quiz/llm-generate",
+    summary="Rag LLM Generate Quiz",
+    operation_id="exam_llm_generate_quiz",
+    description=_EXAM_LLM_GEN_DESCRIPTION.strip(),
+)
 @router.post("/generate-quiz", include_in_schema=False)
 def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, caller_person_id: PersonId):
-    """
-    Body：exam_quiz_id 必填；選填 rag_unit_id（>0）、rag_quiz_id、unit_name、quiz_name。
-    欄位 `quiz_user_prompt_text`（出題 user prompt）僅自 Rag_Quiz（effective rag_quiz_id）讀取。
-    unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcription。
-    unit_type 2／3／4 時不載入 RAG ZIP，改以 transcription 純 LLM 出題。
-    出題成功後更新該筆 Exam_Quiz（quiz_name、quiz_content／quiz_hint／quiz_answer_reference；清空作答欄位）。
-    """
+    """實作與說明見模組常數 `_EXAM_LLM_GEN_DESCRIPTION`（OpenAPI operation description）。"""
     supabase = get_supabase()
     qsel = (
         supabase.table("Exam_Quiz")
-        .select("exam_quiz_id, exam_tab_id, unit_name, rag_unit_id, rag_quiz_id, person_id")
+        .select("exam_quiz_id, exam_tab_id, unit_name, rag_tab_id, rag_unit_id, rag_quiz_id, person_id")
         .eq("exam_quiz_id", body.exam_quiz_id)
         .limit(1)
         .execute()
@@ -584,7 +575,37 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
     if person_id != caller_person_id:
         raise HTTPException(status_code=403, detail="無權對該 Exam_Quiz 出題")
 
-    body_dump_keys = body.model_dump(exclude_unset=True)
+    row_ruid = 0
+    rag_unit_val = qrow.get("rag_unit_id")
+    if rag_unit_val is not None:
+        try:
+            row_ruid = int(rag_unit_val)
+        except (TypeError, ValueError):
+            row_ruid = 0
+
+    row_rqid = 0
+    legacy_rq = qrow.get("rag_quiz_id")
+    if legacy_rq is not None:
+        try:
+            row_rqid = int(legacy_rq)
+        except (TypeError, ValueError):
+            row_rqid = 0
+
+    body_ruid = int(body.rag_unit_id)
+    body_rqid = int(body.rag_quiz_id)
+
+    row_has_rag_pair = row_ruid > 0 and row_rqid > 0
+    if row_has_rag_pair and (body_ruid != row_ruid or body_rqid != row_rqid):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "請求之 rag_unit_id、rag_quiz_id 須與該筆 Exam_Quiz 列已存值完全一致；"
+                f"列上為 rag_unit_id={row_ruid}、rag_quiz_id={row_rqid}"
+            ),
+        )
+
+    effective_ruid = body_ruid
+    effective_rqid = body_rqid
 
     def _rag_quiz_user_prompt_from_db(rag_quiz_id: int, *, explicit_in_request: bool) -> str:
         sel = (
@@ -601,73 +622,81 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             raise HTTPException(status_code=404, detail=f"找不到 rag_quiz_id={rag_quiz_id} 的 Rag_Quiz，或已刪除")
         return ""
 
-    cand_rag_qid: int | None = None
-    explicit_positive_rag_qid = False
-    if "rag_quiz_id" in body_dump_keys:
-        body_rq = body_dump_keys.get("rag_quiz_id")
-        if body_rq is not None:
-            try:
-                rq_int = int(body_rq)
-                if rq_int > 0:
-                    cand_rag_qid = rq_int
-                    explicit_positive_rag_qid = True
-            except (TypeError, ValueError):
-                pass
-    if cand_rag_qid is None:
-        legacy_rq = qrow.get("rag_quiz_id")
-        if legacy_rq is not None:
-            try:
-                lq = int(legacy_rq)
-                if lq > 0:
-                    cand_rag_qid = lq
-            except (TypeError, ValueError):
-                pass
-    quiz_user_prompt_resolved = ""
-    if cand_rag_qid is not None and cand_rag_qid > 0:
-        quiz_user_prompt_resolved = _rag_quiz_user_prompt_from_db(
-            cand_rag_qid, explicit_in_request=explicit_positive_rag_qid
+    cand_rag_qid = effective_rqid
+
+    tab_strip = (body.rag_tab_id or "").strip()
+    if not tab_strip:
+        raise HTTPException(status_code=400, detail="rag_tab_id 不可為空白")
+
+    row_rtab = ""
+    _row_rt = qrow.get("rag_tab_id")
+    if _row_rt is not None:
+        row_rtab = str(_row_rt).strip()
+    if row_rtab and row_rtab != tab_strip:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "請求 rag_tab_id 須與該 Exam_Quiz 列已存 rag_tab_id 一致；"
+                f"請求為 {tab_strip!r}，列上為 {row_rtab!r}"
+            ),
         )
 
-    body_un = (body.unit_name or "").strip()
-    body_ruid = int(body.rag_unit_id or 0)
-    effective_unit_name: str | None = None
-    effective_rag_unit_id: int | None = None
-    unit_filter: str | None = None
-    stem_rag_unit_id: int | None = None
-
-    if body_ruid > 0:
-        resolved_u, resolved_ruid = _resolve_unit_name_and_rag_for_new_quiz(
-            supabase, unit_name=body_un, rag_unit_id=body_ruid
+    ru_one = (
+        supabase.table("Rag_Unit")
+        .select("unit_name, rag_tab_id")
+        .eq("rag_unit_id", effective_ruid)
+        .eq("deleted", False)
+        .limit(1)
+        .execute()
+    )
+    if not ru_one.data:
+        raise HTTPException(status_code=404, detail=f"找不到 rag_unit_id={effective_ruid} 之 Rag_Unit")
+    ru_tab = (ru_one.data[0].get("rag_tab_id") or "").strip()
+    if ru_tab != tab_strip:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "請求 rag_tab_id 須與 rag_unit_id 所隸 Rag Tab 一致；"
+                f"請求為 {tab_strip!r}，Rag_Unit 為 {ru_tab!r}"
+            ),
         )
-        effective_unit_name = resolved_u
-        effective_rag_unit_id = resolved_ruid
-        unit_filter = (resolved_u or "").strip() or None
-        stem_rag_unit_id = resolved_ruid
-    elif body_un:
-        effective_unit_name = body_un
-        unit_filter = body_un
-    else:
-        row_ruid = 0
-        rag_unit_val = qrow.get("rag_unit_id")
-        if rag_unit_val is not None:
-            try:
-                row_ruid = int(rag_unit_val)
-            except (TypeError, ValueError):
-                row_ruid = 0
-        if row_ruid > 0:
-            unit_sel = (
-                supabase.table("Rag_Unit")
-                .select("unit_name")
-                .eq("rag_unit_id", row_ruid)
-                .eq("deleted", False)
-                .limit(1)
-                .execute()
-            )
-            if unit_sel.data:
-                unit_filter = (unit_sel.data[0].get("unit_name") or "").strip() or None
-                stem_rag_unit_id = row_ruid
-        if not unit_filter:
-            unit_filter = (qrow.get("unit_name") or "").strip() or None
+
+    rq_one = (
+        supabase.table("Rag_Quiz")
+        .select("rag_tab_id")
+        .eq("rag_quiz_id", effective_rqid)
+        .eq("deleted", False)
+        .limit(1)
+        .execute()
+    )
+    if not rq_one.data:
+        raise HTTPException(status_code=404, detail=f"找不到 rag_quiz_id={effective_rqid} 之 Rag_Quiz")
+    rq_tab = (rq_one.data[0].get("rag_tab_id") or "").strip()
+    if rq_tab != tab_strip:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "請求 rag_tab_id 須與 rag_quiz_id 所隸 Rag Tab 一致；"
+                f"請求為 {tab_strip!r}，Rag_Quiz 為 {rq_tab!r}"
+            ),
+        )
+
+    rag_id_resolved = rag_id_from_rag_tab_id(supabase, tab_strip)
+    if rag_id_resolved is None or rag_id_resolved <= 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"找不到 rag_tab_id={tab_strip!r} 對應之 Rag（deleted=false）",
+        )
+
+    quiz_user_prompt_resolved = _rag_quiz_user_prompt_from_db(
+        cand_rag_qid,
+        explicit_in_request=True,
+    )
+
+    unit_filter: str | None = (ru_one.data[0].get("unit_name") or "").strip() or None
+    stem_rag_unit_id: int | None = effective_ruid if effective_ruid > 0 else None
+    if not unit_filter:
+        unit_filter = (qrow.get("unit_name") or "").strip() or None
 
     api_key = get_llm_api_key()
     if not api_key:
@@ -676,15 +705,9 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             detail="請設定 LLM API Key：環境變數 LLM_API_KEY 或 OPENAI_API_KEY（本機可寫入 .env）",
         )
 
-    _, rag_id_from_setting = fetch_exam_rag_id_from_settings(supabase, request)
-    if rag_id_from_setting is None or rag_id_from_setting <= 0:
-        raise HTTPException(
-            status_code=404,
-            detail="尚未設定供測驗用 RAG rag_id：請於 System_Setting 設定 key rag_localhost（本機）或 rag_deploy（非本機），value 為 Rag.rag_id",
-        )
-    rag_rows = select_rag_row_with_transcription_fallback(supabase, rag_id_from_setting)
+    rag_rows = select_rag_row_with_transcription_fallback(supabase, rag_id_resolved)
     if not rag_rows.data or len(rag_rows.data) == 0:
-        raise HTTPException(status_code=404, detail=f"找不到 rag_id={rag_id_from_setting} 的 Rag 資料，或已刪除")
+        raise HTTPException(status_code=404, detail=f"找不到 rag_id={rag_id_resolved} 的 Rag 資料，或已刪除")
     rag_row = rag_rows.data[0]
     rag_id = int(rag_row.get("rag_id") or 0)
     rag_tab_id_for_units = (rag_row.get("rag_tab_id") or "").strip()
@@ -751,6 +774,19 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             detail="單元類型 2／3／4 需有逐字稿：請於 Rag_Unit 設定 transcription，或經 POST /rag/tab/build-rag-zip 寫入",
         )
 
+    prompt_rag_unit_id = int(selected.get("rag_unit_id") or 0) if selected else int(qrow.get("rag_unit_id") or 0)
+    prompt_rag_qid = cand_rag_qid
+    un_for_prompt = (qrow.get("unit_name") or "").strip() or None
+    qn_for_prompt = (qrow.get("quiz_name") or "").strip() or None
+    api_instr = _exam_llm_generate_api_instruction(
+        exam_quiz_id=body.exam_quiz_id,
+        rag_unit_id=prompt_rag_unit_id,
+        rag_quiz_id=prompt_rag_qid,
+        unit_name=un_for_prompt,
+        quiz_name=qn_for_prompt,
+        quiz_user_prompt_resolved=quiz_user_prompt_resolved,
+    )
+
     path: Path | None = None
     try:
         from utils.quiz_generation import generate_quiz, generate_quiz_transcription_only
@@ -759,7 +795,7 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             result = generate_quiz_transcription_only(
                 api_key=api_key,
                 transcription=transcription_text,
-                quiz_user_prompt_text=_exam_llm_generate_api_instruction(body, quiz_user_prompt_resolved),
+                quiz_user_prompt_text=api_instr,
             )
         else:
             path = get_zip_path(rag_zip_tab_id)
@@ -768,7 +804,7 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             result = generate_quiz(
                 path,
                 api_key=api_key,
-                quiz_user_prompt_text=_exam_llm_generate_api_instruction(body, quiz_user_prompt_resolved),
+                quiz_user_prompt_text=api_instr,
             )
         result["transcription"] = "" if unit_type_val == 1 else transcription_text
         result["rag_output"] = {"rag_tab_id": stem, "unit_name": stem, "filename": f"{stem}.zip"}
@@ -782,7 +818,7 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
         result["exam_quiz_id"] = body.exam_quiz_id
         qts = now_taipei_iso()
         unit_name_for_display = (unit_filter or stem or "").strip()
-        quiz_name = (body.quiz_name or "").strip() or ((stem or "").strip() or unit_name_for_display or "")
+        quiz_name = ((stem or "").strip() or unit_name_for_display or (qrow.get("quiz_name") or "").strip() or "")
         result["quiz_name"] = quiz_name
         result["quiz_user_prompt_text"] = quiz_user_prompt_resolved
         result["unit_name"] = unit_name_for_display
@@ -791,18 +827,16 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             "quiz_content": qc,
             "quiz_hint": qh,
             "quiz_answer_reference": qref,
+            "rag_tab_id": tab_strip,
+            "rag_unit_id": int(body.rag_unit_id),
+            "rag_quiz_id": int(body.rag_quiz_id),
             "answer_content": None,
             "answer_critique": None,
             "updated_at": qts,
         }
-        if effective_unit_name is not None:
-            quiz_update["unit_name"] = effective_unit_name
-        if effective_rag_unit_id is not None:
-            quiz_update["rag_unit_id"] = effective_rag_unit_id
-        if "rag_quiz_id" in body_dump_keys:
-            quiz_update["rag_quiz_id"] = body_dump_keys["rag_quiz_id"]
-        result["rag_unit_id"] = quiz_update.get("rag_unit_id", qrow.get("rag_unit_id"))
-        result["rag_quiz_id"] = quiz_update.get("rag_quiz_id", qrow.get("rag_quiz_id"))
+        result["rag_tab_id"] = tab_strip
+        result["rag_unit_id"] = int(body.rag_unit_id)
+        result["rag_quiz_id"] = int(body.rag_quiz_id)
         try:
             supabase.table("Exam_Quiz").update(quiz_update).eq("exam_quiz_id", body.exam_quiz_id).execute()
         except Exception as e:
@@ -848,7 +882,7 @@ async def exam_grade_submission(
 
     qsel = (
         supabase.table("Exam_Quiz")
-        .select("exam_quiz_id, exam_tab_id, unit_name, rag_unit_id, rag_quiz_id, person_id, quiz_content")
+        .select("exam_quiz_id, exam_tab_id, unit_name, rag_tab_id, rag_unit_id, rag_quiz_id, person_id, quiz_content")
         .eq("exam_quiz_id", body.exam_quiz_id)
         .limit(1)
         .execute()
@@ -874,19 +908,23 @@ async def exam_grade_submission(
             },
         )
 
-    _, rag_id_from_setting = fetch_exam_rag_id_from_settings(supabase, request)
-    if rag_id_from_setting is None or rag_id_from_setting <= 0:
-        return JSONResponse(
-            status_code=404,
-            content={"error": "尚未設定供測驗用 RAG rag_id：請於 System_Setting 設定 key rag_localhost（本機）或 rag_deploy（非本機），value 為 Rag.rag_id"},
-        )
-
-    grade_unit_filter: str | None = (qrow.get("unit_name") or "").strip() or None
-    exam_grade_unit_type = 0
     try:
         rag_uid_int = int(rag_unit_id_val) if rag_unit_id_val is not None else 0
     except (TypeError, ValueError):
         rag_uid_int = 0
+
+    rag_rqid_int = 0
+    _erq0 = qrow.get("rag_quiz_id")
+    if _erq0 is not None:
+        try:
+            rag_rqid_int = int(_erq0)
+            if rag_rqid_int < 0:
+                rag_rqid_int = 0
+        except (TypeError, ValueError):
+            rag_rqid_int = 0
+
+    grade_unit_filter: str | None = (qrow.get("unit_name") or "").strip() or None
+    exam_grade_unit_type = 0
     transcription_for_unit = ""
     if rag_uid_int > 0:
         try:
@@ -922,8 +960,33 @@ async def exam_grade_submission(
                 exam_grade_unit_type = 0
             transcription_for_unit = (u0.get("transcription") or "").strip()
 
+    rag_id_used: int | None = None
+    rt_exam = (str(qrow.get("rag_tab_id") or "").strip())
+    if rt_exam:
+        rag_id_used = rag_id_from_rag_tab_id(supabase, rt_exam)
+
+    if rag_id_used is None or rag_id_used <= 0:
+        rag_id_used, _ = resolve_exam_content_rag_id(
+            supabase,
+            request,
+            stem_rag_unit_id=rag_uid_int if rag_uid_int > 0 else None,
+            rag_quiz_id=rag_rqid_int if rag_rqid_int > 0 else None,
+        )
+
+    if rag_id_used is None or rag_id_used <= 0:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": (
+                    "無法決定評分用之 RAG：請確認 Exam_Quiz 填有對應 `Rag` 之 rag_tab_id，"
+                    "或 rag_unit_id／rag_quiz_id 可自 Rag_Unit／Rag_Quiz 解析；仍可於 System_Setting "
+                    "設定 rag_localhost／rag_deploy，value=Rag.rag_id。"
+                ),
+            },
+        )
+
     try:
-        rag_id = int(rag_id_from_setting)
+        rag_id = int(rag_id_used)
         row_exam, _stem, rag_zip_tab_id = get_rag_stem_from_rag_id(
             supabase,
             rag_id,
@@ -940,23 +1003,20 @@ async def exam_grade_submission(
     answer_user_prompt_exam = ""
     exam_rag_quiz_id: int | None = None
     try:
-        erq = qrow.get("rag_quiz_id")
-        if erq is not None:
-            erqi = int(erq)
-            if erqi > 0:
-                exam_rag_quiz_id = erqi
-                rqgx = (
-                    supabase.table("Rag_Quiz")
-                    .select("quiz_user_prompt_text, answer_user_prompt_text")
-                    .eq("rag_quiz_id", erqi)
-                    .eq("deleted", False)
-                    .limit(1)
-                    .execute()
-                )
-                if rqgx.data:
-                    r0 = rqgx.data[0]
-                    quiz_user_prompt_exam = (r0.get("quiz_user_prompt_text") or "").strip()
-                    answer_user_prompt_exam = (r0.get("answer_user_prompt_text") or "").strip()
+        if rag_rqid_int > 0:
+            exam_rag_quiz_id = rag_rqid_int
+            rqgx = (
+                supabase.table("Rag_Quiz")
+                .select("quiz_user_prompt_text, answer_user_prompt_text")
+                .eq("rag_quiz_id", rag_rqid_int)
+                .eq("deleted", False)
+                .limit(1)
+                .execute()
+            )
+            if rqgx.data:
+                r0 = rqgx.data[0]
+                quiz_user_prompt_exam = (r0.get("quiz_user_prompt_text") or "").strip()
+                answer_user_prompt_exam = (r0.get("answer_user_prompt_text") or "").strip()
     except (TypeError, ValueError):
         exam_rag_quiz_id = None
 

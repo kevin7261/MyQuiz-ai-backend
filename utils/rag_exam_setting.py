@@ -51,6 +51,11 @@ def fetch_exam_rag_id_from_settings(supabase, request: Request) -> tuple[str, in
         return key, None
 
 
+def rag_id_from_rag_tab_id(supabase, rag_tab_id: str) -> int | None:
+    """由 `Rag.rag_tab_id` 解析 `rag_id`（deleted=false）；供 Exam 等非 System_Setting 路徑使用。"""
+    return _rag_id_from_rag_tab_id(supabase, rag_tab_id)
+
+
 def _rag_id_from_rag_tab_id(supabase, rag_tab_id: str) -> int | None:
     tab = (rag_tab_id or "").strip()
     if not tab:
