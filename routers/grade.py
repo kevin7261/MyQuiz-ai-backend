@@ -206,6 +206,9 @@ def _run_grade_job(
     quiz_content: str,
     quiz_answer: str,
     answer_user_prompt_text: str = "",
+    *,
+    exam_quiz_id: int | None = None,
+    rag_quiz_id: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """在給定的 work_dir（已含 ref.zip）執行 RAG + GPT 評分。回傳 (LLM 訊息原文, 解析後 JSON 物件)。"""
     # 工作目錄中的 ZIP 路徑
@@ -275,22 +278,31 @@ def _run_grade_job(
     context_text = "\n\n".join([d.page_content for d in docs])
 
     course_name = get_course_name_for_prompt()
-    aup = (answer_user_prompt_text or "").strip()
-    aup_block = (
-        f"        【作答補充／批改指引】\n        {aup}\n"
-        if aup
-        else ""
-    )
-    # 組裝評分 prompt：角色、目標、限制、評分標準、輸出格式、題目、學生答案、講義依據
+    qc_disp = (quiz_content or "").strip() or "（未提供）"
+    qa_disp = (quiz_answer or "").strip() or "（未提供）"
+    aup_disp = (answer_user_prompt_text or "").strip() or "（未提供）"
+    id_lines: list[str] = []
+    if exam_quiz_id is not None and exam_quiz_id > 0:
+        id_lines.append(f"        【exam_quiz_id】{exam_quiz_id}")
+    if rag_quiz_id is not None and rag_quiz_id > 0:
+        id_lines.append(f"        【rag_quiz_id】{rag_quiz_id}")
+    id_block = ("\n" + "\n".join(id_lines) + "\n") if id_lines else ""
+
+    # 組裝評分 prompt：API 傳入之題幹／作答／批改指引與 RAG 課程內容
     prompt = f"""
-        你是一位「{course_name}」課程的教授，請批改這道題目：。
-        【評分規範】
-        跟據「測驗題目」與「課程內容」，評估「學生答案」的內容是否正確。
-        測驗題目：{quiz_content}
-        學生答案：{quiz_answer}
-        {aup_block}        課程內容：{context_text}
+        你是一位「{course_name}」課程的教授，請批改這道題目。
+        {id_block}        【評分規範】
+        請依下列「API 傳入」之測驗題目、學生作答、作答補充／批改指引，以及「課程內容（RAG 檢索）」，評估學生答案是否正確。
+        【quiz_content 測驗題目】
+        {qc_disp}
+        【quiz_answer 學生作答】
+        {qa_disp}
+        【answer_user_prompt_text 作答補充／批改指引】
+        {aup_disp}
+        【課程內容（RAG 檢索）】
+        {context_text}
         【重要限制】
-        請使用繁體繁體中文 (Traditional Chinese) 撰寫評語 (quiz_comments)。**
+        請使用繁體中文 (Traditional Chinese) 撰寫評語 (quiz_comments)。
         【評分標準】
         0-5分，一定是整數 (quiz_grade)。
         0: 完全錯誤或未作答。
@@ -335,6 +347,9 @@ def _run_grade_job_background(
     results_store: dict[str, dict[str, Any]],
     insert_answer_fn: Callable[[dict, str], tuple[str, int] | None],
     answer_user_prompt_text: str = "",
+    *,
+    exam_quiz_id: int | None = None,
+    rag_quiz_id: int | None = None,
 ) -> None:
     """
     通用背景評分：執行評分、可選寫入 DB、結果存 results_store。
@@ -342,7 +357,13 @@ def _run_grade_job_background(
     """
     try:
         _, llm_json = _run_grade_job(
-            work_dir, api_key, quiz_content, quiz_answer, answer_user_prompt_text
+            work_dir,
+            api_key,
+            quiz_content,
+            quiz_answer,
+            answer_user_prompt_text,
+            exam_quiz_id=exam_quiz_id,
+            rag_quiz_id=rag_quiz_id,
         )
         result_dict: dict[str, Any] = {
             "quiz_grade": _quiz_grade_from_llm_json(llm_json),
@@ -838,6 +859,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
         _grade_job_results,  # 結果存放的 dict
         insert_fn,  # 更新 Rag_Quiz 評分欄位
         aup,
+        rag_quiz_id=rag_quiz_id_int,
     )
     # 回傳 202 與 job_id，供前端輪詢
     return JSONResponse(status_code=202, content={"job_id": job_id})

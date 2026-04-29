@@ -36,8 +36,8 @@ def generate_quiz(
     """
     從現成 RAG ZIP（含 FAISS 向量庫）解壓 → 載入向量庫 → 檢索 → 呼叫 GPT-4o 出題。
     僅支援由 POST /rag/tab/build-rag-zip 產出的 RAG ZIP，不支援一般講義 ZIP。
-    system_prompt_instruction 為必填參數，由 API 呼叫端傳入出題系統指令。
-    user_instruction 為選填；非空時置於「課程內容」user 訊息之前（對應 Rag_Quiz.quiz_user_prompt_text 之出題補充）。
+    system_prompt_instruction 為必填參數，由後端自 Rag／Rag_Unit 等解析（非純 API body）。
+    user_instruction 為選填；非空時置於「課程內容」user 訊息之前。POST /exam/tab/quiz/llm-generate 會傳入含 **全部 body 欄位** 之標示文字（含 exam_quiz_id、rag_unit_id、quiz_user_prompt_text 等）；RAG 路徑則多為出題補充（quiz_user_prompt_text）。
     回傳 {"quiz_content", "quiz_hint", "quiz_reference_answer"}；API 層會再加上 system_prompt_instruction 等。
     """
     if not api_key or not api_key.strip():
