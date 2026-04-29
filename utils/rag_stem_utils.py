@@ -94,13 +94,15 @@ def get_rag_stem_from_rag_id(
     rag_id: int,
     include_row: bool = False,
     unit_name: str | None = None,
+    rag_unit_id: int | None = None,
 ):
     """
     由 rag_id 查詢 Rag 表，再從 Rag_Unit 表（優先）或 rag_metadata.outputs（向下相容）取得
     repack stem 與 rag_zip_tab_id（通常為 {stem}_rag）。
 
     include_row=True 時回傳 (row, stem, rag_zip_tab_id)；否則回傳 (stem, rag_zip_tab_id)。
-    unit_name 若指定（非空白），則選取該名稱的單元；未指定則使用第一筆。
+    rag_unit_id 若 >0，優先選取該主鍵之列（須隸屬此 Rag.rag_tab_id）。
+    否則 unit_name 若指定（非空白），則選取該名稱的單元；皆未指定則使用第一筆。
     """
     # 勿在主要 SELECT 含 rag_metadata：部分環境尚未 migration 該欄，會導致整筆查詢 42703。
     # 部分環境 Rag 表尚無 transcription 欄位（42703）時改選不含該欄。
@@ -148,9 +150,30 @@ def get_rag_stem_from_rag_id(
     units = unit_rows.data or []
 
     if units:
+        available = [(u.get("unit_name") or "?") for u in units]
         wanted = (unit_name or "").strip()
+        try:
+            ruid_wanted = int(rag_unit_id) if rag_unit_id is not None else 0
+        except (TypeError, ValueError):
+            ruid_wanted = 0
         selected: dict | None = None
-        if not wanted:
+        if ruid_wanted > 0:
+            for u in units:
+                try:
+                    if int(u.get("rag_unit_id") or 0) == ruid_wanted:
+                        selected = u
+                        break
+                except (TypeError, ValueError):
+                    continue
+            if selected is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"找不到 rag_unit_id={ruid_wanted} 的 Rag_Unit（rag_tab_id={rag_tab_id!r}）；"
+                        f"可選 unit_name：{available}"
+                    ),
+                )
+        elif not wanted:
             selected = units[0]
         else:
             for u in units:
@@ -158,7 +181,6 @@ def get_rag_stem_from_rag_id(
                     selected = u
                     break
             if selected is None:
-                available = [(u.get("unit_name") or "?") for u in units]
                 raise HTTPException(
                     status_code=400,
                     detail=f"找不到 unit_name={wanted!r} 的 Rag_Unit；可選：{available}",

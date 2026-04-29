@@ -92,14 +92,13 @@ def generate_quiz(
     """
     從現成 RAG ZIP（含 FAISS 向量庫）解壓 → 載入向量庫 → 檢索 → 呼叫 GPT-4o 出題。
     僅支援由 POST /rag/tab/build-rag-zip 產出的 RAG ZIP，不支援一般講義 ZIP。
-    transcription 為必填，由後端自 **Rag.transcription**／**Rag_Unit.transcription** 解析（非純 API body）。
-    user_instruction 為選填；非空時置於「課程內容」user 訊息之前。POST /exam/tab/quiz/llm-generate 傳入標示用 API 參數區塊（內含自 Rag_Quiz 讀取之 quiz_user_prompt_text）；POST /rag/tab/unit/quiz/llm-generate 為出題補充（body 或該列 Rag_Quiz.quiz_user_prompt_text）。
+    transcription 為選填：Rag_Unit.unit_type=1（純 RAG 單元）時宜留空，題目僅依向量檢索內容；
+    非空時併入 system 作為出題補充（例如 unit_type=0 或未分類時沿用 Rag／單元補充文字）。
+    user_instruction 為選填；非空時置於「課程內容」user 訊息之前。
     回傳 {"quiz_content", "quiz_hint", "quiz_reference_answer"}；API 層可再加上 transcription 等。
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 llm_api_key")
-    if not transcription or not transcription.strip():
-        raise ValueError("請傳入 transcription（出題用補充／逐字稿文字，必填）")
 
     extract_folder = Path(tempfile.mkdtemp())  # 建立暫存目錄
     try:
@@ -134,12 +133,19 @@ def generate_quiz(
         context_text = "\n\n".join([d.page_content for d in docs])
 
         course_name = get_course_name_for_prompt()
+        tx = (transcription or "").strip()
+        supplement = ""
+        if tx:
+            supplement = f"""
+            【出題補充／參考文字】（與下方檢索到的課程內容並陳時，仍以課程內容為出題依據）
+            {tx}
+"""
         final_system_prompt = f"""
             你是一個「{course_name}」課程的教授，請給學生設計測驗題目：
             【出題規範】
             請根據輸入的「課程內容」設計測驗題目。
             請使用繁體中文 (Traditional Chinese) 出題與撰寫答案提示 (quiz_hint) 及參考答案 (quiz_reference_answer)。
-            **{transcription}**
+            {supplement}
             【回傳格式】
             請以 JSON 格式回傳：
             {{ "quiz_content": "題目內容", 

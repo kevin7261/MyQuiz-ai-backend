@@ -14,7 +14,7 @@ from dependencies.person_id import PersonId
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
-from routers.exam import _exams_by_tab_ids, _quizzes_by_person_id, exam_quiz_grade_from_critique
+from services.exam_queries import exams_by_tab_ids, quizzes_by_person_id, exam_quiz_grade_from_critique
 from utils.json_utils import to_json_safe
 from utils.llm_api_key_utils import get_llm_api_key
 
@@ -178,15 +178,13 @@ def list_quizzes_by_person(
         if path_pid != caller_person_id:
             raise HTTPException(status_code=403, detail="路徑 person_id 與 query 不一致")
 
-        quizzes = _quizzes_by_person_id(path_pid)
-        # 只保留已作答的題目
+        quizzes = quizzes_by_person_id(path_pid)
         quizzes_with_answers = [q for q in quizzes if _quiz_has_answer(q)]
 
-        # 依 exam_tab_id 分群
         tab_ids: list[str] = list(dict.fromkeys(
             str(q.get("exam_tab_id")) for q in quizzes_with_answers if q.get("exam_tab_id") is not None
         ))
-        exam_rows = _exams_by_tab_ids(tab_ids)
+        exam_rows = exams_by_tab_ids(tab_ids)
         quizzes_by_tab: dict[str, list[dict]] = {tid: [] for tid in tab_ids}
         for q in quizzes_with_answers:
             tid = q.get("exam_tab_id")

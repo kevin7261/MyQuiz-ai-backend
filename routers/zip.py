@@ -54,7 +54,7 @@ from utils.rag_transcript_from_upload_zip import (
     build_transcript_md_zip_bytes,
     extract_transcript_for_rag_build,
 )
-from routers.grade import _quiz_grade_from_answer_critique
+from services.grading import quiz_grade_from_answer_critique
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -1245,6 +1245,7 @@ def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonI
         if not ins.data or len(ins.data) == 0:
             raise HTTPException(status_code=500, detail="寫入 Rag_Quiz 失敗（無回傳資料）")
         row = ins.data[0]
+        ans = (row.get("quiz_answer") or row.get("answer_content") or "") or ""
         return to_json_safe(
             {
                 "rag_quiz_id": row.get("rag_quiz_id"),
@@ -1257,8 +1258,9 @@ def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonI
                 "quiz_hint": row.get("quiz_hint"),
                 "quiz_answer_reference": row.get("quiz_answer_reference"),
                 "answer_user_prompt_text": row.get("answer_user_prompt_text"),
-                "answer_content": row.get("answer_content"),
-                "answer_grade": _quiz_grade_from_answer_critique(row.get("answer_critique")),
+                "quiz_answer": ans,
+                "answer_content": ans,
+                "answer_grade": quiz_grade_from_answer_critique(row.get("answer_critique")),
                 "answer_critique": row.get("answer_critique"),
                 "for_exam": row.get("for_exam"),
                 "deleted": row.get("deleted"),

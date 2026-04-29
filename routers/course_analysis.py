@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException
 from dependencies.person_id import PersonId
 from pydantic import BaseModel, Field
 
-from routers.exam import _all_exam_quizzes, _exams_by_tab_ids, exam_quiz_grade_from_critique
+from services.exam_queries import all_exam_quizzes, exams_by_tab_ids, exam_quiz_grade_from_critique
 from utils.json_utils import to_json_safe
 
 router = APIRouter(prefix="/course-analysis", tags=["course analysis"])
@@ -49,9 +49,8 @@ def list_exam_quizzes(_person_id: PersonId):
     weakness_report 固定為 null。
     """
     try:
-        quizzes = _all_exam_quizzes()
+        quizzes = all_exam_quizzes()
 
-        # 以 exam_tab_id 分群
         tab_ids: list[str] = []
         for row in quizzes:
             tid = row.get("exam_tab_id")
@@ -59,7 +58,7 @@ def list_exam_quizzes(_person_id: PersonId):
                 tab_ids.append(str(tid))
         tab_ids = list(dict.fromkeys(tab_ids))
 
-        exam_rows = _exams_by_tab_ids(tab_ids)
+        exam_rows = exams_by_tab_ids(tab_ids)
         quizzes_by_tab: dict[str, list[dict]] = {tid: [] for tid in tab_ids}
         for q in quizzes:
             tid = q.get("exam_tab_id")
