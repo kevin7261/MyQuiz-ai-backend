@@ -70,12 +70,12 @@ _exam_grade_job_results: dict[str, dict[str, Any]] = {}
 PROMPT_EXAM_LLM_GENERATE_USER_PREFIX = textwrap.dedent("""
     ## 本次請求 API 參數
 
-    請一併納入出題考量：
+    請一併納入出題考量（順序對齊 public.Exam_Quiz 請求／關聯欄）：
 
     - **exam_quiz_id**：`{exam_quiz_id}`
+    - **unit_name**：{unit_name_md}
     - **rag_unit_id**：`{rag_unit_id}`
     - **rag_quiz_id**：{rag_quiz_md}
-    - **unit_name**：{unit_name_md}
     - **quiz_name**：{quiz_name_md}
 
     ### quiz_user_prompt_text
@@ -126,13 +126,17 @@ class ExamCreateQuizRequest(BaseModel):
 
 
 class ExamLlmGenerateQuizRequest(BaseModel):
-    """POST /exam/tab/quiz/llm-generate；exam_quiz_id 必填；其餘選填。出題補充僅自 Rag_Quiz 依 rag_quiz_id 讀取，不在本 body。"""
+    """POST /exam/tab/quiz/llm-generate；exam_quiz_id 必填；其餘選填；欄位順序對齊 public.Exam_Quiz 關聯欄（略 exam_tab_id／person_id）。"""
 
     model_config = ConfigDict(
         json_schema_extra={"example": {"exam_quiz_id": 1}},
     )
 
     exam_quiz_id: int = Field(..., gt=0, description="Exam_Quiz 主鍵（須已存在，通常為 create 後之錨點列）")
+    unit_name: str | None = Field(
+        default=None,
+        description="選填；可省略。非空字串時作為單元篩選並寫入 Exam_Quiz.unit_name（若未同時傳 rag_unit_id>0）",
+    )
     rag_unit_id: int = Field(
         0,
         ge=0,
@@ -141,10 +145,6 @@ class ExamLlmGenerateQuizRequest(BaseModel):
     rag_quiz_id: int | None = Field(
         None,
         description="選填；來源 Rag_Quiz 主鍵，寫入 Exam_Quiz.rag_quiz_id；請求未帶此欄時不改 DB；可傳 null 清空",
-    )
-    unit_name: str | None = Field(
-        default=None,
-        description="選填；可省略。非空字串時作為單元篩選並寫入 Exam_Quiz.unit_name（若未同時傳 rag_unit_id>0）",
     )
     quiz_name: str | None = Field(
         default=None,
@@ -159,16 +159,16 @@ class ExamQuizRateRequest(BaseModel):
 
 
 class ExamQuizGradeRequest(BaseModel):
-    """POST /exam/tab/quiz/llm-grade：以 exam_quiz_id 定位題目；answer_user_prompt_text 僅自 Rag_Quiz 讀取。"""
+    """POST /exam/tab/quiz/llm-grade：欄位順序對齊 public.Exam_Quiz（題幹優先於作答）；answer_user_prompt_text 僅自 Rag_Quiz 讀取。"""
     exam_quiz_id: int = Field(..., gt=0, description="Exam_Quiz 主鍵（必填，>0）；置入評分 prompt")
+    quiz_content: str = Field(
+        "",
+        description="選填；若空則使用 Exam_Quiz 中存的 quiz_content；置入評分 prompt",
+    )
     quiz_answer: str = Field(
         ...,
         description="學生作答；寫入 Exam_Quiz.answer_content；置入評分 prompt",
         validation_alias=AliasChoices("quiz_answer", "answer"),
-    )
-    quiz_content: str = Field(
-        "",
-        description="選填；若空則使用 Exam_Quiz 中存的 quiz_content；置入評分 prompt",
     )
 
 
@@ -250,7 +250,7 @@ def _resolve_unit_name_and_rag_for_new_quiz(
 
 def _exam_llm_generate_api_instruction(body: ExamLlmGenerateQuizRequest, quiz_user_prompt_resolved: str) -> str:
     """
-    組出 POST /exam/tab/quiz/llm-generate 送進 utils.generate_quiz* 的 user_instruction 前綴。
+    組出 POST /exam/tab/quiz/llm-generate 送進 utils.generate_quiz* 的 quiz_user_prompt_text 前綴。
 
     quiz_user_prompt_resolved：已自 Rag_Quiz 或請求解析之最終出題補充文字（可能空，模板內顯示未提供）。
     """
@@ -748,7 +748,7 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             result = generate_quiz_transcription_only(
                 api_key=api_key,
                 transcription=transcription_text,
-                user_instruction=_exam_llm_generate_api_instruction(body, quiz_user_prompt_resolved),
+                quiz_user_prompt_text=_exam_llm_generate_api_instruction(body, quiz_user_prompt_resolved),
             )
         else:
             path = get_zip_path(rag_zip_tab_id)
@@ -757,17 +757,17 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             result = generate_quiz(
                 path,
                 api_key=api_key,
-                user_instruction=_exam_llm_generate_api_instruction(body, quiz_user_prompt_resolved),
+                quiz_user_prompt_text=_exam_llm_generate_api_instruction(body, quiz_user_prompt_resolved),
             )
         result["transcription"] = "" if unit_type_val == 1 else transcription_text
         result["rag_output"] = {"rag_tab_id": stem, "unit_name": stem, "filename": f"{stem}.zip"}
 
         qc = (result.get("quiz_content") or "").strip()
         qh = (result.get("quiz_hint") or "").strip()
-        qref = (result.get("quiz_reference_answer") or "").strip()
+        qref = (result.get("quiz_answer_reference") or "").strip()
         result["quiz_content"] = qc
         result["quiz_hint"] = qh
-        result["quiz_reference_answer"] = qref
+        result["quiz_answer_reference"] = qref
         result["exam_quiz_id"] = body.exam_quiz_id
         qts = now_taipei_iso()
         unit_name_for_display = (unit_filter or stem or "").strip()

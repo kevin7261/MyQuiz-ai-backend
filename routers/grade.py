@@ -251,7 +251,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
             result = generate_quiz_transcription_only(
                 api_key=api_key,
                 transcription=transcription_text,
-                user_instruction=qup_for_llm,
+                quiz_user_prompt_text=qup_for_llm,
             )
         else:
             path = get_zip_path(rag_zip_tab_id)
@@ -263,7 +263,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
             result = generate_quiz(
                 path,
                 api_key=api_key,
-                user_instruction=qup_for_llm,
+                quiz_user_prompt_text=qup_for_llm,
             )
         result["transcription"] = "" if unit_type_val == 1 else transcription_text
         result["rag_output"] = {
@@ -273,10 +273,10 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
         }
         qc = (result.get("quiz_content") or "").strip()
         qh = (result.get("quiz_hint") or "").strip()
-        qref = (result.get("quiz_reference_answer") or "").strip()
+        qref = (result.get("quiz_answer_reference") or "").strip()
         result["quiz_content"] = qc
         result["quiz_hint"] = qh
-        result["quiz_reference_answer"] = qref
+        result["quiz_answer_reference"] = qref
         result["rag_quiz_id"] = body.rag_quiz_id
         qup_stored = qup_body if qup_body else qup_db
         qts = now_taipei_iso()
