@@ -45,12 +45,18 @@ app = FastAPI(title="MyQuiz.ai_backend")
 # 評分已改為非同步：POST /rag/.../llm-grade、POST /exam/.../llm-grade 回傳 202 + job_id，請用對應 GET .../grade-result/{job_id} 輪詢結果
 # 後端預設 uvicorn :8000；前端若跑在其它 origin（如 :8081），必須列在下方或 CORS_EXTRA_ORIGINS，否則瀏覽器會擋跨域（與 API 404 無關）
 _cors_base = [
-    "http://localhost:8080",           # 本地開發（localhost）
-    "http://127.0.0.1:8080",           # 本地開發（127.0.0.1）
-    "http://localhost:8081",           # 本地開發（常見 webpack 等預設 8081）
-    "http://127.0.0.1:8081",           # 本地開發（127.0.0.1:8081）
-    "https://kevin7261.github.io",     # GitHub Pages 前端
-    "https://myquiz-ai.vercel.app",    # MyQuiz.ai 前端（Vercel）
+    "http://localhost:8080",           # Vue CLI／webpack 常見埠
+    "http://127.0.0.1:8080",
+    "http://localhost:8081",
+    "http://127.0.0.1:8081",
+    "http://localhost:5173",           # Vite 預設
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",           # vite preview
+    "http://127.0.0.1:4173",
+    "http://localhost:3000",           # 部分 React／Next 本機
+    "http://127.0.0.1:3000",
+    "https://kevin7261.github.io",
+    "https://myquiz-ai.vercel.app",
 ]
 # Vercel／改專案名後網址會變，可在 .env 或部署平台設定 CORS_EXTRA_ORIGINS（逗號分隔）追加，無需改程式
 _extra = (os.environ.get("CORS_EXTRA_ORIGINS") or "").strip()

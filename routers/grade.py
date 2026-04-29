@@ -171,7 +171,7 @@ class GenerateQuizRequest(BaseModel):
     )
     quiz_user_prompt_text: str = Field(
         "",
-        description="使用者出題補充（可空）；併入送 LLM 之 user 訊息並寫入 Rag_Quiz",
+        description="出題補充（可空）；非空時優先並寫入 Rag_Quiz；空則自該列 Rag_Quiz.quiz_user_prompt_text 帶入 LLM",
     )
 
 
@@ -678,7 +678,7 @@ def _update_exam_quiz_with_grade(
 def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId):
     """
     Body：**`rag_quiz_id`、`quiz_name`、`quiz_user_prompt_text`**（後兩者可空字串）；
-    `rag_tab_id`／`rag_unit_id` 由後端依 `rag_quiz_id` 自資料庫帶入；`quiz_name` 空則沿用 stem／單元名。
+    `rag_tab_id`／`rag_unit_id` 由後端依 `rag_quiz_id` 自資料庫帶入；`quiz_user_prompt_text` 空則自該列 **Rag_Quiz** 讀取；`quiz_name` 空則沿用 stem／單元名。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
     程式依 rag_quiz_id 對應之 rag_unit_id 查到 Rag_Unit，再回推 Rag；**unit_type 為 2／3／4**（文字／音訊／YouTube 逐字稿單元）時**不載入 RAG ZIP**，以 LLM 純生成：**system** = transcription、**user** = quiz_user_prompt_text。
     其餘 unit_type 則查找 RAG ZIP（FAISS）檢索後出題。
@@ -689,7 +689,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
 
     q_sel = (
         supabase.table("Rag_Quiz")
-        .select("rag_quiz_id, rag_tab_id, rag_unit_id")
+        .select("rag_quiz_id, rag_tab_id, rag_unit_id, quiz_user_prompt_text")
         .eq("rag_quiz_id", body.rag_quiz_id)
         .eq("deleted", False)
         .limit(1)
@@ -698,6 +698,9 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
     if not q_sel.data:
         raise HTTPException(status_code=404, detail=f"找不到 rag_quiz_id={body.rag_quiz_id} 的 Rag_Quiz")
     q_row = q_sel.data[0]
+    qup_body = (body.quiz_user_prompt_text or "").strip()
+    qup_db = (q_row.get("quiz_user_prompt_text") or "").strip()
+    qup_for_llm = qup_body or qup_db
     source_rag_unit_id = int(q_row.get("rag_unit_id") or 0)
     if source_rag_unit_id <= 0:
         raise HTTPException(status_code=400, detail="該 rag_quiz_id 對應的 rag_unit_id 無效")
@@ -784,7 +787,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
             result = generate_quiz_transcription_only(
                 api_key=api_key,
                 transcription=transcription_text,
-                user_instruction=body.quiz_user_prompt_text or "",
+                user_instruction=qup_for_llm,
             )
         else:
             path = get_zip_path(rag_zip_tab_id)
@@ -797,7 +800,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
                 path,
                 api_key=api_key,
                 transcription=transcription_text,
-                user_instruction=body.quiz_user_prompt_text or "",
+                user_instruction=qup_for_llm,
             )
         result["transcription"] = transcription_text
         # 加入 rag_output 供前端參考
@@ -813,14 +816,14 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
         result["quiz_hint"] = qh
         result["quiz_reference_answer"] = qref
         result["rag_quiz_id"] = body.rag_quiz_id
-        qup = (body.quiz_user_prompt_text or "").strip()
+        qup_stored = qup_body if qup_body else qup_db
         qts = now_taipei_iso()
         body_quiz_name = body.quiz_name.strip()
         quiz_name = body_quiz_name or ((stem or "").strip() or (unit_row.get("unit_name") or "").strip() or "")
         result["quiz_name"] = quiz_name
         quiz_update: dict[str, Any] = {
             "quiz_name": quiz_name,
-            "quiz_user_prompt_text": qup,
+            "quiz_user_prompt_text": qup_stored,
             "quiz_content": qc,
             "quiz_hint": qh,
             "quiz_answer_reference": qref,
