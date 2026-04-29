@@ -858,7 +858,7 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
     if rag_tab_id_for_units:
         unit_q = (
             supabase.table("Rag_Unit")
-            .select("rag_unit_id, unit_name, transcription, quiz_system_prompt_text")
+            .select("rag_unit_id, unit_name, transcription")
             .eq("rag_tab_id", rag_tab_id_for_units)
             .eq("deleted", False)
             .order("created_at", desc=False)
@@ -874,9 +874,7 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
                     break
     transcription_text = ""
     if selected:
-        transcription_text = (
-            (selected.get("transcription") or selected.get("quiz_system_prompt_text") or "").strip()
-        )
+        transcription_text = (selected.get("transcription") or "").strip()
     if not transcription_text:
         transcription_text = instruction_from_rag_row(rag_row)
     if not transcription_text:

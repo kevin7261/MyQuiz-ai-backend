@@ -605,7 +605,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
 
     unit_sel = (
         supabase.table("Rag_Unit")
-        .select("rag_unit_id, rag_tab_id, unit_name, transcription, quiz_system_prompt_text")
+        .select("rag_unit_id, rag_tab_id, unit_name, transcription")
         .eq("rag_unit_id", source_rag_unit_id)
         .eq("deleted", False)
         .limit(1)
@@ -661,10 +661,8 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
             status_code=400,
             detail="該使用者（person_id）尚未於個人設定填寫 LLM API Key，請至 User 設定",
         )
-    # 出題注入文字：單元優先，其次 Rag 表層 transcription（向下相容讀 quiz_system_prompt_text）
-    transcription_text = (
-        (unit_row.get("transcription") or unit_row.get("quiz_system_prompt_text") or "").strip()
-    )
+    # 出題注入文字：單元優先，其次 Rag 表層 transcription
+    transcription_text = (unit_row.get("transcription") or "").strip()
     if not transcription_text:
         transcription_text = instruction_from_rag_row(row)
     if not transcription_text:
