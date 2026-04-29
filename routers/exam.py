@@ -15,6 +15,7 @@ import json
 import logging
 import shutil
 import tempfile
+import textwrap
 import uuid
 import zipfile
 from pathlib import Path
@@ -57,6 +58,30 @@ router = APIRouter(prefix="/exam", tags=["exam"])
 ExamQuizRateValue = Literal[-1, 0, 1]
 
 _exam_grade_job_results: dict[str, dict[str, Any]] = {}
+
+
+# ---------------------------------------------------------------------------
+# LLM Prompt 範本（exam 出題 user 前綴；置於課程內容／檢索片段之前）
+# ---------------------------------------------------------------------------
+# 由 _exam_llm_generate_api_instruction 以 .format 代入；與 grade 路由「僅 quiz_user_prompt」不同，
+# exam 須把本次請求相關 id／名稱一併給模型，方便對齊寫回之 Exam_Quiz 列。
+# rag_quiz_md：已含反引號或「（請求未傳入）」字面字串，故模板內不再加反引號包裹。
+
+PROMPT_EXAM_LLM_GENERATE_USER_PREFIX = textwrap.dedent("""
+    ## 本次請求 API 參數
+
+    請一併納入出題考量：
+
+    - **exam_quiz_id**：`{exam_quiz_id}`
+    - **rag_unit_id**：`{rag_unit_id}`
+    - **rag_quiz_id**：{rag_quiz_md}
+    - **unit_name**：{unit_name_md}
+    - **quiz_name**：{quiz_name_md}
+
+    ### quiz_user_prompt_text
+
+    {quiz_user_prompt}
+    """).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -224,23 +249,24 @@ def _resolve_unit_name_and_rag_for_new_quiz(
 
 
 def _exam_llm_generate_api_instruction(body: ExamLlmGenerateQuizRequest, quiz_user_prompt_resolved: str) -> str:
-    """將 llm-generate 請求 body 各欄標示後置於送 LLM 之 user 訊息開頭（課程內容檢索之前）。"""
+    """
+    組出 POST /exam/tab/quiz/llm-generate 送進 utils.generate_quiz* 的 user_instruction 前綴。
+
+    quiz_user_prompt_resolved：已自 Rag_Quiz 或請求解析之最終出題補充文字（可能空，模板內顯示未提供）。
+    """
     rq = body.rag_quiz_id
-    rq_line = f"rag_quiz_id: {rq}" if rq is not None else "rag_quiz_id: （請求未傳入）"
+    rq_md = f"`{rq}`" if rq is not None else "（請求未傳入）"
     un = (body.unit_name or "").strip()
     qn = (body.quiz_name or "").strip()
     qup = (quiz_user_prompt_resolved or "").strip()
-    lines = [
-        "【本次請求 API 參數（請一併納入出題考量）】",
-        f"exam_quiz_id: {body.exam_quiz_id}",
-        f"rag_unit_id: {int(body.rag_unit_id or 0)}",
-        rq_line,
-        f"unit_name: {un if un else '（未提供）'}",
-        f"quiz_name: {qn if qn else '（未提供）'}",
-        "quiz_user_prompt_text:",
-        qup if qup else "（未提供）",
-    ]
-    return "\n".join(lines)
+    return PROMPT_EXAM_LLM_GENERATE_USER_PREFIX.format(
+        exam_quiz_id=body.exam_quiz_id,
+        rag_unit_id=int(body.rag_unit_id or 0),
+        rag_quiz_md=rq_md,
+        unit_name_md=un if un else "（未提供）",
+        quiz_name_md=qn if qn else "（未提供）",
+        quiz_user_prompt=qup if qup else "（未提供）",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -714,8 +740,6 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             detail="單元類型 2／3／4 需有逐字稿：請於 Rag_Unit 設定 transcription，或經 POST /rag/tab/build-rag-zip 寫入",
         )
 
-    transcription_for_rag_zip = "" if unit_type_val == 1 else transcription_text
-
     path: Path | None = None
     try:
         from utils.quiz_generation import generate_quiz, generate_quiz_transcription_only
@@ -733,10 +757,9 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             result = generate_quiz(
                 path,
                 api_key=api_key,
-                system_supplement=transcription_for_rag_zip,
                 user_instruction=_exam_llm_generate_api_instruction(body, quiz_user_prompt_resolved),
             )
-        result["transcription"] = transcription_text if unit_type_val in (2, 3, 4) else transcription_for_rag_zip
+        result["transcription"] = "" if unit_type_val == 1 else transcription_text
         result["rag_output"] = {"rag_tab_id": stem, "unit_name": stem, "filename": f"{stem}.zip"}
 
         qc = (result.get("quiz_content") or "").strip()

@@ -3,9 +3,14 @@
 依 person_id 查詢 Exam_Quiz 資料。新 schema 答案欄位直接內嵌於 Exam_Quiz（answer_content, answer_critique；分數於 critique 之 quiz_grade），不再有獨立的 Exam_Answer 表。
 - GET /person-analysis/quizzes/{person_id}：依 person_id 取得已作答的 Exam_Quiz（answer_content 非空），
   依 exam_tab_id 分群回傳；另帶 weakness_report（系統有 LLM API Key 時由 AI 產生）。
+
+重要：弱點報告 prompt 與回應皆為 Markdown；與 json_object 出題／批改分流。
+
+檔案結構：LLM Prompt 常數 → Pydantic → 弱點資料彙整私有函式 → 路由。
 """
 
 import json
+import textwrap
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Path as PathParam
@@ -21,6 +26,37 @@ from utils.llm_api_key_utils import get_llm_api_key
 router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
 
 
+# ---------------------------------------------------------------------------
+# LLM Prompt 範本（弱點報告；集中維護）
+# ---------------------------------------------------------------------------
+# {material}：由 _generate_weakness_report_md 動態組成（批改評語列表或試卷摘要），勿在常數內寫死內容。
+
+PROMPT_WEAKNESS_REPORT = textwrap.dedent("""
+    # 任務
+
+    你是教學顧問。請根據以下測驗資料，撰寫一份**純 Markdown** 學習弱點報告（**勿**使用 JSON）。
+
+    ---
+
+    {material}
+
+    ---
+
+    ## 撰寫要求
+
+    1. 全文請使用 **繁體中文**。
+    2. 結構請包含：**簡介**、**學習弱點分析**、**具體建議**、**結論**（使用 Markdown 標題與條列即可）。
+    3. 僅輸出報告本文，不要前言後語或以程式碼區塊包整份報告。
+    """).strip()
+
+# 與出題／批改分開命名，避免日後改模型時誤改到別條 API。
+WEAKNESS_LLM_MODEL = "gpt-4o"
+
+
+# ---------------------------------------------------------------------------
+# Pydantic 模型
+# ---------------------------------------------------------------------------
+
 class ListQuizzesByPersonResponse(BaseModel):
     """GET /person-analysis/quizzes/{person_id} 回應。"""
     exams: list[dict]
@@ -31,7 +67,12 @@ class ListQuizzesByPersonResponse(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# 弱點報告：資料彙整（私有）
+# ---------------------------------------------------------------------------
+
 def _quiz_has_answer(quiz: dict) -> bool:
+    """有作答內容才納入弱點分析（避免空列干擾 LLM）。"""
     return bool((quiz.get("answer_content") or "").strip())
 
 
@@ -61,6 +102,7 @@ def _metadata_for_weaknesses(ans: dict) -> Any:
 
 
 def _strings_from_quiz_comments_field(raw: Any) -> list[str]:
+    """將 critique 內 quiz_comments（多型別元素）展平為字串列表。"""
     if not isinstance(raw, list):
         return []
     out: list[str] = []
@@ -81,6 +123,7 @@ def _strings_from_quiz_comments_field(raw: Any) -> list[str]:
 
 
 def _feedback_lines_from_metadata_dict(data: dict) -> list[str]:
+    """合併 weaknesses 陣列與 quiz_comments 內可讀字串，供弱點報告素材。"""
     lines: list[str] = []
     w = data.get("weaknesses")
     if isinstance(w, list):
@@ -102,6 +145,7 @@ def _collect_weaknesses_from_quizzes(quizzes: list[dict]) -> list[str]:
 
 
 def _clip(text: str, max_len: int) -> str:
+    """截斷過長欄位，避免 PROMPT token 膨脹（長度與 _build_quiz_context_block 呼叫處一致）。"""
     t = (text or "").strip()
     if len(t) <= max_len:
         return t
@@ -109,6 +153,7 @@ def _clip(text: str, max_len: int) -> str:
 
 
 def _build_quiz_context_block(quizzes: list[dict]) -> str:
+    """無結構化評語時，以題幹／參考答案／作答／分數組 Markdown 區塊供 LLM 分析。"""
     parts: list[str] = []
     for i, quiz in enumerate(quizzes or [], 1):
         q = _clip(str(quiz.get("quiz_content") or ""), 800)
@@ -116,12 +161,20 @@ def _build_quiz_context_block(quizzes: list[dict]) -> str:
         ua = _clip(str(quiz.get("answer_content") or ""), 800)
         grade = exam_quiz_grade_from_critique(quiz)
         parts.append(
-            f"【第 {i} 題】\n題目：{q or '（無）'}\n參考答案：{ref or '（無）'}\n學生作答：{ua or '（無）'}\n得分：{grade!s}"
+            textwrap.dedent(f"""
+                ### 第 {i} 題
+
+                - **題目**：{q or "（無）"}
+                - **參考答案**：{ref or "（無）"}
+                - **學生作答**：{ua or "（無）"}
+                - **得分**：{grade!s}
+                """).strip()
         )
     return "\n\n".join(parts) if parts else ""
 
 
 def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> str:
+    """呼叫 LLM 產生 Markdown 弱點報告；失敗或無 key 時回傳內建 fallback 字串。"""
     fallback_llm = (
         "## 學習弱點報告\n\n"
         "AI 服務暫時無法產生報告，請稍後再試。您仍可依各題的評分與評語於下方試卷資料檢視。"
@@ -131,27 +184,25 @@ def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> str:
 
     feedback_lines = _collect_weaknesses_from_quizzes(quizzes)
     if feedback_lines:
-        material = "來自測驗批改的回饋與評語：\n" + "\n".join(feedback_lines[:80])
+        # 優先使用 critique 內結構化弱點／評語（最多 80 條控制長度）。
+        material = "## 批改回饋與評語\n\n" + "\n".join(f"- {line}" for line in feedback_lines[:80])
     else:
+        # 無評語時退回試卷原文摘要，仍要求模型產出弱點報告。
         ctx = _build_quiz_context_block(quizzes)
-        material = (
-            "以下為各題題幹、參考答案、學生作答與得分（尚無結構化評語時請依此分析學習弱點）：\n\n"
-            + (ctx or "（無可分析內容）")
-        )
+        material = textwrap.dedent(f"""
+            ## 試卷與作答摘要
 
-    prompt = f"""你是教學顧問。請根據以下測驗資料，撰寫一份**純 Markdown** 學習弱點報告（勿使用 JSON）。
+            以下為各題題幹、參考答案、學生作答與得分（尚無結構化評語時請依此分析學習弱點）：
 
-{material}
+            {ctx or "（無可分析內容）"}
+            """).strip()
 
-【重要】
-1. 全文請使用**繁體中文**。
-2. 結構請包含：簡介、學習弱點分析、具體建議、結論（使用 Markdown 標題與條列即可）。
-3. 僅輸出報告本文，不要前言後語或程式碼區塊包整份報告。
-"""
+    prompt = PROMPT_WEAKNESS_REPORT.format(material=material)
     client = OpenAI(api_key=api_key)
     try:
+        # 弱點報告為自由格式 Markdown，不使用 response_format=json_object。
         r = client.chat.completions.create(
-            model="gpt-4o",
+            model=WEAKNESS_LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
         )
@@ -162,6 +213,10 @@ def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> str:
         pass
     return fallback_llm
 
+
+# ---------------------------------------------------------------------------
+# 路由
+# ---------------------------------------------------------------------------
 
 @router.get("/quizzes/{person_id}", response_model=ListQuizzesByPersonResponse)
 def list_quizzes_by_person(

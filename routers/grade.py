@@ -1,6 +1,6 @@
 """
 RAG 評分與出題 API 模組。
-- POST /rag/tab/unit/quiz/llm-generate：依 rag_quiz_id 出題（LLM）；unit_type 1 僅 RAG ZIP 向量檢索；2/3/4 以 transcription 純生成；其餘載 RAG ZIP（可併用補充文字）。
+- POST /rag/tab/unit/quiz/llm-generate：依 rag_quiz_id 出題（LLM）；unit_type 1 僅 RAG ZIP 向量檢索；2/3/4 以 transcription 純生成；其餘載 RAG ZIP 向量檢索。
 - POST /rag/tab/unit/quiz/llm-grade：非同步 RAG+LLM 評分；回傳 202 + job_id，輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
 - POST /rag/tab/unit/quiz/for-exam：將 Rag_Quiz.for_exam 設為 true。
 - GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
@@ -243,8 +243,6 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
             detail="單元類型 2／3／4 需有逐字稿：請於 Rag_Unit 或 Rag 設定 transcription，或經 POST /rag/tab/build-rag-zip 寫入 Rag_Unit.transcription",
         )
 
-    transcription_for_rag_zip = "" if unit_type_val == 1 else transcription_text
-
     path: Path | None = None
     try:
         from utils.quiz_generation import generate_quiz, generate_quiz_transcription_only
@@ -265,10 +263,9 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
             result = generate_quiz(
                 path,
                 api_key=api_key,
-                system_supplement=transcription_for_rag_zip,
                 user_instruction=qup_for_llm,
             )
-        result["transcription"] = transcription_text if unit_type_val in (2, 3, 4) else transcription_for_rag_zip
+        result["transcription"] = "" if unit_type_val == 1 else transcription_text
         result["rag_output"] = {
             "rag_tab_id": stem,
             "unit_name": stem,
