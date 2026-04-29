@@ -33,6 +33,19 @@ UPLOAD_DEFAULT_PERSON = "_"
 _METADATA_KEY = "_metadata.json"
 
 
+def _storage_safe_tab_id(candidate: str, person_id: str | None = None) -> str:
+    """
+    Supabase Storage 物件 key 須為 ASCII；中文等非 ASCII 會觸發 InvalidKey。
+    路徑片段含非 ASCII 時改以 generate_tab_id 產生；純 ASCII 則沿用（含數字、底線、空白等）。
+    """
+    c = (candidate or "").strip()
+    if not c or "/" in c or "\\" in c or len(c) > 255:
+        return generate_tab_id(person_id)
+    if any(ord(ch) > 127 for ch in c):
+        return generate_tab_id(person_id)
+    return c
+
+
 def generate_tab_id(person_id: str | None = None) -> str:
     """
     以 person_id 與目前電腦時間產生 tab_id。
@@ -127,8 +140,9 @@ def save_zip(
         if not parent_tab_id or "/" in parent_tab_id or "\\" in parent_tab_id:
             raise ValueError("repack/rag 需傳入 parent_tab_id（上傳的 tab_id）")
         parent_tab_id = parent_tab_id.strip()
-        if tab_id and tab_id.strip() and "/" not in tab_id and "\\" not in tab_id:
-            tab_id = tab_id.strip()
+        raw = (tab_id or "").strip()
+        if raw and "/" not in raw and "\\" not in raw:
+            tab_id = _storage_safe_tab_id(raw, person_id)
         else:
             tab_id = generate_tab_id(person_id)
 

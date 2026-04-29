@@ -113,6 +113,11 @@ def parse_youtube_video_id(raw: str) -> str | None:
         qs = parse_qs(parsed.query)
         if "v" in qs and qs["v"]:
             vid = (qs["v"][0] or "").strip()
+            if re.fullmatch(r"[\w-]{11}", vid):
+                return vid
+        path_parts = [p for p in (parsed.path or "").split("/") if p]
+        if len(path_parts) >= 2 and path_parts[0].lower() == "shorts":
+            vid = path_parts[1].strip()
             return vid if re.fullmatch(r"[\w-]{11}", vid) else None
     return None
 

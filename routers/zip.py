@@ -6,7 +6,7 @@ ZIP 與 RAG 相關 API 模組。
 - POST /rag/tab/create：建立一筆 Rag（可傳 local）
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
 - POST /rag/tab/upload-zip：上傳 ZIP
-- POST /rag/tab/build-rag-zip：依 unit_list 打包並建 RAG；回應為 NDJSON 串流（start／building／unit／complete），成功後自動建立 Rag_Unit 記錄。POST /rag/tab/build-rag-zip-stream 為同行為之別名
+- POST /rag/tab/build-rag-zip：依 unit_list 打包；預設 user_type==1 建 FAISS 並上傳 rag，否則 repack 並複製同檔至 rag；可選 body.build_faiss 覆寫；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
 - POST /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除 Rag 及其 Rag_Unit，並刪除儲存（須傳 query person_id）
 - PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
 - POST /rag/tab/unit/quiz/create：body `rag_tab_id`、`rag_unit_id` 定位 Rag_Unit 後新增一筆 Rag_Quiz（無 LLM）；`rag_quiz_id` 由資料庫產生。
@@ -33,7 +33,6 @@ from pydantic import BaseModel, Field
 
 from utils.datetime_utils import now_taipei_iso, to_taipei_iso
 from utils.json_utils import to_json_safe
-from utils.llm_api_key_utils import get_llm_api_key_for_person
 from utils.zip_utils import (
     get_second_level_folders_from_zip_file,
     build_folder_map,
@@ -49,6 +48,7 @@ from utils.zip_storage import (
     FOLDER_RAG,
 )
 from utils.supabase_client import get_supabase
+from utils.db_tables import USER_TABLE
 from utils.rag_exam_setting import is_localhost_request
 from routers.grade import _quiz_grade_from_answer_critique
 
@@ -58,9 +58,64 @@ RAG_SELECT_ALL = "*"
 
 BYTES_PER_MB = 1024 * 1024
 
+# Rag_Unit.unit_type（PostgreSQL smallint）
+# 0=未選／預設；1=rag（ZIP 建向量）；2=文字；3=mp3；4=youtube
+RAG_UNIT_TYPE_DEFAULT = 0
+RAG_UNIT_TYPE_RAG = 1
+RAG_UNIT_TYPE_TEXT = 2
+RAG_UNIT_TYPE_MP3 = 3
+RAG_UNIT_TYPE_YOUTUBE = 4
+# 舊註解「ZIP 打包建置」同義於 rag
+RAG_UNIT_TYPE_ZIP_BUILD = RAG_UNIT_TYPE_RAG
+
 
 def _bytes_to_mb(size_bytes: int) -> float:
     return size_bytes / BYTES_PER_MB
+
+
+def _fetch_user_llm_key_and_user_type(person_id: str) -> tuple[str | None, int]:
+    """依 person_id 自 User 表取得 llm_api_key、user_type；無列時回傳 (None, 0)。"""
+    pid = (person_id or "").strip()
+    if not pid:
+        return None, 0
+    try:
+        supabase = get_supabase()
+        resp = (
+            supabase.table(USER_TABLE)
+            .select("llm_api_key, user_type")
+            .eq("person_id", pid)
+            .limit(1)
+            .execute()
+        )
+        if not resp.data:
+            return None, 0
+        row = resp.data[0]
+        key = (row.get("llm_api_key") or "").strip() or None
+        ut = row.get("user_type")
+        try:
+            ut_int = int(ut) if ut is not None else 0
+        except (TypeError, ValueError):
+            ut_int = 0
+        return key, ut_int
+    except Exception:
+        return None, 0
+
+
+def _unit_types_per_task(unit_types_csv: str, task_count: int) -> list[int]:
+    """與 unit_list 逗號分段對齊；值限制在 0–4，缺漏為 0。"""
+    parts = [p.strip() for p in unit_types_csv.split(",")] if (unit_types_csv or "").strip() else []
+    out: list[int] = []
+    for i in range(task_count):
+        v = 0
+        if i < len(parts) and parts[i]:
+            try:
+                v = int(parts[i])
+            except ValueError:
+                v = 0
+        if v < 0 or v > 4:
+            v = 0
+        out.append(v)
+    return out
 
 
 def _rag_default_row(
@@ -97,7 +152,7 @@ def _rag_unit_default_row(
     person_id: str,
     *,
     unit_name: str = "",
-    unit_type: str = "zip",
+    unit_type: int = RAG_UNIT_TYPE_RAG,
     repack_file_name: str = "",
     rag_file_name: str = "",
     rag_file_size: float = 0.0,
@@ -216,6 +271,13 @@ class PackRequest(BaseModel):
     system_prompt_instruction: str = ""  # 出題系統指令，寫入 Rag.system_prompt_instruction 及各 Rag_Unit.quiz_system_prompt_text
     chunk_size: int = 1000
     chunk_overlap: int = 200
+    # 與 unit_list 同樣以逗號分段對齊每一個打包任務；0=未選、1=rag、2=文字、3=mp3、4=youtube；省略或不足處視為 0
+    unit_types: str = ""
+    # 省略=None：依 User.user_type==1 決定是否建 FAISS；False=強制不建向量（rag 僅上傳與 repack 相同之 ZIP）；True=強制建 FAISS（須 llm_api_key）
+    build_faiss: bool | None = Field(
+        default=None,
+        description="省略時依 User.user_type；False 時僅複製 repack 至 rag；True 時強制建向量 RAG ZIP",
+    )
 
 
 class UpdateRagUnitUnitNameRequest(BaseModel):
@@ -317,14 +379,58 @@ def _build_one_rag_zip_output_item(
     api_key: str,
     zip_bytes: bytes,
     filename: str,
+    *,
+    do_rag: bool = True,
+    unit_type: int = RAG_UNIT_TYPE_DEFAULT,
 ) -> dict[str, Any]:
     """
-    將單一 repack 單元上傳至 repack、建 RAG ZIP 上傳至 rag。
+    將單一 repack 單元上傳至 repack。
+    do_rag 為 True：另以 FAISS 建 RAG ZIP 上傳至 rag。
+    do_rag 為 False：仍將與 repack 相同內容之上傳至 rag（原檔複製、非向量庫）。
+    註：bucket 內檔名仍為 stem_rag.zip（metadata 之 tab_id 須與 repack 區隔，與是否為 FAISS 無關）；請看 output.rag_mode。
     回傳與 build-rag-zip outputs[] 單筆相同結構；失敗時含 rag_error。
     """
     repack_tab_id = Path(filename).stem if filename else None
     if not repack_tab_id or "/" in repack_tab_id or "\\" in repack_tab_id:
         repack_tab_id = str(uuid.uuid4())
+
+    if not do_rag:
+        item_zip: dict[str, Any] = {
+            "filename": filename,
+            "unit_name": repack_tab_id,
+            "repack_filename": f"{repack_tab_id}.zip",
+            "rag_filename": "",
+            "unit_type": unit_type,
+            "rag_mode": "repack_copy",
+        }
+        try:
+            tab_id = save_zip(
+                zip_bytes,
+                filename,
+                folder=FOLDER_REPACK,
+                person_id=pid,
+                parent_tab_id=body.rag_tab_id,
+                tab_id=repack_tab_id,
+            )
+            # unit_name 維持為資料夾顯示名（可含中文）；bucket 內檔名為 ASCII tab_id
+            item_zip["repack_filename"] = f"{tab_id}.zip"
+            rag_zip_tab_id = f"{tab_id}_rag"
+            item_zip["rag_filename"] = f"{rag_zip_tab_id}.zip"
+            save_zip(
+                zip_bytes,
+                f"{tab_id}.zip",
+                folder=FOLDER_RAG,
+                person_id=pid,
+                parent_tab_id=body.rag_tab_id,
+                tab_id=rag_zip_tab_id,
+            )
+            verify_err = _verify_saved_rag_zip_readable(rag_zip_tab_id)
+            if verify_err:
+                item_zip["rag_error"] = verify_err
+            item_zip["file_size"] = _bytes_to_mb(len(zip_bytes))
+        except Exception as e:
+            item_zip["rag_error"] = str(e)
+        return item_zip
 
     last_item: dict[str, Any] = {}
     for attempt in range(_RAG_UNIT_FULL_BUILD_ATTEMPTS):
@@ -333,6 +439,8 @@ def _build_one_rag_zip_output_item(
             "unit_name": repack_tab_id,
             "repack_filename": f"{repack_tab_id}.zip",
             "rag_filename": f"{repack_tab_id}_rag.zip",
+            "unit_type": unit_type,
+            "rag_mode": "faiss",
         }
         rag_bytes_out: bytes | None = None
         try:
@@ -347,7 +455,7 @@ def _build_one_rag_zip_output_item(
                 tab_id=repack_tab_id,
             )
             rag_zip_tab_id = f"{tab_id}_rag"
-            item["unit_name"] = tab_id
+            # unit_name 維持為資料夾顯示名（可含中文）；向量檔路徑依 ASCII tab_id
             item["repack_filename"] = f"{tab_id}.zip"
             item["rag_filename"] = f"{rag_zip_tab_id}.zip"
 
@@ -361,6 +469,7 @@ def _build_one_rag_zip_output_item(
                     api_key,
                     chunk_size=body.chunk_size,
                     chunk_overlap=body.chunk_overlap,
+                    unit_type=unit_type,
                 )
             finally:
                 try:
@@ -428,11 +537,18 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
     for output in outputs:
         if output.get("rag_error"):
             continue
+        ut = output.get("unit_type")
+        try:
+            unit_type_val = int(ut) if ut is not None else RAG_UNIT_TYPE_DEFAULT
+        except (TypeError, ValueError):
+            unit_type_val = RAG_UNIT_TYPE_DEFAULT
+        if unit_type_val < 0 or unit_type_val > 4:
+            unit_type_val = RAG_UNIT_TYPE_DEFAULT
         unit_row = _rag_unit_default_row(
             body.rag_tab_id,
             pid,
             unit_name=output.get("unit_name", ""),
-            unit_type="zip",
+            unit_type=unit_type_val,
             repack_file_name=output.get("repack_filename", ""),
             rag_file_name=output.get("rag_filename", ""),
             rag_file_size=float(output.get("file_size") or 0),
@@ -680,18 +796,31 @@ async def upload_zip(
 
 @router.post("/tab/build-rag-zip-stream", include_in_schema=False)
 @router.post("/tab/build-rag-zip")
-def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
+def build_rag_zip(
+    body: PackRequest,
+    caller_person_id: PersonId,
+    repack_only: bool = Query(
+        False,
+        description="為 True 時強制不建 FAISS（rag 僅上傳與 repack 相同之 ZIP），優先於 build_faiss 與 User.user_type",
+    ),
+):
     """
-    依先前上傳的 ZIP（rag_tab_id）與 unit_list 打包並建 RAG（FAISS）ZIP；LLM API Key 依 person_id 從 User 表取得。
+    依先前上傳的 ZIP（rag_tab_id）與 unit_list 重新打包。
+    **FAISS 建置規則（逐 unit 判斷）**：`user_type==1`（且未強制關閉）且該 unit 之 `unit_type==1 (rag)` → 建 FAISS；其他 unit_type（2=文字、3=mp3、4=youtube）或 user_type!=1 → 僅複製 repack 至 rag，不建向量。
+    可選 query **repack_only=true**：強制全部 unit 不建 FAISS，適用無法改 JSON body 的客戶端。
+    可選 body **build_faiss**：`false` 同 repack_only；`true` 強制允許 FAISS（仍需 unit_type==1 觸發）；省略時依 user_type 判定。
+    LLM API Key 僅在「最終會建 FAISS」（do_rag 為 True）時必填（依 person_id 自 User 表取得）。
+    body.unit_types 為選填，與 unit_list 逗號分段對齊，寫入各 Rag_Unit.unit_type：0=未選、1=rag、2=文字、3=mp3、4=youtube。
+
     **回應為 NDJSON 串流**（`application/x-ndjson`），請以 `fetch` 讀取 `response.body`，勿使用單次 `response.json()`。
-    每一輸出單元須：**產出有效 RAG ZIP bytes**、**成功上傳至 rag 儲存**，且**上傳後能自儲存讀回非空檔**。
+    每一輸出單元須 **成功上傳 repack**；rag 資料夾須 **成功寫入**（user_type==1 為向量庫 ZIP；否則為 repack 同內容之 ZIP），且**上傳後能自儲存讀回非空檔**。
     整批成功時自動在 Rag_Unit 表建立對應記錄（每個輸出單元一筆）並更新 Rag.rag_metadata。
     整批任一有 `rag_error` 則 `complete.success` 為 false（不寫入 Rag 表，不建立 Rag_Unit）。
 
     事件列舉（每行一個物件）：
-    - `{"type":"start","total":N,"source_rag_tab_id":"...","unit_list":"..."}`
+    - `{"type":"start","total":N,"source_rag_tab_id":"...","unit_list":"...","user_type":int,"build_faiss_request":bool|null,"repack_only":bool,"allow_faiss":bool}`（allow_faiss=各 unit 是否可建 FAISS，仍需 unit_type==1 才實際建）
     - `{"type":"building","index":i,"total":N,"completed_before":i-1,"filename":"..."}`
-    - `{"type":"unit","index":i,"total":N,"output":{...}}`：output 含 unit_name、repack_filename、rag_filename、file_size，可含 rag_error
+    - `{"type":"unit",...,"output":{...}}`：output 含 rag_mode（`faiss`＝向量庫；`repack_copy`＝與 repack 同內容複製）、rag_filename（物件鍵仍為 *_rag.zip）
     - `{"type":"complete","success":bool,"total","built_ok","built_failed","source_rag_tab_id","unit_list","outputs"}`
 
     串流階段 HTTP 狀態碼固定 **200**；請以最後一則 `type===complete` 的 `success` 判斷整批成敗。
@@ -723,8 +852,19 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
             pass
         raise HTTPException(status_code=400, detail="unit_list 為空或格式錯誤，例：220222+220301")
 
-    api_key = get_llm_api_key_for_person(pid)
-    if not api_key:
+    api_key, user_type_val = _fetch_user_llm_key_and_user_type(pid)
+
+    # 是否「允許建 FAISS」：user_type==1 且未強制關閉
+    # 即使允許，每個 unit 仍需 unit_type==1 才實際建 FAISS（見下方 _do_rag_for_unit）
+    if repack_only or body.build_faiss is False:
+        allow_faiss = False
+    elif body.build_faiss is True:
+        allow_faiss = True
+    else:
+        allow_faiss = (user_type_val == 1)
+
+    # api_key 只在真正會建 FAISS 時才需要；若 allow_faiss 但 key 缺失則提早報錯
+    if allow_faiss and not api_key:
         try:
             path.unlink(missing_ok=True)
         except Exception:
@@ -735,6 +875,11 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
         )
 
     total = len(packed)
+    unit_types_per_task = _unit_types_per_task(body.unit_types, total)
+
+    def _do_rag_for_unit(ut: int) -> bool:
+        """只有 allow_faiss 且 unit_type==1 (rag) 時才建 FAISS；其餘一律複製 repack。"""
+        return allow_faiss and (ut == RAG_UNIT_TYPE_RAG)
 
     def ndjson_events():
         outputs: list[dict[str, Any]] = []
@@ -746,6 +891,10 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
                         "total": total,
                         "source_rag_tab_id": body.rag_tab_id,
                         "unit_list": body.unit_list,
+                        "user_type": user_type_val,
+                        "build_faiss_request": body.build_faiss,
+                        "repack_only": repack_only,
+                        "allow_faiss": allow_faiss,
                     },
                     ensure_ascii=False,
                 )
@@ -765,7 +914,16 @@ def build_rag_zip(body: PackRequest, caller_person_id: PersonId):
                     )
                     + "\n"
                 )
-                item = _build_one_rag_zip_output_item(body, pid, api_key, zip_bytes, filename)
+                ut = unit_types_per_task[idx]
+                item = _build_one_rag_zip_output_item(
+                    body,
+                    pid,
+                    api_key or "",
+                    zip_bytes,
+                    filename,
+                    do_rag=_do_rag_for_unit(ut),
+                    unit_type=ut,
+                )
                 outputs.append(item)
                 yield (
                     json.dumps(

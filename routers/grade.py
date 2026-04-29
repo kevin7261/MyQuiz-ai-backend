@@ -1,7 +1,7 @@
 """
 評分 API 模組。
 依 rag_id 自 rag_metadata.outputs 取得 repack stem，再以 {stem}_rag 載入 RAG ZIP 檢索講義後由 GPT-4o 評分。
-非同步：POST /rag/tab/unit/quiz/llm-grade 回傳 202 + job_id，背景執行評分並更新 public.Rag_Quiz 之 answer_* 欄位；前端以 GET /rag/tab/unit/quiz/grade-result/{job_id} 輪詢（寫入失敗時 status 為 error）。POST /rag/tab/unit/quiz/for-exam 將 Rag_Quiz.for_exam 設為 true。列出 for_exam 之 Rag_Unit／Rag_Quiz 請用 GET /exam/rag-for-exams（exam 模組）。RAG+LLM 出題為 POST /rag/tab/unit/quiz/llm-generate；純建 Rag_Quiz 列為 POST /rag/tab/unit/quiz/create（見 zip 路由）。
+非同步：POST /rag/tab/unit/quiz/llm-grade 回傳 202 + job_id，背景執行評分並更新 public.Rag_Quiz 之 answer_* 欄位；前端以 GET /rag/tab/unit/quiz/grade-result/{job_id} 輪詢（寫入失敗時 status 為 error）。POST /rag/tab/unit/quiz/for-exam 將 Rag_Quiz.for_exam 設為 true。列出 for_exam 之 Rag_Unit／Rag_Quiz 請用 GET /exam/rag-for-exams（exam 模組）。RAG+LLM 出題為 POST /rag/tab/unit/quiz/llm-generate；純建 Rag_Quiz 列為 POST /rag/tab/unit/quiz/create（見 zip 路由）。OpenAPI 上 **GET /rag/transcript/text**、**GET /rag/transcript/audio**、**GET /rag/transcript/youtube** 掛於本模組末尾（自 Storage upload ZIP；文字／YouTube 單元該資料夾下**僅一個** .md），回傳 JSON 之 **markdown** 僅為正文無額外標頭。
 """
 
 # 引入 json 用於解析 GPT 回傳與序列化
@@ -23,8 +23,13 @@ from pathlib import Path
 # 引入 Any、Callable 型別
 from typing import Any, Callable
 
-# 引入 FastAPI 的 APIRouter、BackgroundTasks、HTTPException
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+# 引入 FastAPI 的 APIRouter、BackgroundTasks、HTTPException、上傳與查詢參數
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    HTTPException,
+    Query,
+)
 
 from dependencies.person_id import PersonId
 # 引入 JSONResponse、Response 用於回傳
@@ -54,6 +59,20 @@ from utils.zip_storage import get_zip_path
 from utils.json_utils import to_json_safe
 # Supabase 客戶端
 from utils.supabase_client import get_supabase
+from utils.english_system_transcript import transcribe_audio_bytes_deepgram, youtube_transcript_plain_text
+from utils.rag_transcript_from_upload_zip import (
+    pick_audio_from_upload_zip,
+    read_single_text_md_from_upload_zip,
+    read_upload_zip_bytes,
+    read_youtube_video_id_from_upload_zip,
+)
+from youtube_transcript_api._errors import (
+    InvalidVideoId,
+    NoTranscriptFound,
+    TranscriptsDisabled,
+    VideoUnavailable,
+    YouTubeTranscriptApiException,
+)
 
 # 建立路由，前綴 /rag，標籤 rag
 router = APIRouter(prefix="/rag", tags=["rag"])
@@ -209,6 +228,7 @@ def _run_grade_job(
     *,
     exam_quiz_id: int | None = None,
     rag_quiz_id: int | None = None,
+    unit_type: int = 0,
 ) -> tuple[str, dict[str, Any]]:
     """在給定的 work_dir（已含 ref.zip）執行 RAG + GPT 評分。回傳 (LLM 訊息原文, 解析後 JSON 物件)。"""
     # 工作目錄中的 ZIP 路徑
@@ -256,10 +276,12 @@ def _run_grade_job(
     # 否則為一般講義 ZIP，需先處理文件再建向量庫
     else:
         # 從 ZIP 載入講義（與 utils.rag_faiss_zip.process_zip_to_docs 支援的副檔名一致）
-        all_documents = process_zip_to_docs(zip_source_path, extract_folder)
+        all_documents = process_zip_to_docs(
+            zip_source_path, extract_folder, unit_type=unit_type
+        )
         # 若無任何文件，拋出 ValueError
         if not all_documents:
-            raise ValueError("ZIP 內無支援的講義文件")
+            raise ValueError("ZIP 內無支援的講義文件（請確認單元 unit_type 與檔案格式一致）")
         # 建立遞迴文字切分器，chunk 1000 字、overlap 200 字
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,  # 每個 chunk 最大 1000 字元
@@ -350,6 +372,7 @@ def _run_grade_job_background(
     *,
     exam_quiz_id: int | None = None,
     rag_quiz_id: int | None = None,
+    unit_type: int = 0,
 ) -> None:
     """
     通用背景評分：執行評分、可選寫入 DB、結果存 results_store。
@@ -364,6 +387,7 @@ def _run_grade_job_background(
             answer_user_prompt_text,
             exam_quiz_id=exam_quiz_id,
             rag_quiz_id=rag_quiz_id,
+            unit_type=unit_type,
         )
         result_dict: dict[str, Any] = {
             "quiz_grade": _quiz_grade_from_llm_json(llm_json),
@@ -835,6 +859,37 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
         except Exception:
             pass
 
+    # 由 Rag_Quiz → Rag_Unit 取得 unit_type（與 build-rag-zip 之 unit_types 一致）
+    grade_unit_type = 0
+    try:
+        qru = (
+            supabase.table("Rag_Quiz")
+            .select("rag_unit_id")
+            .eq("rag_quiz_id", rag_quiz_id_int)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+        ruid = (qru.data or [{}])[0].get("rag_unit_id")
+        if ruid is not None:
+            ruid_i = int(ruid)
+            if ruid_i > 0:
+                uu = (
+                    supabase.table("Rag_Unit")
+                    .select("unit_type")
+                    .eq("rag_unit_id", ruid_i)
+                    .eq("deleted", False)
+                    .limit(1)
+                    .execute()
+                )
+                if uu.data:
+                    try:
+                        grade_unit_type = int(uu.data[0].get("unit_type") or 0)
+                    except (TypeError, ValueError):
+                        grade_unit_type = 0
+    except Exception:
+        grade_unit_type = 0
+
     # 產生唯一 job_id
     job_id = str(uuid.uuid4())
     # 初始化 job 狀態為 pending
@@ -860,6 +915,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
         insert_fn,  # 更新 Rag_Quiz 評分欄位
         aup,
         rag_quiz_id=rag_quiz_id_int,
+        unit_type=grade_unit_type,
     )
     # 回傳 202 與 job_id，供前端輪詢
     return JSONResponse(status_code=202, content={"job_id": job_id})
@@ -989,3 +1045,154 @@ async def get_grade_result(job_id: str, _person_id: PersonId):  # 路徑參數 j
     if data["status"] == "ready":
         out["rag_quiz"] = rag_quiz_row
     return out
+
+
+class RagTranscriptMarkdownResponse(BaseModel):
+    """GET /rag/transcript/text、audio、youtube 共用回傳：`markdown` 僅為正文（逐字稿／字幕／.md 全文），無額外標題或 meta 區塊。"""
+
+    markdown: str = Field(
+        ...,
+        description="正文純文字或 Markdown 原檔內容（無 # Transcript 包裝）",
+    )
+
+
+def _require_rag_tab_owner(person_id: str, rag_tab_id: str) -> None:
+    """確認 Rag 列存在且 person_id 一致。"""
+    rid = (rag_tab_id or "").strip()
+    if not rid or "/" in rid or "\\" in rid:
+        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
+    supabase = get_supabase()
+    sel = (
+        supabase.table("Rag")
+        .select("rag_tab_id")
+        .eq("rag_tab_id", rid)
+        .eq("person_id", person_id)
+        .eq("deleted", False)
+        .limit(1)
+        .execute()
+    )
+    if not sel.data:
+        raise HTTPException(
+            status_code=404,
+            detail="找不到該 rag_tab_id，或已刪除／不屬於此 person_id",
+        )
+
+
+@router.get("/transcript/text", response_model=RagTranscriptMarkdownResponse)
+def rag_transcript_text(
+    caller_person_id: PersonId,
+    rag_tab_id: str = Query(..., description="Rag.rag_tab_id"),
+    folder_name: str = Query(
+        ...,
+        description="ZIP 內單元資料夾名；該資料夾下須**恰好一個** .md，回傳其全文為 markdown",
+    ),
+):
+    """
+    自 upload ZIP 之 **folder_name** 路徑下讀取**唯一一個** .md 的全文；`markdown` 僅為檔案內容，不寫回資料庫。
+    """
+    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    try:
+        zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logging.exception("讀取 upload ZIP 失敗")
+        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+
+    try:
+        body, _path = read_single_text_md_from_upload_zip(zip_bytes, folder_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return RagTranscriptMarkdownResponse(markdown=body if body else "")
+
+
+@router.get("/transcript/audio", response_model=RagTranscriptMarkdownResponse)
+def rag_transcript_audio(
+    caller_person_id: PersonId,
+    rag_tab_id: str = Query(..., description="Rag.rag_tab_id（對應 Storage 路徑 {person_id}/{rag_tab_id}/upload/…）"),
+    folder_name: str = Query(
+        ...,
+        description="ZIP 內單元資料夾名；該資料夾下須有音訊檔。**若僅有 .md（內含 YouTube 連結）請改呼叫 GET /rag/transcript/youtube**",
+    ),
+):
+    """
+    自 upload ZIP 內 **folder_name** 路徑找音訊檔，**Deepgram** 轉文字；**markdown** 僅為逐字稿正文。
+    若該資料夾只有 Markdown、無音檔，後端會回傳錯誤並提示改用 **GET /rag/transcript/youtube**。
+    """
+    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    try:
+        zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logging.exception("讀取 upload ZIP 失敗")
+        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+
+    try:
+        contents, suffix, _inner_path = pick_audio_from_upload_zip(zip_bytes, folder_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    dg_model = (os.environ.get("DEEPGRAM_MODEL") or "nova-2").strip()
+    try:
+        text, elapsed = transcribe_audio_bytes_deepgram(
+            contents,
+            suffix=suffix or ".mp3",
+            model=dg_model,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logging.exception("GET /rag/transcript/audio Deepgram 錯誤")
+        raise HTTPException(status_code=500, detail=f"轉錄失敗: {e!s}") from e
+
+    return RagTranscriptMarkdownResponse(markdown=(text or "").strip())
+
+
+@router.get("/transcript/youtube", response_model=RagTranscriptMarkdownResponse)
+def rag_transcript_youtube(
+    caller_person_id: PersonId,
+    rag_tab_id: str = Query(..., description="Rag.rag_tab_id"),
+    folder_name: str = Query(
+        ...,
+        description="ZIP 內單元資料夾名；該資料夾下須**恰好一個** .md（內含 YouTube 連結或 video_id），擷取 **en** 字幕為正文",
+    ),
+):
+    """
+    自 upload ZIP 內 **folder_name** 下**唯一** .md 讀取連結，擷取 **en** 字幕；`markdown` 僅為字幕合併文字。
+    """
+    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    try:
+        zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logging.exception("讀取 upload ZIP 失敗")
+        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+
+    try:
+        vid, _md_path = read_youtube_video_id_from_upload_zip(zip_bytes, folder_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    try:
+        text, _elapsed = youtube_transcript_plain_text(vid, languages=["en"])
+        return RagTranscriptMarkdownResponse(markdown=(text or "").strip())
+    except InvalidVideoId as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except (VideoUnavailable, NoTranscriptFound, TranscriptsDisabled) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except YouTubeTranscriptApiException as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    except Exception as e:
+        logging.exception("GET /rag/transcript/youtube 錯誤")
+        raise HTTPException(status_code=500, detail=f"擷取字幕失敗: {e!s}") from e

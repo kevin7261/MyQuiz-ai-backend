@@ -1014,24 +1014,30 @@ async def exam_grade_submission(
             content={"error": "尚未設定供測驗用 RAG rag_id：請於 System_Setting 設定 key rag_localhost（本機）或 rag_deploy（非本機），value 為 Rag.rag_id"},
         )
 
-    # 取得 unit_name（用於篩選 RAG ZIP）
+    # 取得 unit_name（用於篩選 RAG ZIP）、unit_type（評分時與 ZIP 內容格式一致）
     grade_unit_filter: str | None = (qrow.get("unit_name") or "").strip() or None
-    if not grade_unit_filter and rag_unit_id_val is not None:
-        try:
-            rag_uid_int = int(rag_unit_id_val)
-            if rag_uid_int > 0:
-                unit_sel = (
-                    supabase.table("Rag_Unit")
-                    .select("unit_name")
-                    .eq("rag_unit_id", rag_uid_int)
-                    .eq("deleted", False)
-                    .limit(1)
-                    .execute()
-                )
-                if unit_sel.data:
-                    grade_unit_filter = (unit_sel.data[0].get("unit_name") or "").strip() or None
-        except (TypeError, ValueError):
-            pass
+    exam_grade_unit_type = 0
+    try:
+        rag_uid_int = int(rag_unit_id_val) if rag_unit_id_val is not None else 0
+    except (TypeError, ValueError):
+        rag_uid_int = 0
+    if rag_uid_int > 0:
+        unit_sel = (
+            supabase.table("Rag_Unit")
+            .select("unit_name, unit_type")
+            .eq("rag_unit_id", rag_uid_int)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+        if unit_sel.data:
+            u0 = unit_sel.data[0]
+            if not grade_unit_filter:
+                grade_unit_filter = (u0.get("unit_name") or "").strip() or None
+            try:
+                exam_grade_unit_type = int(u0.get("unit_type") or 0)
+            except (TypeError, ValueError):
+                exam_grade_unit_type = 0
 
     try:
         rag_id = int(rag_id_from_setting)
@@ -1076,6 +1082,7 @@ async def exam_grade_submission(
         insert_fn,
         (body.answer_user_prompt_text or "").strip(),
         exam_quiz_id=exam_quiz_id_int,
+        unit_type=exam_grade_unit_type,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
