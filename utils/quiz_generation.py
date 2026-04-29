@@ -55,17 +55,23 @@ SYSTEM_PROMPT_FAISS_QUIZ = textwrap.dedent("""
 
     你是一位教授，請為學生設計測驗題目。
 
+    ## 指令優先級（必須遵守）
+
+    - 使用者訊息中 **`## 出題 user prompt`** 以下之內文為教師下給你的**直接出題指令**，優先級**高於**本 system 之泛化規則與 **課程內容** 之呈現方式。
+    - 該節有**實質文字**時（非僅空白或占位），**必須完整遵守**（題型、難度、焦點、格式、用語等），不得因課程片段較易取材而偏離該節要求。
+    - 僅當該節無實質文字時，始依 **課程內容** 與本訊息其餘規範出題。
+
     ## 訊息格式
 
     - 系統與使用者訊息皆為 **Markdown**（標題、清單、粗體、水平線、`---`、課程原文之 fenced code block 等）。
     - **課程內容** 以 code fence（```text …```）包住逐字／檢索原文；區段內唯純引用，勿將標記語法本身當成教學內容。
     - 將 `---` 視為區段分隔。
     - **出題 user prompt** 區塊（`## 出題 user prompt`）以下若無實質文字（僅留白或空字串），請**完全忽略**該節，僅依 **課程內容** 出題。
-    - 若出題 user prompt 有文字，則同時斟酌 **出題 user prompt** 與 **課程內容** 出題。
+    - 若出題 user prompt 有文字，則須**先滿足該節指令**，再於課程引用範圍內取材。
 
     ## 出題規範
 
-    - `quiz_content`、`quiz_hint`、`quiz_answer_reference` 之字串值皆為 **Markdown**（段落、清單、`**強調**` 等），並使用 **繁體中文（Traditional Chinese）**。
+    - `quiz_content`、`quiz_hint`、`quiz_answer_reference` 之字串值皆為 **Markdown**（段落、清單、`**強調**` 等）；用語與語種請依 **出題 user prompt**（有實質文字時）與課程內容。
 
     ## 回傳格式（JSON）
 
@@ -77,6 +83,10 @@ SYSTEM_PROMPT_FAISS_QUIZ = textwrap.dedent("""
     """).strip()
 
 USER_PROMPT_FAISS_COURSE = textwrap.dedent("""
+    ## 必須遵守（最高優先）
+
+    下節 **出題 user prompt** 之內文為本任務**最重要**之依據；與 **課程內容** 或 system 泛化規範牴觸時，**以該節為準**（仍須在課程引用範圍內取材，但**不得**為了貼合片段而違反該節指令）。
+
     ## 出題 user prompt
 
     {quiz_user_prompt_text}
@@ -91,6 +101,10 @@ USER_PROMPT_FAISS_COURSE = textwrap.dedent("""
     """).strip()
 
 USER_PROMPT_TRANSCRIPTION_COURSE = textwrap.dedent("""
+    ## 必須遵守（最高優先）
+
+    下節 **出題 user prompt** 之內文為本任務**最重要**之依據；與 **課程內容** 或 system 泛化規範牴觸時，**以該節為準**（仍須在課程引用範圍內取材，但**不得**為了貼合片段而違反該節指令）。
+
     ## 出題 user prompt
 
     {quiz_user_prompt_text}
