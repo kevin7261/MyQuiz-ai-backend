@@ -8,9 +8,9 @@ routers/grade.py 與 routers/exam.py 共用，不含任何 FastAPI 路由。
 3. `_grade_field_display`、LLM JSON 解析輔助、暫存清理、批改與 DB 寫回
 
 重要（維持行為時請留意）：
-- 批改 LLM 使用 `response_format=json_object`；模板須含「json」字樣。模型頂層 JSON **僅**含 `answer_critique`（純評語，無分數欄）；管線會展開為 **`quiz_comments`** 供寫庫／API（**不依數值評分**，result 亦不帶分數）。
+- 批改 LLM 使用 `response_format=json_object`；模板須含「json」字樣。模型頂層 JSON **僅**含 `answer_critique`（純評語，無分數欄）；管線展開為 **`quiz_comments`** 後，**寫入 DB 之 `answer_critique` 為合併後純文字**（非 `{"quiz_comments":[…]}`）；記憶體 job `result` 仍含 `quiz_comments` 陣列供輪詢（**不依數值評分**）。
 - run_grade_job_background：transcription_grade 非空時不走向量庫，與有 FAISS 路徑互斥。
-- Rag_Quiz 的 answer_critique 存作答與評語結構 metadata；不包含數值評分。
+- Rag_Quiz／Exam_Quiz 之 `answer_critique` 皆為評語純文字；不包含數值評分。
 """
 
 import json
@@ -263,6 +263,12 @@ def quiz_comments_from_llm_json(llm_json: dict[str, Any]) -> list[str]:
         elif x is not None:
             out.append(str(x))
     return out
+
+
+def answer_critique_plain_text_from_result(result_dict: dict[str, Any]) -> str:
+    """將 `quiz_comments` 合併為單一字串，供寫入 `answer_critique`（無 JSON 包殼）。"""
+    parts = [c.strip() for c in quiz_comments_from_llm_json(result_dict) if isinstance(c, str) and c.strip()]
+    return "\n\n".join(parts)
 
 
 def quiz_grade_from_answer_critique(critique_raw: Any) -> int | None:
@@ -589,23 +595,6 @@ def _rag_quiz_missing_column_error(exc: BaseException, column: str) -> bool:
     return "PGRST204" in text and col in text
 
 
-def answer_row_payload(
-    result_dict: dict,
-    quiz_answer: str,
-    *,
-    answer_text_column: str = "answer_content",
-) -> dict[str, Any]:
-    """
-    寫入 Rag_Quiz.answer_critique 的 JSON 本體（無數值評分欄）。
-
-    critique_metadata（原 quiz_grade_metadata 鍵名保留）：結果摘要，供前端還原評語結構。
-    """
-    return {
-        answer_text_column: quiz_answer or "",
-        "quiz_grade_metadata": result_dict,
-    }
-
-
 def update_rag_quiz_with_grade(
     result_dict: dict,
     quiz_answer: str,
@@ -614,7 +603,7 @@ def update_rag_quiz_with_grade(
     answer_user_prompt_text: str = "",
     quiz_content: str = "",
 ) -> tuple[str, int] | None:
-    """更新 public.Rag_Quiz；成功後讀回驗證分數／題幹（舊表無 answer_critique 時走降級路徑）。"""
+    """更新 public.Rag_Quiz；`answer_critique` 存評語純文字（與 Exam_Quiz 一致）；成功後讀回驗證（舊表無該欄時走降級路徑）。"""
     if rag_quiz_id <= 0:
         return None
     ts = now_taipei_iso()
@@ -622,10 +611,7 @@ def update_rag_quiz_with_grade(
     row: dict[str, Any] = {
         "answer_user_prompt_text": (answer_user_prompt_text or "").strip(),
         "answer_content": quiz_answer or "",
-        "answer_critique": json.dumps(
-            answer_row_payload(result_dict, quiz_answer, answer_text_column="answer_content"),
-            ensure_ascii=False,
-        ),
+        "answer_critique": answer_critique_plain_text_from_result(result_dict),
         "updated_at": ts,
     }
     # 僅在呼叫端傳入非空 quiz_content 時一併更新題幹（避免空字串蓋掉既有題目）。
@@ -636,13 +622,13 @@ def update_rag_quiz_with_grade(
         try:
             supabase.table("Rag_Quiz").update(row).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
         except Exception as first_err:
-            # 部分環境尚無 answer_critique 欄位（PGRST204）：略過 JSON 欄仍回傳 rag_quiz_id。
+            # 部分環境尚無 answer_critique 欄位（PGRST204）：略過該欄仍回傳 rag_quiz_id。
             if not _rag_quiz_missing_column_error(first_err, "answer_critique"):
                 raise
             row_lean = {k: v for k, v in row.items() if k != "answer_critique"}
             supabase.table("Rag_Quiz").update(row_lean).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
             _logger.warning(
-                "Rag_Quiz 無 answer_critique 欄位，已略過評分 JSON 寫入（rag_quiz_id=%s）",
+                "Rag_Quiz 無 answer_critique 欄位，已略過評語寫入（rag_quiz_id=%s）",
                 rag_quiz_id,
             )
             chk = (
@@ -707,11 +693,10 @@ def update_exam_quiz_with_grade(
     *,
     exam_quiz_id: int,
 ) -> tuple[str, int] | None:
-    """更新 public.Exam_Quiz；answer_critique 存 `quiz_comments` 精簡 JSON，成功後讀回驗證。"""
+    """更新 public.Exam_Quiz；answer_critique 存評語純文字（`quiz_comments` 合併，非 JSON），成功後讀回驗證。"""
     if exam_quiz_id <= 0:
         return None
-    comments = quiz_comments_from_llm_json(result_dict)
-    critique = json.dumps({"quiz_comments": comments}, ensure_ascii=False)
+    critique = answer_critique_plain_text_from_result(result_dict)
     ts = now_taipei_iso()
     try:
         supabase = get_supabase()

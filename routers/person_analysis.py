@@ -90,17 +90,22 @@ def _synthetic_answer_from_quiz(quiz: dict) -> dict:
 
 
 def _metadata_for_weaknesses(ans: dict) -> Any:
-    """解析 answer_critique（JSON 字串）或直接回傳 dict。"""
+    """解析 answer_critique：JSON 物件、JSON 字串，或純文字評語（新寫入格式）。"""
     meta = ans.get("answer_critique")
     if not meta:
         return None
     if isinstance(meta, dict):
         return meta
     if isinstance(meta, str):
-        try:
-            return json.loads(meta)
-        except (json.JSONDecodeError, TypeError):
+        s = meta.strip()
+        if not s:
             return None
+        try:
+            parsed = json.loads(s)
+        except (json.JSONDecodeError, TypeError):
+            return {"quiz_comments": [s]}
+        else:
+            return parsed if isinstance(parsed, dict) else {"quiz_comments": [s]}
     return None
 
 
