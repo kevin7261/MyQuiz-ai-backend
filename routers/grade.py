@@ -53,7 +53,7 @@ from utils.llm_api_key_utils import get_llm_api_key_for_person
 # 從 ZIP 載入文件為 Document 列表
 from utils.rag_faiss_zip import process_zip_to_docs
 # 由 rag_id 取得 stem、rag_zip_tab_id
-from utils.rag_stem_utils import get_rag_stem_from_rag_id
+from utils.rag_stem_utils import get_rag_stem_from_rag_id, instruction_from_rag_row
 # 取得 ZIP 儲存路徑
 from utils.zip_storage import get_zip_path
 from utils.json_utils import to_json_safe
@@ -583,8 +583,8 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
     `rag_tab_id`／`rag_unit_id` 由後端依 `rag_quiz_id` 自資料庫帶入；`quiz_name` 空則沿用 stem／單元名。
     LLM API Key 依 Rag 的 person_id 從 User 表取得；請確保該使用者已於個人設定填寫 LLM API Key。
     程式依 rag_quiz_id 對應之 rag_unit_id 查到 Rag_Unit，再回推 Rag 查找 RAG ZIP 出題；
-    出題系統指令優先使用 **Rag.system_prompt_instruction**，若為空則使用該單元 **Rag_Unit.quiz_system_prompt_text**（建置時由 **POST /rag/tab/build-rag-zip** 帶入 system_prompt_instruction 寫入）。
-    出題成功後**更新** public.Rag_Quiz 錨點列（quiz_name 空字串則沿用 stem／單元名、quiz_*；並清空 answer_* 以免舊作答留存）；回傳 JSON 含 quiz_content, quiz_hint, quiz_reference_answer、quiz_name、rag_quiz_id 等。
+    出題注入文字優先 **Rag_Unit.transcription**，若為空則使用 **Rag.transcription**（單元 2／3／4 於 **POST /rag/tab/build-rag-zip** 成功時寫入 **Rag_Unit.transcription**）。
+    出題成功後**更新** public.Rag_Quiz 錨點列（quiz_name 空字串則沿用 stem／單元名、quiz_*；並清空 answer_* 以免舊作答留存）；回傳 JSON 含 quiz_content, quiz_hint, quiz_reference_answer、quiz_name、rag_quiz_id、transcription 等。
     """
     supabase = get_supabase()
 
@@ -605,7 +605,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
 
     unit_sel = (
         supabase.table("Rag_Unit")
-        .select("rag_unit_id, rag_tab_id, unit_name, quiz_system_prompt_text")
+        .select("rag_unit_id, rag_tab_id, unit_name, transcription, quiz_system_prompt_text")
         .eq("rag_unit_id", source_rag_unit_id)
         .eq("deleted", False)
         .limit(1)
@@ -661,14 +661,16 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
             status_code=400,
             detail="該使用者（person_id）尚未於個人設定填寫 LLM API Key，請至 User 設定",
         )
-    # 出題系統指令：Rag 全 tab 預設，或回退至本單元 Rag_Unit.quiz_system_prompt_text
-    system_prompt_instruction = (row.get("system_prompt_instruction") or "").strip()
-    if not system_prompt_instruction:
-        system_prompt_instruction = (unit_row.get("quiz_system_prompt_text") or "").strip()
-    if not system_prompt_instruction:
+    # 出題注入文字：單元優先，其次 Rag 表層 transcription（向下相容讀 quiz_system_prompt_text）
+    transcription_text = (
+        (unit_row.get("transcription") or unit_row.get("quiz_system_prompt_text") or "").strip()
+    )
+    if not transcription_text:
+        transcription_text = instruction_from_rag_row(row)
+    if not transcription_text:
         raise HTTPException(
             status_code=400,
-            detail="出題系統指令未設定：請在 Rag 設定 system_prompt_instruction；若走 ZIP 打包流程可在 POST /rag/tab/build-rag-zip 帶入 system_prompt_instruction（會寫入各 Rag_Unit.quiz_system_prompt_text）",
+            detail="出題用 transcription 未設定：請在 Rag_Unit 設定 transcription，或在 Rag 設定 transcription；單元 2／3／4 可經 POST /rag/tab/build-rag-zip 自動寫入 Rag_Unit.transcription",
         )
 
     # 取得 RAG ZIP 的檔案路徑（下載至暫存檔）
@@ -684,11 +686,10 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
         result = generate_quiz(
             path,  # RAG ZIP 路徑
             api_key=api_key,  # LLM API Key
-            system_prompt_instruction=system_prompt_instruction,  # 出題指令
+            transcription=transcription_text,
             user_instruction=body.quiz_user_prompt_text or "",
         )
-        # 將 system_prompt_instruction 加入 result
-        result["system_prompt_instruction"] = system_prompt_instruction
+        result["transcription"] = transcription_text
         # 加入 rag_output 供前端參考
         result["rag_output"] = {
             "rag_tab_id": stem,  # repack stem（與 rag_metadata.outputs[].unit_name 同義）

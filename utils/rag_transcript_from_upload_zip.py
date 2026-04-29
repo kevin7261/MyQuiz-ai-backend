@@ -248,10 +248,11 @@ def build_transcript_md_zip_bytes(transcript: str, arcname: str = "transcript.md
     return buf.getvalue()
 
 
-def _md_members_in_zip(z: zipfile.ZipFile) -> list[tuple[str, str]]:
+def _transcript_text_members_in_zip(z: zipfile.ZipFile) -> list[tuple[str, str]]:
+    """ZIP 內副檔名屬文字逐字稿來源者（與 _TRANSCRIPT_TEXT_EXTS 一致），供 build-rag-zip 單元 ZIP 解析。"""
     rows: list[tuple[str, str]] = []
     for raw, dec in _zip_members(z):
-        if Path(dec).suffix.lower() not in (".md", ".markdown"):
+        if Path(dec).suffix.lower() not in _TRANSCRIPT_TEXT_EXTS:
             continue
         rows.append((raw, dec))
     rows.sort(key=lambda x: x[1])
@@ -273,7 +274,8 @@ def extract_transcript_for_rag_build(zip_bytes: bytes, unit_type: int) -> dict[s
     """
     自 build-rag-zip 產出之「單元小 ZIP」擷取逐字稿與 Rag_Unit 附帶欄位。
     回傳 transcript、text_file_name、mp3_file_name、youtube_url（非適用之欄位為空字串）。
-    unit_type：2=文字（僅一個 .md）、3=音訊（第一個支援副檔名＋Deepgram）、4=YouTube（僅一個 .md 含連結＋en 字幕）。
+    unit_type：2=文字（**恰好一個** .md/.txt/.doc/.docx；**text_file_name** 為該檔 basename）、
+    3=音訊（第一個支援副檔名＋Deepgram）、4=YouTube（**恰好一個**上述文字檔含連結＋en 字幕）。
     """
     out: dict[str, str] = {
         "transcript": "",
@@ -286,20 +288,21 @@ def extract_transcript_for_rag_build(zip_bytes: bytes, unit_type: int) -> dict[s
 
     with zipfile.ZipFile(BytesIO(zip_bytes), "r") as z:
         if unit_type == 2:
-            md = _md_members_in_zip(z)
-            if not md:
-                raise ValueError("單元 ZIP 內找不到 .md／.markdown（unit_type=2 須恰好一個 Markdown）")
-            if len(md) > 1:
+            text_rows = _transcript_text_members_in_zip(z)
+            if not text_rows:
                 raise ValueError(
-                    f"unit_type=2 須恰好一個 .md，目前有 {len(md)} 個："
-                    + ", ".join(d for _, d in md[:5])
+                    "單元 ZIP 內找不到文字檔（unit_type=2 須恰好一個 .md／.txt／.doc／.docx）"
                 )
-            raw, dec = md[0]
+            if len(text_rows) > 1:
+                raise ValueError(
+                    "unit_type=2 須恰好一個文字檔，目前有 "
+                    f"{len(text_rows)} 個："
+                    + ", ".join(d for _, d in text_rows[:5])
+                )
+            raw, dec = text_rows[0]
             raw_b = z.read(raw)
-            try:
-                text = raw_b.decode("utf-8")
-            except UnicodeDecodeError:
-                text = raw_b.decode("utf-8", errors="replace")
+            suf = Path(dec).suffix.lower()
+            text = _decode_transcript_file_bytes(raw_b, suf)
             text = (text or "").strip()
             if not text:
                 raise ValueError(f"{Path(dec).name} 內容為空")
@@ -333,20 +336,21 @@ def extract_transcript_for_rag_build(zip_bytes: bytes, unit_type: int) -> dict[s
             return out
 
         # unit_type == 4
-        md = _md_members_in_zip(z)
-        if not md:
-            raise ValueError("單元 ZIP 內找不到 .md／.markdown（unit_type=4 須一個含 YouTube 連結的 Markdown）")
-        if len(md) > 1:
+        text_rows = _transcript_text_members_in_zip(z)
+        if not text_rows:
             raise ValueError(
-                f"unit_type=4 須恰好一個 .md，目前有 {len(md)} 個："
-                + ", ".join(d for _, d in md[:5])
+                "單元 ZIP 內找不到文字檔（unit_type=4 須恰好一個 .md／.txt／.doc／.docx，內含 YouTube 連結）"
             )
-        raw, dec = md[0]
+        if len(text_rows) > 1:
+            raise ValueError(
+                "unit_type=4 須恰好一個文字檔，目前有 "
+                f"{len(text_rows)} 個："
+                + ", ".join(d for _, d in text_rows[:5])
+            )
+        raw, dec = text_rows[0]
         raw_b = z.read(raw)
-        try:
-            raw_text = raw_b.decode("utf-8")
-        except UnicodeDecodeError:
-            raw_text = raw_b.decode("utf-8", errors="replace")
+        suf = Path(dec).suffix.lower()
+        raw_text = _decode_transcript_file_bytes(raw_b, suf)
         vid = extract_video_id_from_unit_md(raw_text)
         if not vid:
             raise ValueError(f"{Path(dec).name} 內找不到有效的 YouTube 連結或 video_id")

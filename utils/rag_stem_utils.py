@@ -9,6 +9,13 @@ from fastapi import HTTPException
 from postgrest.exceptions import APIError
 
 
+def instruction_from_rag_row(row: dict | None) -> str:
+    """Rag 表層級補充文字：**Rag.transcription**（與出題時注入 LLM 的內容一致）。"""
+    if not row:
+        return ""
+    return (row.get("transcription") or "").strip()
+
+
 def _fetch_rag_metadata_if_present(supabase, rag_id: int):
     """
     僅在需要 rag_metadata.outputs 回退時查詢；若資料庫尚無 rag_metadata 欄位則回傳 None。
@@ -97,7 +104,7 @@ def get_rag_stem_from_rag_id(
     """
     # 勿在主要 SELECT 含 rag_metadata：部分環境尚未 migration 該欄，會導致整筆查詢 42703。
     select_cols = (
-        "rag_tab_id, system_prompt_instruction, person_id, rag_id"
+        "rag_tab_id, transcription, person_id, rag_id"
         if include_row
         else "rag_tab_id"
     )

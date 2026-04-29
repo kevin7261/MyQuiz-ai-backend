@@ -28,7 +28,7 @@ from pydantic import AliasChoices, BaseModel, Field
 from utils.datetime_utils import now_taipei_iso, to_taipei_iso
 from utils.json_utils import to_json_safe
 from utils.llm_api_key_utils import get_llm_api_key
-from utils.rag_stem_utils import get_rag_stem_from_rag_id
+from utils.rag_stem_utils import get_rag_stem_from_rag_id, instruction_from_rag_row
 from utils.rag_exam_setting import fetch_exam_rag_id_from_settings, is_localhost_request
 from utils.zip_storage import generate_tab_id, get_zip_path
 from utils.supabase_client import get_supabase
@@ -840,7 +840,7 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
         )
     rag_rows = (
         supabase.table("Rag")
-        .select("rag_id, rag_tab_id, system_prompt_instruction")
+        .select("rag_id, rag_tab_id, transcription")
         .eq("rag_id", rag_id_from_setting)
         .eq("deleted", False)
         .limit(1)
@@ -851,21 +851,20 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
     rag_row = rag_rows.data[0]
     rag_id = int(rag_row.get("rag_id") or 0)
     rag_tab_id_for_units = (rag_row.get("rag_tab_id") or "").strip()
-    system_prompt_instruction = (rag_row.get("system_prompt_instruction") or "").strip()
 
     stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, rag_id, unit_name=unit_filter)
 
+    selected: dict | None = None
     if rag_tab_id_for_units:
         unit_q = (
             supabase.table("Rag_Unit")
-            .select("rag_unit_id, unit_name, quiz_system_prompt_text")
+            .select("rag_unit_id, unit_name, transcription, quiz_system_prompt_text")
             .eq("rag_tab_id", rag_tab_id_for_units)
             .eq("deleted", False)
             .order("created_at", desc=False)
             .execute()
         )
         units = unit_q.data or []
-        selected: dict | None = None
         if not unit_filter:
             selected = units[0] if units else None
         else:
@@ -873,13 +872,17 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
                 if (u.get("unit_name") or "").strip() == unit_filter:
                     selected = u
                     break
-        if selected and not system_prompt_instruction:
-            system_prompt_instruction = (selected.get("quiz_system_prompt_text") or "").strip()
-
-    if not system_prompt_instruction:
+    transcription_text = ""
+    if selected:
+        transcription_text = (
+            (selected.get("transcription") or selected.get("quiz_system_prompt_text") or "").strip()
+        )
+    if not transcription_text:
+        transcription_text = instruction_from_rag_row(rag_row)
+    if not transcription_text:
         raise HTTPException(
             status_code=400,
-            detail="供測驗 RAG 的出題系統指令未設定：請在該 Rag 設定 system_prompt_instruction，或在 POST /rag/tab/build-rag-zip 帶入 system_prompt_instruction",
+            detail="供測驗 RAG 的 transcription 未設定：請在該 Rag 或對應 Rag_Unit 設定 transcription；單元 2／3／4 可經 POST /rag/tab/build-rag-zip 寫入 Rag_Unit.transcription",
         )
 
     path = get_zip_path(rag_zip_tab_id)
@@ -891,10 +894,10 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
         result = generate_quiz(
             path,
             api_key=api_key,
-            system_prompt_instruction=system_prompt_instruction,
+            transcription=transcription_text,
             user_instruction=_exam_llm_generate_api_instruction(body),
         )
-        result["system_prompt_instruction"] = system_prompt_instruction
+        result["transcription"] = transcription_text
         result["rag_output"] = {
             "rag_tab_id": stem,
             "unit_name": stem,

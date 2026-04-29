@@ -6,7 +6,7 @@ ZIP 與 RAG 相關 API 模組。
 - POST /rag/tab/create：建立一筆 Rag（可傳 local）
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
 - POST /rag/tab/upload-zip：上傳 ZIP
-- POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿內容之單檔 .md」所包成的 ZIP（非 repack 複製）；可選 body.build_faiss 覆寫；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
+- POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名）；可選 body.build_faiss 覆寫；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
 - POST /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除 Rag 及其 Rag_Unit，並刪除儲存（須傳 query person_id）
 - PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
 - POST /rag/tab/unit/quiz/create：body `rag_tab_id`、`rag_unit_id` 定位 Rag_Unit 後新增一筆 Rag_Quiz（無 LLM）；`rag_quiz_id` 由資料庫產生。
@@ -127,7 +127,6 @@ def _rag_default_row(
     *,
     tab_name: str | None = None,
     person_id: str | None = None,
-    system_prompt_instruction: str | None = None,
     file_metadata: Any = None,
     local: bool = False,
 ) -> dict[str, Any]:
@@ -139,8 +138,6 @@ def _rag_default_row(
         "person_id": person_id if person_id is not None else "",
         "file_metadata": file_metadata,
     }
-    if system_prompt_instruction is not None:
-        row["system_prompt_instruction"] = system_prompt_instruction
     # rag_metadata 在部分環境可能尚未完成 migration；建立時先不主動寫入，避免 500。
     row["chunk_size"] = 1000
     row["chunk_overlap"] = 200
@@ -160,7 +157,7 @@ def _rag_unit_default_row(
     repack_file_name: str = "",
     rag_file_name: str = "",
     rag_file_size: float = 0.0,
-    quiz_system_prompt_text: str = "",
+    transcription: str = "",
     text_file_name: str = "",
     mp3_file_name: str = "",
     youtube_url: str = "",
@@ -175,7 +172,7 @@ def _rag_unit_default_row(
         "repack_file_name": repack_file_name,
         "rag_file_name": rag_file_name,
         "rag_file_size": rag_file_size,
-        "quiz_system_prompt_text": quiz_system_prompt_text,
+        "transcription": transcription,
         "text_file_name": text_file_name,
         "mp3_file_name": mp3_file_name,
         "youtube_url": youtube_url,
@@ -270,11 +267,10 @@ class UpdateRagUnitNameRequest(BaseModel):
 
 
 class PackRequest(BaseModel):
-    """欄位順序對應 public.Rag 中本請求會更新的區段：rag_tab_id, person_id, unit_list（用於指定要打包的資料夾，結果存入 Rag_Unit）, system_prompt_instruction, chunk_size, chunk_overlap。"""
+    """欄位順序對應 public.Rag 中本請求會更新的區段：rag_tab_id, person_id, unit_list（用於指定要打包的資料夾，結果存入 Rag_Unit）, chunk_size, chunk_overlap。"""
     rag_tab_id: str
     person_id: str
     unit_list: str  # 指定要打包的資料夾；例："220222+220301"（加號=同一 ZIP 多資料夾）；結果存入 Rag_Unit 表
-    system_prompt_instruction: str = ""  # 出題系統指令，寫入 Rag.system_prompt_instruction 及各 Rag_Unit.quiz_system_prompt_text
     chunk_size: int = 1000
     chunk_overlap: int = 200
     # 與 unit_list 同樣以逗號分段對齊每一個打包任務；0=未選、1=rag、2=文字、3=mp3、4=youtube；省略或不足處視為 0
@@ -560,7 +556,6 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
     # 先嘗試更新 Rag；即使失敗也要繼續寫 Rag_Unit（避免 schema cache 未同步時整段被跳過）。
     try:
         update_payload = {
-            "system_prompt_instruction": body.system_prompt_instruction or "",
             "rag_metadata": response,
             "chunk_size": body.chunk_size,
             "chunk_overlap": body.chunk_overlap,
@@ -581,17 +576,21 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
             unit_type_val = RAG_UNIT_TYPE_DEFAULT
         if unit_type_val < 0 or unit_type_val > 4:
             unit_type_val = RAG_UNIT_TYPE_DEFAULT
-        quiz_prompt = body.system_prompt_instruction or ""
+        unit_transcription = ""
         text_fn = ""
         mp3_fn = ""
         yt_url = ""
         if unit_type_val in (RAG_UNIT_TYPE_TEXT, RAG_UNIT_TYPE_MP3, RAG_UNIT_TYPE_YOUTUBE):
             tp = (output.get("transcript_plain") or "").strip()
             if tp:
-                quiz_prompt = tp
-            text_fn = output.get("text_file_name") or ""
-            mp3_fn = output.get("mp3_file_name") or ""
-            yt_url = output.get("youtube_url") or ""
+                unit_transcription = tp
+            # text_file_name 僅 unit_type=2（文字單元）；勿與 User.user_type 混淆
+            if unit_type_val == RAG_UNIT_TYPE_TEXT:
+                text_fn = output.get("text_file_name") or ""
+            if unit_type_val == RAG_UNIT_TYPE_MP3:
+                mp3_fn = output.get("mp3_file_name") or ""
+            if unit_type_val == RAG_UNIT_TYPE_YOUTUBE:
+                yt_url = output.get("youtube_url") or ""
         unit_row = _rag_unit_default_row(
             body.rag_tab_id,
             pid,
@@ -600,7 +599,7 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
             repack_file_name=output.get("repack_filename", ""),
             rag_file_name=output.get("rag_filename", ""),
             rag_file_size=float(output.get("file_size") or 0),
-            quiz_system_prompt_text=quiz_prompt,
+            transcription=unit_transcription,
             text_file_name=text_fn,
             mp3_file_name=mp3_fn,
             youtube_url=yt_url,
@@ -861,7 +860,7 @@ def build_rag_zip(
     可選 query **repack_only=true**：強制全部 unit 不建 FAISS；**不影響** 2／3／4 之逐字稿 rag ZIP 行為。
     可選 body **build_faiss**：`false` 同 repack_only；`true` 強制允許 FAISS（仍需 unit_type==1 觸發）；省略時依 user_type 判定。
     LLM API Key 僅在「最終會建 FAISS」（do_rag 為 True）時必填（依 person_id 自 User 表取得）。
-    body.unit_types 為選填，與 unit_list 逗號分段對齊，寫入各 Rag_Unit.unit_type：0=未選、1=rag、2=文字、3=mp3、4=youtube。單元 2／3／4 成功時 **Rag_Unit.quiz_system_prompt_text** 寫入逐字稿；**text_file_name**／**mp3_file_name**／**youtube_url** 依類型寫入對應欄位。
+    body.unit_types 為選填，與 unit_list 逗號分段對齊，寫入各 Rag_Unit.unit_type：0=未選、1=rag、2=文字、3=mp3、4=youtube。單元 2／3／4 成功時 **Rag_Unit.transcription** 寫入逐字稿全文；**text_file_name**（僅 **unit_type=2**，為上傳單元 ZIP 內該文字檔之檔名）／**mp3_file_name**（僅 3）／**youtube_url**（僅 4）寫入對應欄位。
 
     **回應為 NDJSON 串流**（`application/x-ndjson`），請以 `fetch` 讀取 `response.body`，勿使用單次 `response.json()`。
     每一輸出單元須 **成功上傳 repack**；rag 資料夾須 **成功寫入**（unit_type=1 且建 FAISS 為向量庫 ZIP；2／3／4 為逐字稿 md ZIP；其餘為 repack 同內容），且**上傳後能自儲存讀回非空檔**。
@@ -871,7 +870,7 @@ def build_rag_zip(
     事件列舉（每行一個物件）：
     - `{"type":"start","total":N,"source_rag_tab_id":"...","unit_list":"...","user_type":int,"build_faiss_request":bool|null,"repack_only":bool,"allow_faiss":bool}`（allow_faiss=各 unit 是否可建 FAISS，仍需 unit_type==1 才實際建）
     - `{"type":"building","index":i,"total":N,"completed_before":i-1,"filename":"..."}`
-    - `{"type":"unit",...,"output":{...}}`：output 含 rag_mode（`faiss`＝向量庫；`transcript_md`＝逐字稿 md ZIP；`repack_copy`＝與 repack 同內容複製）、`transcript_plain`／`text_file_name`／`mp3_file_name`／`youtube_url`（2／3／4 時）、rag_filename（物件鍵仍為 *_rag.zip）
+    - `{"type":"unit",...,"output":{...}}`：output 含 rag_mode（`faiss`＝向量庫；`transcript_md`＝逐字稿 md ZIP；`repack_copy`＝與 repack 同內容複製）、`transcript_plain`；**text_file_name** 僅 **unit_type=2** 有值（來源文字檔檔名）；**mp3_file_name** 僅 3；**youtube_url** 僅 4；rag_filename（物件鍵仍為 *_rag.zip）
     - `{"type":"complete","success":bool,"total","built_ok","built_failed","source_rag_tab_id","unit_list","outputs"}`
 
     串流階段 HTTP 狀態碼固定 **200**；請以最後一則 `type===complete` 的 `success` 判斷整批成敗。
