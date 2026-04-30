@@ -10,7 +10,7 @@ Exam API 模組。對應 public.Exam、public.Exam_Quiz。
 - POST /exam/tab/quiz/create：新增空白 Exam_Quiz（不呼叫 LLM）。
 - POST /exam/tab/quiz/llm-generate：出題請求須含 `rag_tab_id` 與單／題鍵；自該 RAG Tab 載入資料，不依賴 System_Setting。
 - POST /exam/tab/quiz/llm-grade：非同步 RAG+LLM 評分；回傳 202 + job_id，輪詢 GET /exam/tab/quiz/grade-result/{job_id}。
-- POST /exam/tab/delete/{exam_tab_id}：軟刪除 Exam。
+- PUT /exam/tab/delete/{exam_tab_id}：軟刪除 Exam。
 - POST /exam/tab/quiz/rate：更新 Exam_Quiz.quiz_rate（僅 -1、0、1）。
 """
 
@@ -467,15 +467,15 @@ def update_exam_unit_tab_name(body: UpdateExamUnitNameRequest, caller_person_id:
 
 
 # ---------------------------------------------------------------------------
-# POST /exam/tab/delete/{exam_tab_id}
+# PUT /exam/tab/delete/{exam_tab_id}
 # ---------------------------------------------------------------------------
 
-@router.post("/tab/delete/{exam_tab_id}", status_code=200)
+@router.put("/tab/delete/{exam_tab_id}", status_code=200, summary="Delete Exam Tab", operation_id="exam_tab_delete")
 def delete_exam(
     caller_person_id: PersonId,
     exam_tab_id: str = PathParam(..., description="要刪除的 Exam 的 exam_tab_id"),
 ):
-    """軟刪除：將 Exam 的 deleted 設為 true。"""
+    """PUT /exam/tab/delete/{exam_tab_id}。軟刪除：將 Exam 的 deleted 設為 true。"""
     fid = (exam_tab_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
         raise HTTPException(status_code=400, detail="無效的 exam_tab_id")

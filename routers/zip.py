@@ -5,12 +5,14 @@ ZIP 與 RAG 相關 API 模組。
 - GET /rag/units：依 rag_tab_id 列出 Rag_Unit（含 quizzes）
 - POST /rag/tab/create：建立一筆 Rag（可傳 local）
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
+- PUT /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除 Rag 及其 Rag_Unit，並刪除儲存（須傳 query person_id）
 - POST /rag/tab/upload-zip：上傳 ZIP
 - POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名；`.md`/`.txt` 內容 UTF-8 原文寫入 Rag_Unit.transcription，含 Markdown）；可選 body.build_faiss 覆寫；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
-- POST /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除 Rag 及其 Rag_Unit，並刪除儲存（須傳 query person_id）
+- PUT /rag/tab/quiz/delete/{rag_quiz_id}：依 rag_quiz_id 軟刪除 Rag_Quiz（deleted=true；須為該列 person_id）
 - PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
 - GET /rag/tab/unit/mp3-file：query rag_tab_id、rag_unit_id；僅 unit_type=3 時回傳音訊（優先該單元 **repack** ZIP；repack 缺漏時改讀該 tab 之 upload ZIP，與 GET /rag/unit/audio-file 相同語意）
 - POST /rag/tab/unit/quiz/create：body `rag_tab_id`、`rag_unit_id` 定位 Rag_Unit 後新增一筆 Rag_Quiz（無 LLM）；`rag_quiz_id` 由資料庫產生。
+- PUT /rag/tab/unit/quiz/quiz-name：更新 Rag_Quiz 的 quiz_name（body：rag_quiz_id、quiz_name）
 """
 
 import io
@@ -332,6 +334,12 @@ class InsertRagQuizRowRequest(BaseModel):
 
     rag_tab_id: str = Field("", description="Rag tab 識別；與 rag_unit_id 併用見上")
     rag_unit_id: int = Field(0, ge=0, description="Rag_Unit 主鍵；0 表示改由 rag_tab_id 唯一解析")
+
+
+class UpdateRagQuizQuizNameRequest(BaseModel):
+    """PUT /rag/tab/unit/quiz/quiz-name：更新 Rag_Quiz 的 quiz_name。"""
+    rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 表主鍵")
+    quiz_name: str = Field(..., description="新的 quiz_name")
 
 
 _MIN_RAG_ZIP_BYTES = 22
@@ -825,6 +833,61 @@ def update_unit_tab_name(body: UpdateRagUnitNameRequest, caller_person_id: Perso
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _do_delete_rag_file_by_tab_id(fid: str) -> tuple[bool, str]:
+    """依 rag_tab_id 將 Rag 未刪除列軟刪除，同時軟刪除對應 Rag_Unit，並刪除 storage 資料夾。"""
+    supabase = get_supabase()
+    sel = supabase.table("Rag").select("person_id").eq("rag_tab_id", fid).eq("deleted", False).execute()
+    if not sel.data:
+        raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料，或已刪除")
+    pids_ordered: list[str] = []
+    seen: set[str] = set()
+    for row in sel.data:
+        pid = (row.get("person_id") or "").strip()
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        pids_ordered.append(pid)
+    primary_pid = pids_ordered[0] if pids_ordered else ""
+    try:
+        supabase.table("Rag").update({"deleted": True, "updated_at": now_taipei_iso()}).eq("rag_tab_id", fid).eq("deleted", False).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新 Rag 表失敗: {e}")
+    try:
+        supabase.table("Rag_Unit").update({"deleted": True, "updated_at": now_taipei_iso()}).eq("rag_tab_id", fid).eq("deleted", False).execute()
+    except Exception:
+        pass
+    folder_deleted = False
+    for pid in pids_ordered:
+        try:
+            if delete_tab_folder(pid, fid):
+                folder_deleted = True
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    return folder_deleted, primary_pid
+
+
+@router.put("/tab/delete/{rag_tab_id}", status_code=200, summary="Delete Rag File", operation_id="rag_tab_delete")
+def delete_rag_file(
+    _person_id: PersonId,
+    rag_tab_id: str = PathParam(..., description="要刪除的 rag_tab_id"),
+):
+    """
+    PUT /rag/tab/delete/{rag_tab_id}。
+    軟刪除：將 Rag 表該 rag_tab_id 之未刪除列 deleted 設為 true，同時軟刪除所有對應 Rag_Unit，並刪除 storage 資料夾。
+    """
+    fid = (rag_tab_id or "").strip()
+    if not fid or "/" in fid or "\\" in fid:
+        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
+    folder_deleted, pid = _do_delete_rag_file_by_tab_id(fid)
+    return {
+        "message": "已將 RAG 資料標記為刪除並刪除儲存資料夾",
+        "rag_tab_id": fid,
+        "person_id": pid,
+        "rag_updated": True,
+        "folder_deleted": folder_deleted,
+    }
+
+
 @router.post("/tab/upload-zip")
 async def upload_zip(
     caller_person_id: PersonId,
@@ -1091,61 +1154,6 @@ def build_rag_zip(
             "X-Accel-Buffering": "no",
         },
     )
-
-
-def _do_delete_rag_file_by_tab_id(fid: str) -> tuple[bool, str]:
-    """依 rag_tab_id 將 Rag 未刪除列軟刪除，同時軟刪除對應 Rag_Unit，並刪除 storage 資料夾。"""
-    supabase = get_supabase()
-    sel = supabase.table("Rag").select("person_id").eq("rag_tab_id", fid).eq("deleted", False).execute()
-    if not sel.data:
-        raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料，或已刪除")
-    pids_ordered: list[str] = []
-    seen: set[str] = set()
-    for row in sel.data:
-        pid = (row.get("person_id") or "").strip()
-        if not pid or pid in seen:
-            continue
-        seen.add(pid)
-        pids_ordered.append(pid)
-    primary_pid = pids_ordered[0] if pids_ordered else ""
-    try:
-        supabase.table("Rag").update({"deleted": True, "updated_at": now_taipei_iso()}).eq("rag_tab_id", fid).eq("deleted", False).execute()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"更新 Rag 表失敗: {e}")
-    try:
-        supabase.table("Rag_Unit").update({"deleted": True, "updated_at": now_taipei_iso()}).eq("rag_tab_id", fid).eq("deleted", False).execute()
-    except Exception:
-        pass
-    folder_deleted = False
-    for pid in pids_ordered:
-        try:
-            if delete_tab_folder(pid, fid):
-                folder_deleted = True
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-    return folder_deleted, primary_pid
-
-
-@router.post("/tab/delete/{rag_tab_id}", status_code=200)
-def delete_rag_file(
-    _person_id: PersonId,
-    rag_tab_id: str = PathParam(..., description="要刪除的 rag_tab_id"),
-):
-    """
-    POST /rag/tab/delete/{rag_tab_id}。
-    軟刪除：將 Rag 表該 rag_tab_id 之未刪除列 deleted 設為 true，同時軟刪除所有對應 Rag_Unit，並刪除 storage 資料夾。
-    """
-    fid = (rag_tab_id or "").strip()
-    if not fid or "/" in fid or "\\" in fid:
-        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
-    folder_deleted, pid = _do_delete_rag_file_by_tab_id(fid)
-    return {
-        "message": "已將 RAG 資料標記為刪除並刪除儲存資料夾",
-        "rag_tab_id": fid,
-        "person_id": pid,
-        "rag_updated": True,
-        "folder_deleted": folder_deleted,
-    }
 
 
 @router.get("/tab/units")
@@ -1468,5 +1476,90 @@ def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonI
         raise
     except Exception as e:
         logging.exception("POST /rag/tab/unit/quiz/create 錯誤")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/tab/unit/quiz/quiz-name", summary="Update Rag Quiz Name", operation_id="rag_tab_unit_quiz_quiz_name")
+def update_rag_quiz_name(body: UpdateRagQuizQuizNameRequest, caller_person_id: PersonId):
+    """
+    更新既有 Rag_Quiz 的 quiz_name。以 rag_quiz_id（主鍵）比對；僅更新 deleted=false 的列。
+    回傳 rag_quiz_id、rag_tab_id、rag_unit_id、person_id、quiz_name、updated_at。
+    """
+    quiz_name = (body.quiz_name or "").strip()
+    if not quiz_name:
+        raise HTTPException(status_code=400, detail="請傳入 quiz_name")
+    try:
+        supabase = get_supabase()
+        sel = (
+            supabase.table("Rag_Quiz")
+            .select("rag_quiz_id, rag_tab_id, rag_unit_id, person_id")
+            .eq("rag_quiz_id", body.rag_quiz_id)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+        if not sel.data:
+            raise HTTPException(status_code=404, detail="找不到該 rag_quiz_id 的 Rag_Quiz 資料，或已刪除")
+        row = sel.data[0]
+        pid = (row.get("person_id") or "").strip()
+        if pid != caller_person_id:
+            raise HTTPException(status_code=403, detail="無權修改該 Rag_Quiz")
+        ts = now_taipei_iso()
+        supabase.table("Rag_Quiz").update({"quiz_name": quiz_name, "updated_at": ts}).eq("rag_quiz_id", body.rag_quiz_id).eq("deleted", False).execute()
+        return {
+            "rag_quiz_id": body.rag_quiz_id,
+            "rag_tab_id": row.get("rag_tab_id"),
+            "rag_unit_id": row.get("rag_unit_id"),
+            "person_id": pid,
+            "quiz_name": quiz_name,
+            "updated_at": ts,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("PUT /rag/tab/unit/quiz/quiz-name 錯誤")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/tab/quiz/delete/{rag_quiz_id}", status_code=200, summary="Delete Rag Quiz", operation_id="rag_tab_quiz_delete")
+def delete_rag_quiz(
+    caller_person_id: PersonId,
+    rag_quiz_id: int = PathParam(..., gt=0, description="要軟刪除的 Rag_Quiz 主鍵"),
+):
+    """
+    PUT /rag/tab/quiz/delete/{rag_quiz_id}。
+    軟刪除：將 Rag_Quiz 該列 deleted 設為 true（僅 person_id 與請求者一致且尚未刪除之列）。
+    """
+    try:
+        supabase = get_supabase()
+        sel = (
+            supabase.table("Rag_Quiz")
+            .select("rag_quiz_id, rag_tab_id, rag_unit_id, person_id")
+            .eq("rag_quiz_id", rag_quiz_id)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+        if not sel.data:
+            raise HTTPException(status_code=404, detail="找不到該 rag_quiz_id 的 Rag_Quiz 資料，或已刪除")
+        row = sel.data[0]
+        pid = (row.get("person_id") or "").strip()
+        if pid != caller_person_id:
+            raise HTTPException(status_code=403, detail="無權刪除該 Rag_Quiz")
+        ts = now_taipei_iso()
+        supabase.table("Rag_Quiz").update({"deleted": True, "updated_at": ts}).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
+        return {
+            "message": "已將 Rag_Quiz 標記為刪除",
+            "rag_quiz_id": rag_quiz_id,
+            "rag_tab_id": row.get("rag_tab_id"),
+            "rag_unit_id": row.get("rag_unit_id"),
+            "person_id": pid,
+            "rag_quiz_updated": True,
+            "updated_at": ts,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("PUT /rag/tab/quiz/delete/{rag_quiz_id} 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -4,7 +4,7 @@
 - GET /user/users：列出 User 表（不含 password）
 - POST /user/users：新增單一使用者（person_id、name、user_type）
 - POST /user/users/batch：批次新增使用者（每筆僅 person_id、name；user_type 固定為 3；password 預設 0000）
-- POST /user/users/delete：軟刪除（body.person_id 指定對象，將 deleted 設為 true）
+- PUT /user/users/delete：軟刪除（body.person_id 指定對象，將 deleted 設為 true）
 - POST /user/login：以 person_id + password 登入
 - PATCH /user/profile：更新個人資料（name、user_type、llm_api_key）
 """
@@ -123,7 +123,7 @@ class BatchCreateUsersResponse(BaseModel):
 
 
 class DeleteUserRequest(BaseModel):
-    """POST /user/users/delete：要軟刪除的使用者 person_id。"""
+    """PUT /user/users/delete：要軟刪除的使用者 person_id。"""
     person_id: str
 
 
@@ -217,10 +217,10 @@ def _soft_delete_user(supabase, target_person_id: str) -> LoginResponse:
     return LoginResponse(user=UserListItem(**_user_public_dict(row_out)))
 
 
-@router.post("/users/delete", response_model=LoginResponse)
+@router.put("/users/delete", response_model=LoginResponse, summary="Soft delete user", operation_id="user_users_delete")
 def soft_delete_user(body: DeleteUserRequest, _person_id: PersonId):
     """
-    軟刪除：將指定 person_id 之使用者 deleted 設為 true（需帶 query person_id）。
+    PUT /user/users/delete。軟刪除：將指定 person_id 之使用者 deleted 設為 true（需帶 query person_id）。
     """
     target = (body.person_id or "").strip()
     if not target:
