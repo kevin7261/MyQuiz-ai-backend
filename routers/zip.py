@@ -1,7 +1,7 @@
 """
 ZIP 與 RAG 相關 API 模組。
 提供：
-- GET /rag/tabs：列出 Rag 表（含 units→quizzes）；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新
+- GET /rag/tabs：列出 Rag 表（含 units→quizzes）；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；unit_type=mp3 且含 mp3_file_name 時另附 mp3_audio_url（GET /rag/unit/audio-file 之 query，供前端 `<audio src>`）
 - GET /rag/units：依 rag_tab_id 列出 Rag_Unit（含 quizzes）
 - POST /rag/tab/create：建立一筆 Rag（可傳 local）
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
@@ -9,6 +9,7 @@ ZIP 與 RAG 相關 API 模組。
 - POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名；`.md`/`.txt` 內容 UTF-8 原文寫入 Rag_Unit.transcription，含 Markdown）；可選 body.build_faiss 覆寫；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
 - POST /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除 Rag 及其 Rag_Unit，並刪除儲存（須傳 query person_id）
 - PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
+- GET /rag/tab/unit/mp3-file：query rag_tab_id、rag_unit_id；僅 unit_type=3 時回傳音訊（優先該單元 **repack** ZIP；repack 缺漏時改讀該 tab 之 upload ZIP，與 GET /rag/unit/audio-file 相同語意）
 - POST /rag/tab/unit/quiz/create：body `rag_tab_id`、`rag_unit_id` 定位 Rag_Unit 後新增一筆 Rag_Quiz（無 LLM）；`rag_quiz_id` 由資料庫產生。
 """
 
@@ -16,6 +17,7 @@ import io
 import json
 import os
 import time
+from urllib.parse import urlencode
 import logging
 import uuid
 import tempfile
@@ -26,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Path as PathParam, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from dependencies.person_id import PersonId
 from pydantic import BaseModel, Field
@@ -50,10 +52,14 @@ from utils.zip_storage import (
 from utils.supabase_client import get_supabase
 from utils.db_tables import USER_TABLE
 from utils.rag_exam_setting import is_localhost_request
+from utils.media_transcript import audio_media_type_for_suffix
 from utils.rag_transcript_from_upload_zip import (
     build_transcript_md_zip_bytes,
     extract_transcript_for_rag_build,
     infer_unit_type_when_unspecified,
+    pick_audio_from_upload_zip,
+    read_repack_zip_bytes,
+    read_upload_zip_bytes,
 )
 from services.grading import quiz_grade_from_answer_critique
 
@@ -72,6 +78,28 @@ RAG_UNIT_TYPE_MP3 = 3
 RAG_UNIT_TYPE_YOUTUBE = 4
 # 舊註解「ZIP 打包建置」同義於 rag
 RAG_UNIT_TYPE_ZIP_BUILD = RAG_UNIT_TYPE_RAG
+
+
+def _require_rag_tab_owner(person_id: str, rag_tab_id: str) -> None:
+    """確認 Rag 列存在且 person_id 一致（與 routers/grade 相同語意）。"""
+    rid = (rag_tab_id or "").strip()
+    if not rid or "/" in rid or "\\" in rid:
+        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
+    supabase = get_supabase()
+    sel = (
+        supabase.table("Rag")
+        .select("rag_tab_id")
+        .eq("rag_tab_id", rid)
+        .eq("person_id", person_id)
+        .eq("deleted", False)
+        .limit(1)
+        .execute()
+    )
+    if not sel.data:
+        raise HTTPException(
+            status_code=404,
+            detail="找不到該 rag_tab_id，或已刪除／不屬於此 person_id",
+        )
 
 
 def _bytes_to_mb(size_bytes: int) -> float:
@@ -643,6 +671,7 @@ def list_rag(
     列出 Rag 表內容（deleted=False），僅回傳與 query person_id 相符之列，Rag.local 須與 query local 相符（未傳 local 時依連線自動判定）。
     回傳列依 created_at 由舊到新排序。
     每筆 Rag 含 units（Rag_Unit 列表），每個 unit 含 quizzes（Rag_Quiz 列表）。
+    音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /rag/unit/audio-file 查詢字串（已含 person_id），可接在後端 origin 後作為 `<audio src>`。
     """
     try:
         local_filter = local if local is not None else is_localhost_request(request)
@@ -674,6 +703,27 @@ def list_rag(
                 uid = unit.get("rag_unit_id")
                 uid_int = int(uid) if uid is not None else None
                 unit["quizzes"] = quizzes_by_unit.get(uid_int, []) if uid_int is not None else []
+                try:
+                    utype = int(unit.get("unit_type") or 0)
+                except (TypeError, ValueError):
+                    utype = 0
+                unit_name_q = (unit.get("unit_name") or "").strip()
+                if (
+                    utype == RAG_UNIT_TYPE_MP3
+                    and (unit.get("mp3_file_name") or "").strip()
+                    and unit_name_q
+                    and tab_id
+                ):
+                    unit["mp3_audio_url"] = (
+                        "/rag/unit/audio-file?"
+                        + urlencode(
+                            {
+                                "person_id": pid,
+                                "rag_tab_id": str(tab_id).strip(),
+                                "folder_name": unit_name_q,
+                            }
+                        )
+                    )
             row["units"] = units
 
         data = to_json_safe(data)
@@ -1187,6 +1237,128 @@ def update_rag_unit_name(body: UpdateRagUnitUnitNameRequest, caller_person_id: P
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/tab/unit/mp3-file",
+    summary="Rag Tab Unit Mp3 File",
+    operation_id="rag_tab_unit_mp3_file",
+)
+def rag_tab_unit_mp3_file(
+    caller_person_id: PersonId,
+    rag_tab_id: str = Query(..., description="Rag.rag_tab_id（parent tab；repack/upload 路徑皆在其下）"),
+    rag_unit_id: int = Query(..., gt=0, description="Rag_Unit 主鍵"),
+):
+    """
+    依 rag_tab_id 與 rag_unit_id；**僅 Rag_Unit.unit_type=3（音訊單元）** 時回傳原始音訊。
+    **優先**自該單元之 **repack** ZIP（`Rag_Unit.repack_file_name`／Storage `…/repack/{單元}.zip`）內，依 `unit_name`
+    路徑段擷取第一個支援的音訊檔（repack 內仍保留上傳時之資料夾名，與 `repack_tasks_to_zips` 一致）。
+    repack 無法讀取時**改讀**該 tab 之 **upload** ZIP（與 GET /rag/unit/audio-file 相同）。
+    Storage `…/rag/{tab}_rag.zip` 僅為逐字稿封包，不含原始 mp3。
+    """
+    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    tab = (rag_tab_id or "").strip()
+    supabase = get_supabase()
+    sel = (
+        supabase.table("Rag_Unit")
+        .select("rag_tab_id, unit_name, unit_type, deleted, repack_file_name")
+        .eq("rag_unit_id", rag_unit_id)
+        .eq("person_id", caller_person_id.strip())
+        .limit(1)
+        .execute()
+    )
+    if not sel.data:
+        raise HTTPException(
+            status_code=404,
+            detail="找不到該 rag_unit_id，或不屬於此 person_id",
+        )
+    row = sel.data[0]
+    if row.get("deleted"):
+        raise HTTPException(status_code=404, detail="該單元已刪除")
+    if (row.get("rag_tab_id") or "").strip() != tab:
+        raise HTTPException(
+            status_code=400,
+            detail="rag_tab_id 與該 rag_unit_id 所屬之 Rag_Unit.rag_tab_id 不一致",
+        )
+    try:
+        ut = int(row.get("unit_type") or 0)
+    except (TypeError, ValueError):
+        ut = 0
+    if ut != RAG_UNIT_TYPE_MP3:
+        raise HTTPException(
+            status_code=400,
+            detail=f"僅 unit_type=3（mp3 音訊單元）可使用此端點，目前 unit_type={ut}",
+        )
+    folder_name = (row.get("unit_name") or "").strip()
+    if not folder_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Rag_Unit.unit_name 為空，無法對應 repack／upload ZIP 內單元路徑",
+        )
+
+    zip_bytes: bytes | None = None
+    repack_fn = (row.get("repack_file_name") or "").strip()
+    repack_err: str | None = None
+    if repack_fn:
+        try:
+            zip_bytes = read_repack_zip_bytes(repack_fn)
+        except FileNotFoundError as e:
+            repack_err = str(e)
+        except ValueError as e:
+            repack_err = str(e)
+        except Exception as e:
+            logging.exception("讀取 repack ZIP 失敗")
+            repack_err = str(e)
+
+    if zip_bytes is None:
+        try:
+            zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
+        except FileNotFoundError as e:
+            detail = str(e)
+            if repack_err:
+                detail = f"{detail}（repack 亦失敗：{repack_err}）"
+            raise HTTPException(status_code=404, detail=detail) from e
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            logging.exception("讀取 upload ZIP 失敗")
+            raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+
+    from_repack_ok = bool(repack_fn) and repack_err is None
+    try:
+        contents, suffix, inner_path = pick_audio_from_upload_zip(zip_bytes, folder_name)
+    except ValueError as e:
+        if from_repack_ok:
+            try:
+                zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
+            except FileNotFoundError as e2:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{e!s}（repack ZIP 內亦無法對應音訊，且無 upload 可備援：{e2!s}）",
+                ) from e
+            except ValueError as e2:
+                raise HTTPException(status_code=400, detail=f"{e!s}（upload 備援：{e2!s}）") from e
+            except Exception as e2:
+                logging.exception("讀取 upload ZIP 備援失敗")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"{e!s}（upload 備援讀取失敗：{e2!s}）",
+                ) from e
+            try:
+                contents, suffix, inner_path = pick_audio_from_upload_zip(zip_bytes, folder_name)
+            except ValueError as e3:
+                raise HTTPException(status_code=400, detail=str(e3)) from e
+        else:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    media = audio_media_type_for_suffix(suffix)
+    disp_name = Path(inner_path).name
+    safe_disp = "".join(c if 32 <= ord(c) < 127 and c not in '\\"' else "_" for c in disp_name) or "audio"
+    return Response(
+        content=contents,
+        media_type=media,
+        headers={"Content-Disposition": f'inline; filename="{safe_disp}"'},
+    )
 
 
 @router.post("/tab/unit/quiz/create", summary="Rag Create Quiz (no LLM)", operation_id="rag_create_quiz")

@@ -15,7 +15,7 @@ from utils.media_transcript import (
     transcribe_audio_bytes_deepgram,
     youtube_transcript_plain_text,
 )
-from utils.zip_storage import UPLOAD_DEFAULT_PERSON, get_zip_path_by_person
+from utils.zip_storage import UPLOAD_DEFAULT_PERSON, get_zip_path, get_zip_path_by_person
 from utils.zip_utils import fix_encoding
 
 logger = logging.getLogger(__name__)
@@ -104,6 +104,27 @@ def read_upload_zip_bytes(person_id: str, rag_tab_id: str) -> bytes:
             tmp.unlink(missing_ok=True)
         except OSError:
             logger.debug("刪除暫存 upload ZIP 失敗", exc_info=True)
+
+
+def read_repack_zip_bytes(repack_file_name: str) -> bytes:
+    """
+    自 Supabase RAG bucket 的 **repack** 區下載該單元 ZIP（與 build-rag-zip 寫入之 Rag_Unit.repack_file_name 對齊，例如 `stem.zip`）。
+    metadata 鍵為主檔名不含 `.zip`；與 `get_zip_path` 一致。
+    """
+    raw = (repack_file_name or "").strip()
+    stem = Path(raw).stem.strip() if raw else ""
+    if not stem or "/" in stem or "\\" in stem:
+        raise ValueError("無效的 repack_file_name（無法取得 repack tab id）")
+    tmp = get_zip_path(stem)
+    if not tmp or not tmp.exists():
+        raise FileNotFoundError(f"找不到 repack ZIP（repack_file_name={raw!r}, tab_id={stem!r}）")
+    try:
+        return tmp.read_bytes()
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("刪除暫存 repack ZIP 失敗", exc_info=True)
 
 
 def pick_audio_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[bytes, str, str]:

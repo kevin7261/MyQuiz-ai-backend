@@ -34,6 +34,11 @@ def _suffix_to_content_type(suffix: str) -> str:
     }.get(s, "application/octet-stream")
 
 
+def audio_media_type_for_suffix(suffix: str) -> str:
+    """HTTP ``Content-Type`` for an audio filename suffix (e.g. ``.mp3`` → ``audio/mpeg``)."""
+    return _suffix_to_content_type(suffix)
+
+
 def transcribe_audio_bytes_deepgram(
     data: bytes,
     *,

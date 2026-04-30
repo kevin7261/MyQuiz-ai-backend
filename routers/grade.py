@@ -5,6 +5,7 @@ RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/for-exam：將 Rag_Quiz.for_exam 設為 true。
 - GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
 - GET /rag/transcript/text、audio、youtube：自 Storage upload ZIP 讀取逐字稿。
+- GET /rag/unit/audio-file：自 upload ZIP 依單元資料夾回傳原始音訊 bytes（供 `<audio src>`；與 transcript/audio 相同之 rag_tab_id、folder_name）。
 """
 
 import json
@@ -31,7 +32,11 @@ from services.grading import (
 from utils.datetime_utils import now_taipei_iso
 from utils.json_utils import to_json_safe
 from utils.llm_api_key_utils import get_llm_api_key_for_person
-from utils.media_transcript import transcribe_audio_bytes_deepgram, youtube_transcript_plain_text
+from utils.media_transcript import (
+    audio_media_type_for_suffix,
+    transcribe_audio_bytes_deepgram,
+    youtube_transcript_plain_text,
+)
 from utils.rag_faiss_zip import process_zip_to_docs
 from utils.rag_stem_utils import get_rag_stem_from_rag_id, instruction_from_rag_row
 from utils.rag_transcript_from_upload_zip import (
@@ -669,6 +674,50 @@ def rag_transcript_text(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     return RagTranscriptMarkdownResponse(markdown=body if body else "")
+
+
+# ---------------------------------------------------------------------------
+# GET /rag/unit/audio-file
+# ---------------------------------------------------------------------------
+
+
+@router.get("/unit/audio-file")
+def rag_unit_audio_file(
+    caller_person_id: PersonId,
+    rag_tab_id: str = Query(..., description="Rag.rag_tab_id（upload ZIP 路徑）"),
+    folder_name: str = Query(
+        ...,
+        description="與 Rag_Unit.unit_name、upload ZIP 內單元資料夾名相同（與 GET /rag/transcript/audio 一致）",
+    ),
+):
+    """
+    自 upload ZIP 內指定資料夾擷取第一個支援的音訊檔，**不**經 Deepgram，直接回傳二進位內容。
+    前端可將完整 URL（含 query `person_id`）設為 `<audio src>`。
+    """
+    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    try:
+        zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logging.exception("讀取 upload ZIP 失敗")
+        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+
+    try:
+        contents, suffix, inner_path = pick_audio_from_upload_zip(zip_bytes, folder_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    media = audio_media_type_for_suffix(suffix)
+    disp_name = Path(inner_path).name
+    safe_disp = "".join(c if 32 <= ord(c) < 127 and c not in '\\"' else "_" for c in disp_name) or "audio"
+    return Response(
+        content=contents,
+        media_type=media,
+        headers={"Content-Disposition": f'inline; filename="{safe_disp}"'},
+    )
 
 
 # ---------------------------------------------------------------------------
