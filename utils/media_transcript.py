@@ -92,6 +92,62 @@ def transcribe_audio_bytes_deepgram(
     return text, elapsed
 
 
+def _youtube_transcript_api_from_env():
+    """
+    建立 YouTubeTranscriptApi。若設定代理相關環境變數，可避免雲端 IP 被 YouTube 封鎖。
+
+    Webshare 住宅代理（與套件 README 一致）：
+      YOUTUBE_TRANSCRIPT_WEBSHARE_USERNAME、YOUTUBE_TRANSCRIPT_WEBSHARE_PASSWORD
+      選填 YOUTUBE_TRANSCRIPT_WEBSHARE_LOCATIONS：逗號分隔國碼，例如 us,tw
+
+    自訂 HTTP/HTTPS 代理：
+      YOUTUBE_TRANSCRIPT_HTTP_PROXY、YOUTUBE_TRANSCRIPT_HTTPS_PROXY
+      （值格式如 http://user:pass@host:port；可只設其一）
+
+    若同時設定 Webshare 帳密與 HTTP 代理，優先使用 Webshare。
+    """
+    from youtube_transcript_api import YouTubeTranscriptApi
+
+    ws_user = (os.environ.get("YOUTUBE_TRANSCRIPT_WEBSHARE_USERNAME") or "").strip()
+    ws_pass = (os.environ.get("YOUTUBE_TRANSCRIPT_WEBSHARE_PASSWORD") or "").strip()
+    if ws_user and ws_pass:
+        try:
+            from youtube_transcript_api.proxies import WebshareProxyConfig
+        except ImportError as e:
+            raise RuntimeError(
+                "已設定 YOUTUBE_TRANSCRIPT_WEBSHARE_*，但目前的 youtube-transcript-api 不支援 "
+                "WebshareProxyConfig；請升級至 README 建議版本（含 proxies 模組）。"
+            ) from e
+        loc_raw = (os.environ.get("YOUTUBE_TRANSCRIPT_WEBSHARE_LOCATIONS") or "").strip()
+        locations = [x.strip().lower() for x in loc_raw.split(",") if x.strip()] or None
+        cfg = WebshareProxyConfig(
+            proxy_username=ws_user,
+            proxy_password=ws_pass,
+            filter_ip_locations=locations,
+        )
+        logger.info("YouTube transcript: WebshareProxyConfig（住宅代理）已啟用")
+        return YouTubeTranscriptApi(proxy_config=cfg)
+
+    http_u = (os.environ.get("YOUTUBE_TRANSCRIPT_HTTP_PROXY") or "").strip()
+    https_u = (os.environ.get("YOUTUBE_TRANSCRIPT_HTTPS_PROXY") or "").strip()
+    if http_u or https_u:
+        try:
+            from youtube_transcript_api.proxies import GenericProxyConfig
+        except ImportError as e:
+            raise RuntimeError(
+                "已設定 YOUTUBE_TRANSCRIPT_HTTP(S)_PROXY，但目前的 youtube-transcript-api 不支援 "
+                "GenericProxyConfig；請升級套件。"
+            ) from e
+        cfg = GenericProxyConfig(
+            http_url=http_u or None,
+            https_url=https_u or None,
+        )
+        logger.info("YouTube transcript: GenericProxyConfig 已啟用")
+        return YouTubeTranscriptApi(proxy_config=cfg)
+
+    return YouTubeTranscriptApi()
+
+
 def parse_youtube_video_id(raw: str) -> str | None:
     """接受 11 字元 video_id 或常見 YouTube 網址，回傳 video_id；無法辨識則 None。"""
     v = (raw or "").strip()
@@ -126,7 +182,7 @@ def youtube_transcript_plain_text(video_id: str, languages: list[str] | None) ->
 
     langs = languages if languages else ["en"]
     t0 = time.perf_counter()
-    api = YouTubeTranscriptApi()
+    api = _youtube_transcript_api_from_env()
     if hasattr(api, "fetch"):
         fetched = api.fetch(video_id, languages=langs)
         if hasattr(fetched, "to_raw_data"):
