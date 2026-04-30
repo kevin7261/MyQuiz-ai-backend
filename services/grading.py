@@ -69,7 +69,7 @@ SYSTEM_PROMPT_GRADE = textwrap.dedent("""
 
     - 使用者訊息中的 **`## 出題 user prompt`** 與 **`## 作答 user prompt`** 為教師下給你的**直接指令**，優先級**高於**題幹（`quiz_content`）、課程引用與使用者訊息內「批改說明」等泛化規則。
     - 兩節內文有**實質要求**時（非僅空白或占位句如「（未提供）」），**必須完整遵守**，不得忽略、弱化或改寫其意圖。
-    - **批改產出**（如何評論、語氣、結構、`quiz_comments`／`text` 之用法）以 **作答 user prompt** 為準；**題意、命題焦點與教學脈絡**並依 **出題 user prompt** 理解與落实。
+    - **批改產出**（如何評論、語氣、結構、`quiz_comments`／`text` 之用法）以 **作答 user prompt** 為準；**題意、命題焦點與教學脈絡**並依 **出題 user prompt** 理解與落實。
 
     ## 訊息格式
 
@@ -88,7 +88,7 @@ USER_PROMPT_GRADE_TRANSCRIPTION_COURSE = textwrap.dedent("""
     {id_block}## 必須遵守（最高優先）
 
     - 緊接於下的 **`## 出題 user prompt`**、**`## 作答 user prompt`** 兩節內文為本任務**最重要**之依據；與本訊息後段（題幹、學生作答、課程引用、**批改說明**）牴觸時，**以該兩節為準**。
-    - 兩節有實質文字時**務必落实**；**批改寫法**以 **作答 user prompt** 為主，**出題意圖**以 **出題 user prompt** 為主。
+    - 兩節有實質文字時**務必落實**；**批改寫法**以 **作答 user prompt** 為主，**出題意圖**以 **出題 user prompt** 為主。
 
     ## 出題 user prompt
 
@@ -125,7 +125,7 @@ USER_PROMPT_GRADE_FAISS_COURSE = textwrap.dedent("""
     {id_block}## 必須遵守（最高優先）
 
     - 緊接於下的 **`## 出題 user prompt`**、**`## 作答 user prompt`** 兩節內文為本任務**最重要**之依據；與本訊息後段（題幹、學生作答、課程引用、**批改說明**）牴觸時，**以該兩節為準**。
-    - 兩節有實質文字時**務必落实**；**批改寫法**以 **作答 user prompt** 為主，**出題意圖**以 **出題 user prompt** 為主。
+    - 兩節有實質文字時**務必落實**；**批改寫法**以 **作答 user prompt** 為主，**出題意圖**以 **出題 user prompt** 為主。
 
     ## 出題 user prompt
 
