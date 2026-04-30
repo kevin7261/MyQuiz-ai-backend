@@ -7,7 +7,7 @@ ZIP 與 RAG 相關 API 模組。
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
 - PUT /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除 Rag 及其 Rag_Unit，並刪除儲存（須傳 query person_id）
 - POST /rag/tab/upload-zip：上傳 ZIP
-- POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名；`.md`/`.txt` 內容 UTF-8 原文寫入 Rag_Unit.transcription，含 Markdown）；可選 body.build_faiss 覆寫；**chunk_size／chunk_overlap** 為全批預設，**chunk_sizes／chunk_overlaps**（逗號字串）可與任務同序逐段覆寫，寫入各 Rag_Unit；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
+- POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名；`.md`/`.txt` 內容 UTF-8 原文寫入 Rag_Unit.transcription，含 Markdown）；可選 body.build_faiss 覆寫；**chunk_size／chunk_overlap** 為全批預設，**chunk_sizes／chunk_overlaps**（逗號字串或 JSON 整數陣列）可與任務同序逐段覆寫；**unit_type≠1** 時寫入／回傳之 chunk 為 0；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
 - PUT /rag/tab/quiz/delete/{rag_quiz_id}：依 rag_quiz_id 軟刪除 Rag_Quiz（deleted=true；須為該列 person_id）
 - PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
 - GET /rag/tab/unit/mp3-file：query rag_tab_id、rag_unit_id；僅 unit_type=3 時回傳音訊（優先該單元 **repack** ZIP；repack 缺漏時改讀該 tab 之 upload ZIP，與 GET /rag/unit/audio-file 相同語意）
@@ -33,7 +33,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Path as Pa
 from fastapi.responses import Response, StreamingResponse
 
 from dependencies.person_id import PersonId
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from utils.datetime_utils import now_taipei_iso, to_taipei_iso
 from utils.json_utils import to_json_safe
@@ -347,7 +347,7 @@ class PackRequest(BaseModel):
     """
     rag_tab_id、person_id、unit_list。
     chunk_size／chunk_overlap：全批預設（寫入 Rag_Unit、建 FAISS 時用）。
-    chunk_sizes／chunk_overlaps：可選逗號字串，與 unit_list 解出之任務數同序；某段空白則該段用 chunk_size／chunk_overlap。
+    chunk_sizes／chunk_overlaps：可選逗號字串或整數陣列（JSON），與 unit_list 解出之任務數同序；某段空白則該段用 chunk_size／chunk_overlap。
     """
     rag_tab_id: str
     person_id: str
@@ -356,12 +356,30 @@ class PackRequest(BaseModel):
     chunk_overlap: int = 200
     chunk_sizes: str = Field(
         "",
-        description="可選；逗號分段整數，與 packed 任務同序；省略或空段→該任務用 chunk_size",
+        description="可選；逗號字串或 [1000,800] 陣列，與 packed 任務同序；空段→該任務用 chunk_size",
     )
     chunk_overlaps: str = Field(
         "",
-        description="可選；逗號分段整數，與 packed 任務同序；省略或空段→該任務用 chunk_overlap",
+        description="可選；逗號字串或 [200,100] 陣列，與 packed 任務同序；空段→該任務用 chunk_overlap",
     )
+
+    @field_validator("chunk_sizes", "chunk_overlaps", mode="before")
+    @classmethod
+    def _coerce_chunk_segments_csv(cls, v: Any) -> str:
+        """相容前端傳 JSON 陣列；統一成逗號字串供 _chunk_params_per_task 解析。"""
+        if v is None:
+            return ""
+        if isinstance(v, list):
+            parts: list[str] = []
+            for x in v:
+                try:
+                    parts.append(str(int(x)))
+                except (TypeError, ValueError):
+                    parts.append("")
+            return ",".join(parts)
+        if isinstance(v, str):
+            return v.strip()
+        return str(v)
     # 與 unit_list 同樣以逗號分段對齊每一個打包任務；0=未選、1=rag、2=文字、3=mp3、4=youtube；省略或不足處視為 0（未選時若單元 ZIP 僅一個文字檔或含音訊，後端會推斷為 2／3，並寫入完整逐字稿）。
     unit_types: str = ""
     # 省略=None：依 User.user_type==1 決定是否建 FAISS；False=強制不建向量（rag 僅上傳與 repack 相同之 ZIP）；True=強制建 FAISS（須 llm_api_key）
@@ -1193,6 +1211,13 @@ def build_rag_zip(
                     task_chunk_overlap=t_co,
                     transcript_override=transcript_override,
                 )
+                try:
+                    ut_out = int(item.get("unit_type") or 0)
+                except (TypeError, ValueError):
+                    ut_out = 0
+                if ut_out != RAG_UNIT_TYPE_RAG:
+                    item["chunk_size"] = 0
+                    item["chunk_overlap"] = 0
                 outputs.append(item)
                 yield (
                     json.dumps(
