@@ -650,14 +650,28 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             ),
         )
 
-    ru_one = (
-        supabase.table("Rag_Unit")
-        .select("rag_tab_id, unit_name")
-        .eq("rag_unit_id", effective_ruid)
-        .eq("deleted", False)
-        .limit(1)
-        .execute()
-    )
+    try:
+        ru_one = (
+            supabase.table("Rag_Unit")
+            .select("rag_tab_id, unit_name, folder_combination")
+            .eq("rag_unit_id", effective_ruid)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+    except APIError as e:
+        msg = (e.message or "").lower()
+        if e.code == "42703" and "folder_combination" in msg:
+            ru_one = (
+                supabase.table("Rag_Unit")
+                .select("rag_tab_id, unit_name")
+                .eq("rag_unit_id", effective_ruid)
+                .eq("deleted", False)
+                .limit(1)
+                .execute()
+            )
+        else:
+            raise
     if not ru_one.data:
         raise HTTPException(status_code=404, detail=f"找不到 rag_unit_id={effective_ruid} 之 Rag_Unit")
     ru_tab = (ru_one.data[0].get("rag_tab_id") or "").strip()
@@ -704,7 +718,10 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
     quiz_user_prompt_resolved = (rq_row0.get("quiz_user_prompt_text") or "").strip()
     answer_user_prompt_resolved = (rq_row0.get("answer_user_prompt_text") or "").strip()
 
-    unit_filter: str | None = (ru_one.data[0].get("unit_name") or "").strip() or None
+    _ru0 = ru_one.data[0]
+    _ru_display = (_ru0.get("unit_name") or "").strip()
+    _ru_folder = (_ru0.get("folder_combination") or "").strip()
+    unit_filter: str | None = (_ru_folder or _ru_display or "").strip() or None
     stem_rag_unit_id: int | None = effective_ruid if effective_ruid > 0 else None
     if not unit_filter:
         unit_filter = (qrow.get("unit_name") or "").strip() or None
@@ -729,32 +746,54 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
 
     selected: dict | None = None
     if rag_tab_id_for_units:
-        try:
-            unit_q = (
+        def _unit_q_select(cols: str):
+            return (
                 supabase.table("Rag_Unit")
-                .select(
-                    "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
-                    "rag_file_size, chunk_size, chunk_overlap, transcription"
-                )
+                .select(cols)
                 .eq("rag_tab_id", rag_tab_id_for_units)
                 .eq("deleted", False)
                 .order("created_at", desc=False)
                 .execute()
             )
+
+        _cols_full = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, chunk_size, chunk_overlap, transcription"
+        )
+        _cols_no_tr = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, chunk_size, chunk_overlap"
+        )
+        _cols_no_fc = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, chunk_size, chunk_overlap, transcription"
+        )
+        _cols_min = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, chunk_size, chunk_overlap"
+        )
+        try:
+            unit_q = _unit_q_select(_cols_full)
         except APIError as e:
             msg = (e.message or "").lower()
-            if e.code == "42703" and "transcription" in msg:
-                unit_q = (
-                    supabase.table("Rag_Unit")
-                    .select(
-                        "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
-                        "rag_file_size, chunk_size, chunk_overlap"
-                    )
-                    .eq("rag_tab_id", rag_tab_id_for_units)
-                    .eq("deleted", False)
-                    .order("created_at", desc=False)
-                    .execute()
-                )
+            if e.code != "42703":
+                raise
+            if "transcription" in msg:
+                try:
+                    unit_q = _unit_q_select(_cols_no_tr)
+                except APIError as e2:
+                    if e2.code == "42703" and "folder_combination" in (e2.message or "").lower():
+                        unit_q = _unit_q_select(_cols_min)
+                    else:
+                        raise
+            elif "folder_combination" in msg:
+                try:
+                    unit_q = _unit_q_select(_cols_no_fc)
+                except APIError as e2:
+                    if e2.code == "42703" and "transcription" in (e2.message or "").lower():
+                        unit_q = _unit_q_select(_cols_min)
+                    else:
+                        raise
             else:
                 raise
         units = unit_q.data or []
@@ -770,7 +809,9 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
             selected = units[0] if units else None
         elif selected is None and unit_filter:
             for u in units:
-                if (u.get("unit_name") or "").strip() == unit_filter:
+                un = (u.get("unit_name") or "").strip()
+                fc = (u.get("folder_combination") or "").strip()
+                if un == unit_filter or fc == unit_filter:
                     selected = u
                     break
 
@@ -835,7 +876,9 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
         result["quiz_answer_reference"] = qref
         result["exam_quiz_id"] = body.exam_quiz_id
         qts = now_taipei_iso()
-        unit_name_for_display = (unit_filter or stem or "").strip()
+        unit_name_for_display = (
+            _ru_display or (qrow.get("unit_name") or "").strip() or unit_filter or stem or ""
+        ).strip()
         quiz_name = ((stem or "").strip() or unit_name_for_display or (qrow.get("quiz_name") or "").strip() or "")
         result["quiz_name"] = quiz_name
         # 與寫入 Exam_Quiz 相同，供前端顯示 Rag_Quiz 模板快照（非送進 LLM 的 api_instr 全文）
@@ -955,39 +998,62 @@ async def exam_grade_submission(
     exam_grade_unit_type = 0
     transcription_for_unit = ""
     if rag_uid_int > 0:
-        try:
-            unit_sel = (
+
+        def _grade_unit_sel(cols: str):
+            return (
                 supabase.table("Rag_Unit")
-                .select(
-                    "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
-                    "rag_file_size, chunk_size, chunk_overlap, transcription"
-                )
+                .select(cols)
                 .eq("rag_unit_id", rag_uid_int)
                 .eq("deleted", False)
                 .limit(1)
                 .execute()
             )
+
+        _gcols_full = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, chunk_size, chunk_overlap, transcription"
+        )
+        _gcols_no_tr = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, chunk_size, chunk_overlap"
+        )
+        _gcols_no_fc = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, chunk_size, chunk_overlap, transcription"
+        )
+        _gcols_min = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, chunk_size, chunk_overlap"
+        )
+        try:
+            unit_sel = _grade_unit_sel(_gcols_full)
         except APIError as e:
             msg = (e.message or "").lower()
-            if e.code == "42703" and "transcription" in msg:
-                unit_sel = (
-                    supabase.table("Rag_Unit")
-                    .select(
-                        "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
-                        "rag_file_size, chunk_size, chunk_overlap"
-                    )
-                    .eq("rag_unit_id", rag_uid_int)
-                    .eq("deleted", False)
-                    .limit(1)
-                    .execute()
-                )
+            if e.code != "42703":
+                raise
+            if "transcription" in msg:
+                try:
+                    unit_sel = _grade_unit_sel(_gcols_no_tr)
+                except APIError as e2:
+                    if e2.code == "42703" and "folder_combination" in (e2.message or "").lower():
+                        unit_sel = _grade_unit_sel(_gcols_min)
+                    else:
+                        raise
+            elif "folder_combination" in msg:
+                try:
+                    unit_sel = _grade_unit_sel(_gcols_no_fc)
+                except APIError as e2:
+                    if e2.code == "42703" and "transcription" in (e2.message or "").lower():
+                        unit_sel = _grade_unit_sel(_gcols_min)
+                    else:
+                        raise
             else:
                 raise
         if unit_sel.data:
             u0 = unit_sel.data[0]
-            db_un = (u0.get("unit_name") or "").strip()
-            if db_un:
-                grade_unit_filter = db_un
+            path_key = (u0.get("folder_combination") or u0.get("unit_name") or "").strip()
+            if path_key:
+                grade_unit_filter = path_key
             try:
                 exam_grade_unit_type = int(u0.get("unit_type") or 0)
             except (TypeError, ValueError):

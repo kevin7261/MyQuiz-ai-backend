@@ -13,6 +13,7 @@ from typing import Iterator
 from utils.media_transcript import (
     parse_youtube_video_id,
     transcribe_audio_bytes_deepgram,
+    youtube_transcript_api_user_message,
     youtube_transcript_plain_text,
 )
 from utils.zip_storage import UPLOAD_DEFAULT_PERSON, get_zip_path, get_zip_path_by_person
@@ -125,6 +126,59 @@ def read_repack_zip_bytes(repack_file_name: str) -> bytes:
             tmp.unlink(missing_ok=True)
         except OSError:
             logger.debug("刪除暫存 repack ZIP 失敗", exc_info=True)
+
+
+def _first_level_folder_names_in_zip(zip_bytes: bytes) -> list[str]:
+    """自 ZIP 成員路徑收集第一層資料夾名（出現順序、不重複）；供單元 repack 小 ZIP 在 folder_name 不符時備援。"""
+    order: list[str] = []
+    seen: set[str] = set()
+    with zipfile.ZipFile(BytesIO(zip_bytes), "r") as z:
+        for _raw, dec in _zip_members(z):
+            parts = dec.replace("\\", "/").strip("/").split("/")
+            if len(parts) < 2:
+                continue
+            top = parts[0].strip()
+            if not top or top in seen:
+                continue
+            seen.add(top)
+            order.append(top)
+    return order
+
+
+def pick_audio_from_upload_zip_with_folder_fallback(
+    zip_bytes: bytes,
+    preferred_folder: str,
+    *,
+    allow_scan_other_top_folders: bool,
+) -> tuple[bytes, str, str]:
+    """
+    先以 preferred_folder 呼叫 pick_audio；失敗時若 allow_scan_other_top_folders，依 ZIP 內頂層資料夾名逐一重試。
+    僅應在「單元 repack」等小範圍 ZIP 開啟 allow_scan；整份課程 upload ZIP 請傳 False，避免誤選他單元音訊。
+    """
+    pref = (preferred_folder or "").strip()
+    last_err: str | None = None
+    if pref and "/" not in pref and "\\" not in pref:
+        try:
+            return pick_audio_from_upload_zip(zip_bytes, pref)
+        except ValueError as e:
+            last_err = str(e)
+    if not allow_scan_other_top_folders:
+        if last_err:
+            raise ValueError(last_err) from None
+        raise ValueError("請傳入有效的 folder_name（ZIP 內單元資料夾名）")
+    tried: set[str] = set()
+    if pref:
+        tried.add(pref)
+    for fn in _first_level_folder_names_in_zip(zip_bytes):
+        if fn in tried:
+            continue
+        tried.add(fn)
+        try:
+            return pick_audio_from_upload_zip(zip_bytes, fn)
+        except ValueError as e:
+            last_err = str(e)
+    msg = last_err or "於 ZIP 內找不到支援的音訊檔"
+    raise ValueError(msg)
 
 
 def pick_audio_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[bytes, str, str]:
@@ -419,7 +473,9 @@ def extract_transcript_for_rag_build(zip_bytes: bytes, unit_type: int) -> dict[s
         try:
             cap, _elapsed = youtube_transcript_plain_text(vid, languages=["en"])
         except Exception as e:
-            raise ValueError(f"擷取 YouTube 英文字幕失敗: {e!s}") from e
+            raise ValueError(
+                "擷取 YouTube 英文字幕失敗: " + youtube_transcript_api_user_message(e)
+            ) from e
         cap = (cap or "").strip()
         if not cap:
             raise ValueError("YouTube 英文字幕為空（請確認影片有 en 字幕）")

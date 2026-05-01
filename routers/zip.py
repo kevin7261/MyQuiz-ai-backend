@@ -1,13 +1,13 @@
 """
 ZIP 與 RAG 相關 API 模組。
 提供：
-- GET /rag/tabs：列出 Rag 表（含 units→quizzes）；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；unit_type=mp3 且含 mp3_file_name 時另附 mp3_audio_url（GET /rag/unit/audio-file 之 query，供前端 `<audio src>`）
+- GET /rag/tabs：列出 Rag 表（含 units→quizzes）；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；unit_type=mp3 且含 mp3_file_name 時另附 mp3_audio_url（GET /rag/tab/unit/mp3-file 之 query，含 rag_unit_id，供前端 `<audio src>`）
 - GET /rag/units：依 rag_tab_id 列出 Rag_Unit（含 quizzes）
 - POST /rag/tab/create：建立一筆 Rag（可傳 local）
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
 - PUT /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除 Rag 及其 Rag_Unit，並刪除儲存（須傳 query person_id）
 - POST /rag/tab/upload-zip：上傳 ZIP
-- POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名；`.md`/`.txt` 內容 UTF-8 原文寫入 Rag_Unit.transcription，含 Markdown）；可選 body.build_faiss 覆寫；**chunk_size／chunk_overlap** 為全批預設，**chunk_sizes／chunk_overlaps**（逗號字串或 JSON 整數陣列）可與任務同序逐段覆寫；**unit_type≠1** 時寫入／回傳之 chunk 為 0；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
+- POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名；`.md`/`.txt` 內容 UTF-8 原文寫入 Rag_Unit.transcription，含 Markdown）；可選 body.build_faiss 覆寫；**chunk_size／chunk_overlap** 為全批預設，**chunk_sizes／chunk_overlaps**（逗號字串或 JSON 整數陣列）可與任務同序逐段覆寫；**unit_names**（逗號字串或 JSON 字串陣列）同序非空段覆寫 Rag_Unit.unit_name（顯示名）；**folder_combination** 恒為檔名 stem 寫入 DB（ZIP 路徑鍵，等同舊版 unit_name 語意）；**unit_type≠1** 時寫入／回傳之 chunk 為 0；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
 - PUT /rag/tab/quiz/delete/{rag_quiz_id}：依 rag_quiz_id 軟刪除 Rag_Quiz（deleted=true；須為該列 person_id）
 - PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
 - GET /rag/tab/unit/mp3-file：query rag_tab_id、rag_unit_id；僅 unit_type=3 時回傳音訊（優先該單元 **repack** ZIP；repack 缺漏時改讀該 tab 之 upload ZIP，與 GET /rag/unit/audio-file 相同語意）
@@ -28,6 +28,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, File, Form, HTTPException, Path as PathParam, Query, Request, UploadFile
+from postgrest.exceptions import APIError
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from storage3.exceptions import StorageApiError
@@ -58,7 +59,7 @@ from utils.rag_transcript_from_upload_zip import (
     build_transcript_md_zip_bytes,
     extract_transcript_for_rag_build,
     infer_unit_type_when_unspecified,
-    pick_audio_from_upload_zip,
+    pick_audio_from_upload_zip_with_folder_fallback,
     read_repack_zip_bytes,
     read_upload_zip_bytes,
 )
@@ -172,6 +173,24 @@ def _clamp_chunk_pair(size: int, overlap: int) -> tuple[int, int]:
     return size, overlap
 
 
+def _unit_name_overrides_per_task(unit_names: str | list[str] | None, task_count: int) -> list[str | None]:
+    """與 packed 任務同序；非空字串表示覆寫 Rag_Unit.unit_name（顯示名），None 表示與 folder_combination（stem）相同。"""
+    if unit_names is None or unit_names == "":
+        return [None] * task_count
+    if isinstance(unit_names, list):
+        parts = [("" if x is None else str(x)).strip() for x in unit_names]
+    else:
+        s = str(unit_names).strip()
+        parts = [p.strip() for p in s.split(",")] if s else []
+    out: list[str | None] = []
+    for i in range(task_count):
+        if i < len(parts) and parts[i]:
+            out.append(parts[i])
+        else:
+            out.append(None)
+    return out
+
+
 def _chunk_params_per_task(
     sizes_csv: str,
     overlaps_csv: str,
@@ -222,6 +241,7 @@ def _rag_unit_default_row(
     person_id: str,
     *,
     unit_name: str = "",
+    folder_combination: str = "",
     unit_type: int = RAG_UNIT_TYPE_RAG,
     repack_file_name: str = "",
     rag_file_name: str = "",
@@ -239,6 +259,7 @@ def _rag_unit_default_row(
         "rag_tab_id": rag_tab_id,
         "person_id": person_id,
         "unit_name": unit_name,
+        "folder_combination": folder_combination,
         "unit_type": unit_type,
         "chunk_size": int(chunk_size),
         "chunk_overlap": int(chunk_overlap),
@@ -344,6 +365,7 @@ class PackRequest(BaseModel):
     rag_tab_id、person_id、unit_list。
     chunk_size／chunk_overlap：全批預設（寫入 Rag_Unit、建 FAISS 時用）。
     chunk_sizes／chunk_overlaps：可選逗號字串或整數陣列（JSON），與 unit_list 解出之任務數同序；某段空白則該段用 chunk_size／chunk_overlap。
+    unit_names：可選逗號字串或字串陣列（JSON），與任務同序；某段 strip 後非空則覆寫該單元 Rag_Unit.unit_name（顯示名），空白則與 folder_combination 相同（皆為檔名 stem）。
     """
     rag_tab_id: str
     person_id: str
@@ -389,6 +411,21 @@ class PackRequest(BaseModel):
         default=None,
         description="可選；與 unit_list 逗號分段對齊；非空時覆寫逐字稿全文",
     )
+    unit_names: str | list[str] | None = Field(
+        default="",
+        description="可選；逗號字串或 JSON 字串陣列，與 packed 任務同序；該段 strip 後非空則覆寫 Rag_Unit.unit_name（顯示名），空段則與 folder_combination 相同（檔名 stem）",
+    )
+
+    @field_validator("unit_names", mode="before")
+    @classmethod
+    def _coerce_unit_names(cls, v: Any) -> str | list[str]:
+        if v is None:
+            return ""
+        if isinstance(v, list):
+            return [("" if x is None else str(x)) for x in v]
+        if isinstance(v, str):
+            return v.strip()
+        return str(v)
 
 
 class UpdateRagUnitUnitNameRequest(BaseModel):
@@ -511,7 +548,7 @@ def _build_one_rag_zip_output_item(
     do_rag 為 False 且無法推斷時：將與 repack 相同內容複製至 rag（rag_mode=repack_copy），transcription 為空。
     註：bucket 內檔名仍為 stem_rag.zip；請看 output.rag_mode。
     回傳與 build-rag-zip outputs[] 單筆相同結構；失敗時含 rag_error。
-    每筆皆含 chunk_size／chunk_overlap（本任務實際使用，供寫入 Rag_Unit）。
+    每筆皆含 **folder_combination**（檔名 stem，寫入 Rag_Unit.folder_combination）、**unit_name**（顯示名，可經請求 unit_names 覆寫）、chunk_size／chunk_overlap（本任務實際使用，供寫入 Rag_Unit）。
     """
     repack_tab_id = Path(filename).stem if filename else None
     if not repack_tab_id or "/" in repack_tab_id or "\\" in repack_tab_id:
@@ -521,6 +558,7 @@ def _build_one_rag_zip_output_item(
         effective_ut = infer_unit_type_when_unspecified(unit_type, zip_bytes)
         item_zip: dict[str, Any] = {
             "filename": filename,
+            "folder_combination": repack_tab_id,
             "unit_name": repack_tab_id,
             "repack_filename": f"{repack_tab_id}.zip",
             "rag_filename": "",
@@ -601,6 +639,7 @@ def _build_one_rag_zip_output_item(
     for attempt in range(_RAG_UNIT_FULL_BUILD_ATTEMPTS):
         item: dict[str, Any] = {
             "filename": filename,
+            "folder_combination": repack_tab_id,
             "unit_name": repack_tab_id,
             "repack_filename": f"{repack_tab_id}.zip",
             "rag_filename": f"{repack_tab_id}_rag.zip",
@@ -729,10 +768,12 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
             cs_out, co_out = _clamp_chunk_pair(body.chunk_size, body.chunk_overlap)
         else:
             cs_out, co_out = _clamp_chunk_pair(cs_out, co_out)
+        fc = (output.get("folder_combination") or "").strip() or (output.get("unit_name") or "").strip()
         unit_row = _rag_unit_default_row(
             body.rag_tab_id,
             pid,
             unit_name=output.get("unit_name", ""),
+            folder_combination=fc,
             unit_type=unit_type_val,
             repack_file_name=output.get("repack_filename", ""),
             rag_file_name=output.get("rag_filename", ""),
@@ -800,19 +841,21 @@ def list_rag(
                 except (TypeError, ValueError):
                     utype = 0
                 unit_name_q = (unit.get("unit_name") or "").strip()
+                folder_c = (unit.get("folder_combination") or "").strip()
                 if (
                     utype == RAG_UNIT_TYPE_MP3
                     and (unit.get("mp3_file_name") or "").strip()
-                    and unit_name_q
+                    and (unit_name_q or folder_c)
                     and tab_id
+                    and uid_int is not None
                 ):
                     unit["mp3_audio_url"] = (
-                        "/rag/unit/audio-file?"
+                        "/rag/tab/unit/mp3-file?"
                         + urlencode(
                             {
                                 "person_id": pid,
                                 "rag_tab_id": str(tab_id).strip(),
-                                "folder_name": unit_name_q,
+                                "rag_unit_id": str(uid_int),
                             }
                         )
                     )
@@ -1079,6 +1122,7 @@ def build_rag_zip(
     LLM API Key 僅在「最終會建 FAISS」（do_rag 為 True）時必填（依 person_id 自 User 表取得）。
     body.unit_types 為選填，與 unit_list 逗號分段對齊；**未傳或該段為 0** 時會依單元 ZIP 推斷（僅一個 .md 等→2、有音訊→3；**YouTube 仍須明確傳 4**）。寫入各 Rag_Unit.unit_type。**推斷為 2** 且來源為 `.md`/`.txt` 時 **Rag_Unit.transcription** 為檔案 UTF-8 全文（含 Markdown）。
     body.transcriptions 為選填，與 unit_list 逗號分段同序；索引 i 之字串若非空白，覆寫該單元逐字稿（Markdown UTF-8 原樣），仍自 ZIP 擷取 text_file_name／mp3_file_name／youtube_url。
+    body.unit_names 為選填，與 packed 任務同序（逗號字串或 JSON 字串陣列）；該段非空白時覆寫串流 output.unit_name 與寫入之 Rag_Unit.unit_name（顯示名）。output.folder_combination 恒為檔名 stem（寫入 Rag_Unit.folder_combination）。
 
     **回應為 NDJSON 串流**（`application/x-ndjson`），請以 `fetch` 讀取 `response.body`，勿使用單次 `response.json()`。
     每一輸出單元須 **成功上傳 repack**；rag 資料夾須 **成功寫入**（unit_type=1 且建 FAISS 為向量庫 ZIP；2／3／4 為逐字稿 md ZIP；其餘為 repack 同內容），且**上傳後能自儲存讀回非空檔**。
@@ -1088,7 +1132,7 @@ def build_rag_zip(
     事件列舉（每行一個物件）：
     - `{"type":"start","total":N,"source_rag_tab_id":"...","unit_list":"...","user_type":int,"build_faiss_request":bool|null,"repack_only":bool,"allow_faiss":bool}`（allow_faiss=各 unit 是否可建 FAISS，仍需 unit_type==1 才實際建）
     - `{"type":"building","index":i,"total":N,"completed_before":i-1,"filename":"..."}`
-    - `{"type":"unit",...,"output":{...}}`：output 含 rag_mode（`faiss`＝向量庫；`transcript_md`＝逐字稿 md ZIP；`repack_copy`＝與 repack 同內容複製）、`transcript_plain`（鍵名沿用舊版；**unit_type=2 且來源為 .md/.txt 時為檔案 UTF-8 全文，Markdown 原樣**，與寫入 Rag_Unit.transcription 一致）；**text_file_name** 僅 **unit_type=2** 有值（來源文字檔檔名）；**mp3_file_name** 僅 3；**youtube_url** 僅 4；**chunk_size**、**chunk_overlap**（本任務實際使用，與 Rag_Unit 一致）；rag_filename（物件鍵仍為 *_rag.zip）
+    - `{"type":"unit",...,"output":{...}}`：output 含 **folder_combination**（單元 ZIP 檔名 stem，寫入 Rag_Unit.folder_combination，與 ZIP 內路徑對齊）、**unit_name**（顯示名，可經 unit_names 覆寫）、rag_mode（`faiss`＝向量庫；`transcript_md`＝逐字稿 md ZIP；`repack_copy`＝與 repack 同內容複製）、`transcript_plain`（鍵名沿用舊版；**unit_type=2 且來源為 .md/.txt 時為檔案 UTF-8 全文，Markdown 原樣**，與寫入 Rag_Unit.transcription 一致）；**text_file_name** 僅 **unit_type=2** 有值（來源文字檔檔名）；**mp3_file_name** 僅 3；**youtube_url** 僅 4；**chunk_size**、**chunk_overlap**（本任務實際使用，與 Rag_Unit 一致）；rag_filename（物件鍵仍為 *_rag.zip）
     - `{"type":"complete","success":bool,"total","built_ok","built_failed","source_rag_tab_id","unit_list","outputs"}`
 
     串流階段 HTTP 狀態碼固定 **200**；請以最後一則 `type===complete` 的 `success` 判斷整批成敗。
@@ -1149,6 +1193,7 @@ def build_rag_zip(
         body.chunk_size,
         body.chunk_overlap,
     )
+    unit_name_overrides = _unit_name_overrides_per_task(body.unit_names, total)
 
     def _do_rag_for_unit(ut: int) -> bool:
         """只有 allow_faiss 且 unit_type==1 (rag) 時才建 FAISS；其餘走 repack 分支（2/3/4 時 rag 為逐字稿 ZIP）。"""
@@ -1203,6 +1248,9 @@ def build_rag_zip(
                     task_chunk_overlap=t_co,
                     transcript_override=transcript_override,
                 )
+                name_ov = unit_name_overrides[idx] if idx < len(unit_name_overrides) else None
+                if name_ov is not None:
+                    item["unit_name"] = name_ov
                 try:
                     ut_out = int(item.get("unit_type") or 0)
                 except (TypeError, ValueError):
@@ -1358,7 +1406,7 @@ def rag_tab_unit_mp3_file(
 ):
     """
     依 rag_tab_id 與 rag_unit_id；**僅 Rag_Unit.unit_type=3（音訊單元）** 時回傳原始音訊。
-    **優先**自該單元之 **repack** ZIP（`Rag_Unit.repack_file_name`／Storage `…/repack/{單元}.zip`）內，依 `unit_name`
+    **優先**自該單元之 **repack** ZIP（`Rag_Unit.repack_file_name`／Storage `…/repack/{單元}.zip`）內，依 **folder_combination**（無則 **unit_name**）
     路徑段擷取第一個支援的音訊檔（repack 內仍保留上傳時之資料夾名，與 `repack_tasks_to_zips` 一致）。
     repack 無法讀取時**改讀**該 tab 之 **upload** ZIP（與 GET /rag/unit/audio-file 相同）。
     Storage `…/rag/{tab}_rag.zip` 僅為逐字稿封包，不含原始 mp3。
@@ -1366,14 +1414,28 @@ def rag_tab_unit_mp3_file(
     _require_rag_tab_owner(caller_person_id, rag_tab_id)
     tab = (rag_tab_id or "").strip()
     supabase = get_supabase()
-    sel = (
-        supabase.table("Rag_Unit")
-        .select("rag_tab_id, unit_name, unit_type, deleted, repack_file_name")
-        .eq("rag_unit_id", rag_unit_id)
-        .eq("person_id", caller_person_id.strip())
-        .limit(1)
-        .execute()
-    )
+    try:
+        sel = (
+            supabase.table("Rag_Unit")
+            .select("rag_tab_id, unit_name, folder_combination, unit_type, deleted, repack_file_name")
+            .eq("rag_unit_id", rag_unit_id)
+            .eq("person_id", caller_person_id.strip())
+            .limit(1)
+            .execute()
+        )
+    except APIError as e:
+        msg = (e.message or "").lower()
+        if e.code == "42703" and "folder_combination" in msg:
+            sel = (
+                supabase.table("Rag_Unit")
+                .select("rag_tab_id, unit_name, unit_type, deleted, repack_file_name")
+                .eq("rag_unit_id", rag_unit_id)
+                .eq("person_id", caller_person_id.strip())
+                .limit(1)
+                .execute()
+            )
+        else:
+            raise
     if not sel.data:
         raise HTTPException(
             status_code=404,
@@ -1396,19 +1458,21 @@ def rag_tab_unit_mp3_file(
             status_code=400,
             detail=f"僅 unit_type=3（mp3 音訊單元）可使用此端點，目前 unit_type={ut}",
         )
-    folder_name = (row.get("unit_name") or "").strip()
+    folder_name = (row.get("folder_combination") or row.get("unit_name") or "").strip()
     if not folder_name:
         raise HTTPException(
             status_code=400,
-            detail="Rag_Unit.unit_name 為空，無法對應 repack／upload ZIP 內單元路徑",
+            detail="Rag_Unit.folder_combination 與 unit_name 皆為空，無法對應 repack／upload ZIP 內單元路徑",
         )
 
     zip_bytes: bytes | None = None
+    zip_is_unit_repack = False
     repack_fn = (row.get("repack_file_name") or "").strip()
     repack_err: str | None = None
     if repack_fn:
         try:
             zip_bytes = read_repack_zip_bytes(repack_fn)
+            zip_is_unit_repack = True
         except FileNotFoundError as e:
             repack_err = str(e)
         except ValueError as e:
@@ -1420,6 +1484,7 @@ def rag_tab_unit_mp3_file(
     if zip_bytes is None:
         try:
             zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
+            zip_is_unit_repack = False
         except FileNotFoundError as e:
             detail = str(e)
             if repack_err:
@@ -1433,9 +1498,13 @@ def rag_tab_unit_mp3_file(
 
     from_repack_ok = bool(repack_fn) and repack_err is None
     try:
-        contents, suffix, inner_path = pick_audio_from_upload_zip(zip_bytes, folder_name)
+        contents, suffix, inner_path = pick_audio_from_upload_zip_with_folder_fallback(
+            zip_bytes,
+            folder_name,
+            allow_scan_other_top_folders=zip_is_unit_repack,
+        )
     except ValueError as e:
-        if from_repack_ok:
+        if from_repack_ok and zip_is_unit_repack:
             try:
                 zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
             except FileNotFoundError as e2:
@@ -1452,7 +1521,11 @@ def rag_tab_unit_mp3_file(
                     detail=f"{e!s}（upload 備援讀取失敗：{e2!s}）",
                 ) from e
             try:
-                contents, suffix, inner_path = pick_audio_from_upload_zip(zip_bytes, folder_name)
+                contents, suffix, inner_path = pick_audio_from_upload_zip_with_folder_fallback(
+                    zip_bytes,
+                    folder_name,
+                    allow_scan_other_top_folders=False,
+                )
             except ValueError as e3:
                 raise HTTPException(status_code=400, detail=str(e3)) from e
         else:

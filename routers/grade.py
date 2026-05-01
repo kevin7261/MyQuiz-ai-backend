@@ -21,6 +21,7 @@ from typing import Any
 from utils.quiz_generation import generate_quiz, generate_quiz_transcription_only
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from postgrest.exceptions import APIError
 from dependencies.person_id import PersonId
 from fastapi.responses import JSONResponse, Response
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -36,6 +37,7 @@ from utils.llm_api_key_utils import get_llm_api_key_for_person
 from utils.media_transcript import (
     audio_media_type_for_suffix,
     transcribe_audio_bytes_deepgram,
+    youtube_transcript_api_user_message,
     youtube_transcript_plain_text,
 )
 from utils.rag_faiss_zip import process_zip_to_docs
@@ -195,18 +197,34 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
     if source_rag_unit_id <= 0:
         raise HTTPException(status_code=400, detail="該 rag_quiz_id 對應的 rag_unit_id 無效")
 
-    unit_sel = (
-        supabase.table("Rag_Unit")
-        .select("rag_unit_id, rag_tab_id, unit_name, transcription, unit_type")
-        .eq("rag_unit_id", source_rag_unit_id)
-        .eq("deleted", False)
-        .limit(1)
-        .execute()
-    )
+    try:
+        unit_sel = (
+            supabase.table("Rag_Unit")
+            .select("rag_unit_id, rag_tab_id, unit_name, folder_combination, transcription, unit_type")
+            .eq("rag_unit_id", source_rag_unit_id)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+    except APIError as e:
+        msg = (e.message or "").lower()
+        if e.code == "42703" and "folder_combination" in msg:
+            unit_sel = (
+                supabase.table("Rag_Unit")
+                .select("rag_unit_id, rag_tab_id, unit_name, transcription, unit_type")
+                .eq("rag_unit_id", source_rag_unit_id)
+                .eq("deleted", False)
+                .limit(1)
+                .execute()
+            )
+        else:
+            raise
     if not unit_sel.data:
         raise HTTPException(status_code=404, detail=f"找不到 rag_unit_id={source_rag_unit_id} 的 Rag_Unit")
     unit_row = unit_sel.data[0]
-    unit_filter = (unit_row.get("unit_name") or "").strip() or None
+    unit_filter = (
+        (unit_row.get("folder_combination") or unit_row.get("unit_name") or "").strip() or None
+    )
     unit_rag_tab_id = (unit_row.get("rag_tab_id") or "").strip()
 
     source_rag_tab_id = (q_row.get("rag_tab_id") or "").strip()
@@ -810,11 +828,11 @@ def rag_transcript_youtube(
         text, _elapsed = youtube_transcript_plain_text(vid, languages=["en"])
         return RagTranscriptMarkdownResponse(markdown=(text or "").strip())
     except InvalidVideoId as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=youtube_transcript_api_user_message(e)) from e
     except (VideoUnavailable, NoTranscriptFound, TranscriptsDisabled) as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+        raise HTTPException(status_code=404, detail=youtube_transcript_api_user_message(e)) from e
     except YouTubeTranscriptApiException as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
+        raise HTTPException(status_code=502, detail=youtube_transcript_api_user_message(e)) from e
     except Exception as e:
         _logger.exception("GET /rag/transcript/youtube 錯誤")
         raise HTTPException(status_code=500, detail=f"擷取字幕失敗: {e!s}") from e

@@ -42,6 +42,9 @@ def _stem_from_output_entry(entry: dict) -> str:
     """由單一 outputs[] 項目取得 repack stem（與 RAG ZIP 的 {stem}_rag 一致）。"""
     if not isinstance(entry, dict):
         return ""
+    stem = (entry.get("folder_combination") or "").strip()
+    if stem:
+        return stem
     stem = (
         entry.get("rag_tab_id")
         or entry.get("unit_name")
@@ -59,7 +62,7 @@ def _output_unit_candidates(entry: dict) -> set[str]:
     out: set[str] = set()
     if not isinstance(entry, dict):
         return out
-    for k in ("unit_name", "rag_tab_id", "tab_name", "rag_name"):
+    for k in ("folder_combination", "unit_name", "rag_tab_id", "tab_name", "rag_name"):
         v = (entry.get(k) or "").strip()
         if v:
             out.add(v)
@@ -139,18 +142,35 @@ def get_rag_stem_from_rag_id(
     row = rag_rows.data[0]
     rag_tab_id = (row.get("rag_tab_id") or "").strip()
 
-    unit_rows = (
-        supabase.table("Rag_Unit")
-        .select("rag_unit_id, unit_name, rag_file_name, repack_file_name")
-        .eq("rag_tab_id", rag_tab_id)
-        .eq("deleted", False)
-        .order("created_at", desc=False)
-        .execute()
-    )
+    try:
+        unit_rows = (
+            supabase.table("Rag_Unit")
+            .select("rag_unit_id, unit_name, folder_combination, rag_file_name, repack_file_name")
+            .eq("rag_tab_id", rag_tab_id)
+            .eq("deleted", False)
+            .order("created_at", desc=False)
+            .execute()
+        )
+    except APIError as e:
+        msg = (e.message or "").lower()
+        if e.code == "42703" and "folder_combination" in msg:
+            unit_rows = (
+                supabase.table("Rag_Unit")
+                .select("rag_unit_id, unit_name, rag_file_name, repack_file_name")
+                .eq("rag_tab_id", rag_tab_id)
+                .eq("deleted", False)
+                .order("created_at", desc=False)
+                .execute()
+            )
+        else:
+            raise
     units = unit_rows.data or []
 
     if units:
-        available = [(u.get("unit_name") or "?") for u in units]
+        available = [
+            (u.get("unit_name") or u.get("folder_combination") or "?").strip() or "?"
+            for u in units
+        ]
         wanted = (unit_name or "").strip()
         try:
             ruid_wanted = int(rag_unit_id) if rag_unit_id is not None else 0
@@ -177,17 +197,20 @@ def get_rag_stem_from_rag_id(
             selected = units[0]
         else:
             for u in units:
-                if (u.get("unit_name") or "").strip() == wanted:
+                un = (u.get("unit_name") or "").strip()
+                fc = (u.get("folder_combination") or "").strip()
+                if un == wanted or fc == wanted:
                     selected = u
                     break
             if selected is None:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"找不到 unit_name={wanted!r} 的 Rag_Unit；可選：{available}",
+                    detail=f"找不到 unit_name／folder_combination={wanted!r} 的 Rag_Unit；可選：{available}",
                 )
+        path_key = (selected.get("folder_combination") or selected.get("unit_name") or "").strip()
         stem, rag_zip_tab_id = _stem_from_rag_file_name(
             selected.get("rag_file_name", ""),
-            selected.get("unit_name", ""),
+            path_key,
         )
         if not stem:
             raise HTTPException(
