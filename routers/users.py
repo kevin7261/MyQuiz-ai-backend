@@ -9,29 +9,23 @@
 - PATCH /user/profile：更新個人資料（name、user_type、llm_api_key）
 """
 
-# 引入 Any、Optional 型別
 from typing import Any, Optional
 
-# 引入 FastAPI 的 APIRouter、HTTPException
 from fastapi import APIRouter, HTTPException
 
 from dependencies.person_id import PersonId
-# 引入 Pydantic 的 BaseModel
 from pydantic import BaseModel
 
-from utils.db_tables import USER_TABLE
-# Supabase 客戶端
-from utils.supabase_client import get_supabase
-# API 回傳之時間戳改為台北時間
 from utils.datetime_utils import now_taipei_iso, to_taipei_iso
+from utils.db_tables import USER_TABLE
+from utils.supabase_client import get_supabase
 
-# 建立路由，前綴 /user
 router = APIRouter(prefix="/user", tags=["user"])
 
-# 與 DB 表一致（User 表）：user_id, person_id, name, user_type, llm_api_key, user_metadata, deleted, updated_at, created_at；不含 password。
+# 查詢 User 表時的公開欄位（不含 password）
 USER_PUBLIC_COLUMNS = "user_id, person_id, name, user_type, llm_api_key, user_metadata, deleted, updated_at, created_at"
 
-# 登入／改個資／軟刪除對象：未標記刪除（deleted 為 false 或 null 視為仍有效，相容舊列）
+# deleted=false 或 null 皆視為有效帳號（相容舊列）
 ACTIVE_USER_DELETED_FILTER = "deleted.eq.false,deleted.is.null"
 
 USER_OUT_KEYS = (
@@ -98,7 +92,6 @@ class UploadUserRequest(BaseModel):
     user_type: int
 
 
-# 批次新增 API 固定寫入之 user_type、預設密碼（登入時與 DB 同為純文字比對）
 BATCH_UPLOAD_USER_TYPE = 3
 BATCH_UPLOAD_DEFAULT_PASSWORD = "0000"
 
@@ -155,7 +148,6 @@ def _insert_user_upload(
         "updated_at": ts,
         "created_at": ts,
     }
-    # supabase-py 2.x：insert 後不可再 .select()；預設 returning=representation，execute() 即回傳插入列
     ins = supabase.table(USER_TABLE).insert(row_in).execute()
     if ins.data and len(ins.data) > 0:
         return UserListItem(**_user_public_dict(ins.data[0]))

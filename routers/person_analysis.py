@@ -1,6 +1,6 @@
 """
 個人分析 API 模組。
-依 person_id 查詢 Exam_Quiz 資料。新 schema 答案欄位直接內嵌於 Exam_Quiz（answer_content, answer_critique；分數於 critique 之 quiz_grade），不再有獨立的 Exam_Answer 表。
+依 person_id 查詢 Exam_Quiz 資料。新 schema 答案欄位直接內嵌於 Exam_Quiz（answer_content, answer_critique），不再有獨立的 Exam_Answer 表。
 - GET /person-analysis/quizzes/{person_id}：依 person_id 取得已作答的 Exam_Quiz（answer_content 非空），
   依 exam_tab_id 分群回傳；另帶 weakness_report（系統有 LLM API Key 時由 AI 產生）。
 
@@ -19,7 +19,7 @@ from dependencies.person_id import PersonId
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
-from services.exam_queries import exams_by_tab_ids, quizzes_by_person_id, exam_quiz_grade_from_critique
+from services.exam_queries import exams_by_tab_ids, quizzes_by_person_id
 from utils.json_utils import to_json_safe
 from utils.llm_api_key_utils import get_llm_api_key
 
@@ -84,7 +84,6 @@ def _synthetic_answer_from_quiz(quiz: dict) -> dict:
     return {
         "exam_quiz_id": quiz.get("exam_quiz_id"),
         "quiz_answer": quiz.get("answer_content"),
-        "answer_grade": exam_quiz_grade_from_critique(quiz),
         "answer_critique": quiz.get("answer_critique"),
     }
 
@@ -160,14 +159,31 @@ def _clip(text: str, max_len: int) -> str:
     return t[: max_len - 1] + "…"
 
 
+def _exam_quiz_rate_display(quiz: dict) -> str:
+    """Exam_Quiz 已無數值得分欄位；以 `quiz_rate`（常見為 -1／0／1）供弱點分析脈絡。"""
+    raw = quiz.get("quiz_rate")
+    if raw is None:
+        return "（無 quiz_rate）"
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return str(raw)
+    by_val = {
+        -1: "-1（負向標記）",
+        0: "0（預設／中性）",
+        1: "1（正向標記）",
+    }
+    return by_val.get(v, f"{v}")
+
+
 def _build_quiz_context_block(quizzes: list[dict]) -> str:
-    """無結構化評語時，以題幹／參考答案／作答／分數組 Markdown 區塊供 LLM 分析。"""
+    """無結構化評語時，以題幹／參考答案／作答／quiz_rate 組 Markdown 區塊供 LLM 分析。"""
     parts: list[str] = []
     for i, quiz in enumerate(quizzes or [], 1):
         q = _clip(str(quiz.get("quiz_content") or ""), 800)
         ref = _clip(str(quiz.get("quiz_answer_reference") or ""), 600)
         ua = _clip(str(quiz.get("answer_content") or ""), 800)
-        grade = exam_quiz_grade_from_critique(quiz)
+        rate = _exam_quiz_rate_display(quiz)
         parts.append(
             textwrap.dedent(f"""
                 ### 第 {i} 題
@@ -175,7 +191,7 @@ def _build_quiz_context_block(quizzes: list[dict]) -> str:
                 - **題目**：{q or "（無）"}
                 - **參考答案**：{ref or "（無）"}
                 - **學生作答**：{ua or "（無）"}
-                - **得分**：{grade!s}
+                - **評級（quiz_rate）**：{rate}
                 """).strip()
         )
     return "\n\n".join(parts) if parts else ""
@@ -185,7 +201,7 @@ def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> str:
     """呼叫 LLM 產生 Markdown 弱點報告；失敗或無 key 時回傳內建 fallback 字串。"""
     fallback_llm = (
         "## 學習弱點報告\n\n"
-        "AI 服務暫時無法產生報告，請稍後再試。您仍可依各題的評分與評語於下方試卷資料檢視。"
+        "AI 服務暫時無法產生報告，請稍後再試。您仍可依各題的 quiz_rate 與評語於下方試卷資料檢視。"
     )
     if not (quizzes or []):
         return "## 學習弱點報告\n\n目前沒有已作答的題目，無法彙整弱點。"
@@ -200,7 +216,7 @@ def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> str:
         material = textwrap.dedent(f"""
             ## 試卷與作答摘要
 
-            以下為各題題幹、參考答案、學生作答與得分（尚無結構化評語時請依此分析學習弱點）：
+            以下為各題題幹、參考答案、學生作答與評級 quiz_rate（尚無結構化評語時請依此分析學習弱點）：
 
             {ctx or "（無可分析內容）"}
             """).strip()

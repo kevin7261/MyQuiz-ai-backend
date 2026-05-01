@@ -8,7 +8,6 @@ from typing import Any
 
 from postgrest.exceptions import APIError
 
-from services.grading import quiz_grade_from_answer_critique
 from utils.datetime_utils import now_taipei_iso
 from utils.supabase_client import get_supabase
 
@@ -253,11 +252,6 @@ def group_exam_quizzes_into_units(quizzes: list[dict]) -> list[dict]:
                 pass
         units_out.append({"unit_name": un, "rag_unit_id": rag_uid, "quizzes": qlist})
     return units_out
-
-
-def exam_quiz_grade_from_critique(quiz: dict[str, Any]) -> int | None:
-    """自 Exam_Quiz.answer_critique 解析 quiz_grade；無法解析則 None。"""
-    return quiz_grade_from_answer_critique(quiz.get("answer_critique"))
 
 
 def rag_quiz_for_exam_response_row(row: dict[str, Any]) -> dict[str, Any]:

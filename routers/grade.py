@@ -2,7 +2,7 @@
 RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/llm-generate：依 rag_quiz_id 出題（LLM）；unit_type 1 僅 RAG ZIP 向量檢索；2/3/4 以 transcription 純生成；其餘載 RAG ZIP 向量檢索。
 - POST /rag/tab/unit/quiz/llm-grade：非同步 RAG+LLM 評分（body 以 rag_id 置頂；quiz_content 可空，自 Rag_Quiz 讀題幹）；回傳 202 + job_id，輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
-- POST /rag/tab/unit/quiz/for-exam：將 Rag_Quiz.for_exam 設為 true。
+- POST /rag/tab/unit/quiz/for-exam：更新 Rag_Quiz.for_exam（body `for_exam` 預設 true；false 取消測驗用）。
 - GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
 - GET /rag/transcript/text、audio、youtube：自 Storage upload ZIP 讀取逐字稿。
 - GET /rag/unit/audio-file：自 upload ZIP 依單元資料夾回傳原始音訊 bytes（供 `<audio src>`；與 transcript/audio 相同之 rag_tab_id、folder_name）。
@@ -18,14 +18,15 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from utils.quiz_generation import generate_quiz, generate_quiz_transcription_only
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from dependencies.person_id import PersonId
 from fastapi.responses import JSONResponse, Response
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from services.grading import (
     cleanup_grade_workspace,
-    quiz_grade_from_answer_critique,
     run_grade_job_background,
     update_rag_quiz_with_grade,
 )
@@ -110,12 +111,22 @@ class QuizGradeRequest(BaseModel):
 class RagQuizForExamRequest(BaseModel):
     """
     POST /rag/tab/unit/quiz/for-exam：欄位順序對齊 Rag_Quiz（主鍵與關聯欄）。
-    以 rag_quiz_id 更新 Rag_Quiz.for_exam = true；若一併傳入 rag_tab_id／rag_unit_id（>0），須與該列一致。
+    以 rag_quiz_id 更新 Rag_Quiz.for_exam；若一併傳入 rag_tab_id／rag_unit_id（>0），須與該列一致。
     """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {"rag_quiz_id": 1, "for_exam": True},
+                {"rag_quiz_id": 1, "for_exam": False},
+            ],
+        },
+    )
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     rag_tab_id: str = Field("", description="選填；與資料列 rag_tab_id 須一致")
     rag_unit_id: int = Field(0, ge=0, description="選填；>0 時須與資料列 rag_unit_id 一致")
+    for_exam: bool = Field(True, description="true：標記為測驗用；false：取消測驗用")
 
 
 class RagTranscriptMarkdownResponse(BaseModel):
@@ -255,8 +266,6 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
 
     path: Path | None = None
     try:
-        from utils.quiz_generation import generate_quiz, generate_quiz_transcription_only
-
         if unit_type_val in (2, 3, 4):
             result = generate_quiz_transcription_only(
                 api_key=api_key,
@@ -524,9 +533,9 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
 # POST /rag/tab/unit/quiz/for-exam
 # ---------------------------------------------------------------------------
 
-@router.post("/tab/unit/quiz/for-exam", summary="Mark Rag Quiz for exam")
+@router.post("/tab/unit/quiz/for-exam", summary="Set Rag Quiz for_exam flag")
 def mark_rag_quiz_for_exam(body: RagQuizForExamRequest, caller_person_id: PersonId):
-    """將既有 Rag_Quiz 的 for_exam 設為 true。以 rag_quiz_id 定位；僅 deleted=false 且 person_id 一致者可更新。"""
+    """更新 Rag_Quiz.for_exam（true＝測驗用、false＝取消）。以 rag_quiz_id 定位；僅 deleted=false 且 person_id 一致者可更新。"""
     req_tab = (body.rag_tab_id or "").strip()
     req_unit = int(body.rag_unit_id or 0)
     try:
@@ -552,7 +561,7 @@ def mark_rag_quiz_for_exam(body: RagQuizForExamRequest, caller_person_id: Person
             raise HTTPException(status_code=400, detail="rag_unit_id 與 rag_quiz_id 對應資料不一致")
 
         ts = now_taipei_iso()
-        supabase.table("Rag_Quiz").update({"for_exam": True, "updated_at": ts}).eq("rag_quiz_id", body.rag_quiz_id).eq("deleted", False).execute()
+        supabase.table("Rag_Quiz").update({"for_exam": body.for_exam, "updated_at": ts}).eq("rag_quiz_id", body.rag_quiz_id).eq("deleted", False).execute()
 
         read = (
             supabase.table("Rag_Quiz")
@@ -576,7 +585,6 @@ def mark_rag_quiz_for_exam(body: RagQuizForExamRequest, caller_person_id: Person
             "answer_user_prompt_text": row.get("answer_user_prompt_text"),
             "answer_content": row.get("answer_content"),
             "quiz_answer": row.get("answer_content") or row.get("quiz_answer"),
-            "answer_grade": quiz_grade_from_answer_critique(row.get("answer_critique")),
             "answer_critique": row.get("answer_critique"),
             "for_exam": row.get("for_exam"),
             "deleted": row.get("deleted"),
@@ -586,7 +594,7 @@ def mark_rag_quiz_for_exam(body: RagQuizForExamRequest, caller_person_id: Person
     except HTTPException:
         raise
     except Exception as e:
-        logging.exception("POST /rag/tab/unit/quiz/for-exam 錯誤")
+        _logger.exception("POST /rag/tab/unit/quiz/for-exam 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -665,7 +673,7 @@ def rag_transcript_text(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        logging.exception("讀取 upload ZIP 失敗")
+        _logger.exception("讀取 upload ZIP 失敗")
         raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
 
     try:
@@ -702,7 +710,7 @@ def rag_unit_audio_file(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        logging.exception("讀取 upload ZIP 失敗")
+        _logger.exception("讀取 upload ZIP 失敗")
         raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
 
     try:
@@ -742,7 +750,7 @@ def rag_transcript_audio(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        logging.exception("讀取 upload ZIP 失敗")
+        _logger.exception("讀取 upload ZIP 失敗")
         raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
 
     try:
@@ -750,8 +758,7 @@ def rag_transcript_audio(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    import os as _os
-    dg_model = (_os.environ.get("DEEPGRAM_MODEL") or "nova-2").strip()
+    dg_model = (os.environ.get("DEEPGRAM_MODEL") or "nova-2").strip()
     try:
         text, elapsed = transcribe_audio_bytes_deepgram(
             contents,
@@ -763,7 +770,7 @@ def rag_transcript_audio(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        logging.exception("GET /rag/transcript/audio Deepgram 錯誤")
+        _logger.exception("GET /rag/transcript/audio Deepgram 錯誤")
         raise HTTPException(status_code=500, detail=f"轉錄失敗: {e!s}") from e
 
     return RagTranscriptMarkdownResponse(markdown=(text or "").strip())
@@ -791,7 +798,7 @@ def rag_transcript_youtube(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        logging.exception("讀取 upload ZIP 失敗")
+        _logger.exception("讀取 upload ZIP 失敗")
         raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
 
     try:
@@ -809,5 +816,5 @@ def rag_transcript_youtube(
     except YouTubeTranscriptApiException as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
     except Exception as e:
-        logging.exception("GET /rag/transcript/youtube 錯誤")
+        _logger.exception("GET /rag/transcript/youtube 錯誤")
         raise HTTPException(status_code=500, detail=f"擷取字幕失敗: {e!s}") from e

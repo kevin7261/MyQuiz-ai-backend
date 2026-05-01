@@ -17,23 +17,22 @@ ZIP 與 RAG 相關 API 模組。
 
 import io
 import json
-import os
-import time
-from urllib.parse import urlencode
 import logging
-import uuid
+import os
 import tempfile
+import time
+import uuid
 import zipfile
-
-from storage3.exceptions import StorageApiError
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Path as PathParam, Query, Request
+from fastapi import APIRouter, File, Form, HTTPException, Path as PathParam, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel, Field, field_validator
+from storage3.exceptions import StorageApiError
 
 from dependencies.person_id import PersonId
-from pydantic import BaseModel, Field, field_validator
 
 from utils.datetime_utils import now_taipei_iso, to_taipei_iso
 from utils.json_utils import to_json_safe
@@ -63,23 +62,21 @@ from utils.rag_transcript_from_upload_zip import (
     read_repack_zip_bytes,
     read_upload_zip_bytes,
 )
-from services.grading import quiz_grade_from_answer_critique
-
 router = APIRouter(prefix="/rag", tags=["rag"])
+
+_logger = logging.getLogger(__name__)
 
 RAG_SELECT_ALL = "*"
 
 BYTES_PER_MB = 1024 * 1024
 
-# Rag_Unit.unit_type（PostgreSQL smallint）
-# 0=未選／預設；1=rag（ZIP 建向量）；2=文字；3=mp3；4=youtube
+# Rag_Unit.unit_type（PostgreSQL smallint）：0=未選、1=rag、2=文字、3=mp3、4=youtube
 RAG_UNIT_TYPE_DEFAULT = 0
 RAG_UNIT_TYPE_RAG = 1
 RAG_UNIT_TYPE_TEXT = 2
 RAG_UNIT_TYPE_MP3 = 3
 RAG_UNIT_TYPE_YOUTUBE = 4
-# 舊註解「ZIP 打包建置」同義於 rag
-RAG_UNIT_TYPE_ZIP_BUILD = RAG_UNIT_TYPE_RAG
+RAG_UNIT_TYPE_ZIP_BUILD = RAG_UNIT_TYPE_RAG  # 同義 rag，向下相容
 
 
 def _require_rag_tab_owner(person_id: str, rag_tab_id: str) -> None:
@@ -212,8 +209,7 @@ def _rag_default_row(
         "person_id": person_id if person_id is not None else "",
         "file_metadata": file_metadata,
     }
-    # rag_metadata 在部分環境可能尚未完成 migration；建立時先不主動寫入，避免 500。
-    # chunk_size／chunk_overlap 在 public.Rag_Unit（每單元一筆），見 _rag_unit_default_row、build-rag-zip 成功寫入。
+    # rag_metadata／chunk_size 等欄位在 Rag_Unit 層管理，建立時不主動寫入以避免 schema 未同步時 500
     row["local"] = local
     row["deleted"] = False
     row["created_at"] = ts
@@ -380,14 +376,15 @@ class PackRequest(BaseModel):
         if isinstance(v, str):
             return v.strip()
         return str(v)
-    # 與 unit_list 同樣以逗號分段對齊每一個打包任務；0=未選、1=rag、2=文字、3=mp3、4=youtube；省略或不足處視為 0（未選時若單元 ZIP 僅一個文字檔或含音訊，後端會推斷為 2／3，並寫入完整逐字稿）。
+
+    # 與 unit_list 逗號分段對齊；0=未選（後端推斷）、1=rag、2=文字、3=mp3、4=youtube
     unit_types: str = ""
-    # 省略=None：依 User.user_type==1 決定是否建 FAISS；False=強制不建向量（rag 僅上傳與 repack 相同之 ZIP）；True=強制建 FAISS（須 llm_api_key）
+    # None=依 User.user_type==1 自動判斷；False=強制不建向量；True=強制建 FAISS（須 llm_api_key）
     build_faiss: bool | None = Field(
         default=None,
         description="省略時依 User.user_type；False 時僅複製 repack 至 rag；True 時強制建向量 RAG ZIP",
     )
-    # 與 unit_list 逗號分段同序；索引 i 若非空白字串，覆寫該單元 transcript_plain／Rag_Unit.transcription（UTF-8 Markdown 原樣）；仍自 ZIP 擷取 text_file_name／mp3_file_name／youtube_url。
+    # 與 unit_list 逗號分段同序；非空時覆寫 Rag_Unit.transcription（UTF-8 Markdown 原樣）
     transcriptions: list[str] | None = Field(
         default=None,
         description="可選；與 unit_list 逗號分段對齊；非空時覆寫逐字稿全文",
@@ -547,7 +544,6 @@ def _build_one_rag_zip_output_item(
                 parent_tab_id=body.rag_tab_id,
                 tab_id=repack_tab_id,
             )
-            # unit_name 維持為資料夾顯示名（可含中文）；bucket 內檔名為 ASCII tab_id
             item_zip["repack_filename"] = f"{tab_id}.zip"
             rag_zip_tab_id = f"{tab_id}_rag"
             item_zip["rag_filename"] = f"{rag_zip_tab_id}.zip"
@@ -626,7 +622,6 @@ def _build_one_rag_zip_output_item(
                 tab_id=repack_tab_id,
             )
             rag_zip_tab_id = f"{tab_id}_rag"
-            # unit_name 維持為資料夾顯示名（可含中文）；向量檔路徑依 ASCII tab_id
             item["repack_filename"] = f"{tab_id}.zip"
             item["rag_filename"] = f"{rag_zip_tab_id}.zip"
 
@@ -691,7 +686,7 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
     supabase = get_supabase()
     ts = now_taipei_iso()
 
-    # 先嘗試更新 Rag；即使失敗也要繼續寫 Rag_Unit（避免 schema cache 未同步時整段被跳過）。
+    # 先嘗試更新 Rag，即使失敗也繼續寫 Rag_Unit（schema cache 未同步時不中斷整批）
     try:
         update_payload = {
             "rag_metadata": response,
@@ -721,7 +716,6 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
             tp = tp_raw if isinstance(tp_raw, str) else ("" if tp_raw is None else str(tp_raw))
             if tp.strip():
                 unit_transcription = tp
-            # text_file_name 僅 unit_type=2（文字單元）；勿與 User.user_type 混淆
             if unit_type_val == RAG_UNIT_TYPE_TEXT:
                 text_fn = output.get("text_file_name") or ""
             if unit_type_val == RAG_UNIT_TYPE_MP3:
@@ -827,7 +821,7 @@ def list_rag(
         data = to_json_safe(data)
         return ListRagResponse(rags=data, count=len(data))
     except Exception as e:
-        logging.exception("GET /rag/tabs 錯誤")
+        _logger.exception("GET /rag/tabs 錯誤")
         raise HTTPException(status_code=500, detail=f"列出 Rag 失敗: {e!s}")
 
 
@@ -1128,8 +1122,7 @@ def build_rag_zip(
 
     api_key, user_type_val = _fetch_user_llm_key_and_user_type(pid)
 
-    # 是否「允許建 FAISS」：user_type==1 且未強制關閉
-    # 即使允許，每個 unit 仍需 unit_type==1 才實際建 FAISS（見下方 _do_rag_for_unit）
+    # 允許 FAISS：user_type==1 且未強制關閉；即使允許，unit_type==1 才真正觸發建置
     if repack_only or body.build_faiss is False:
         allow_faiss = False
     elif body.build_faiss is True:
@@ -1137,7 +1130,6 @@ def build_rag_zip(
     else:
         allow_faiss = (user_type_val == 1)
 
-    # api_key 只在真正會建 FAISS 時才需要；若 allow_faiss 但 key 缺失則提早報錯
     if allow_faiss and not api_key:
         try:
             path.unlink(missing_ok=True)
@@ -1308,7 +1300,7 @@ def list_rag_units(
     except HTTPException:
         raise
     except Exception as e:
-        logging.exception("GET /rag/units 錯誤")
+        _logger.exception("GET /rag/units 錯誤")
         raise HTTPException(status_code=500, detail=f"列出 Rag_Unit 失敗: {e!s}")
 
 
@@ -1422,7 +1414,7 @@ def rag_tab_unit_mp3_file(
         except ValueError as e:
             repack_err = str(e)
         except Exception as e:
-            logging.exception("讀取 repack ZIP 失敗")
+            _logger.exception("讀取 repack ZIP 失敗")
             repack_err = str(e)
 
     if zip_bytes is None:
@@ -1436,7 +1428,7 @@ def rag_tab_unit_mp3_file(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
-            logging.exception("讀取 upload ZIP 失敗")
+            _logger.exception("讀取 upload ZIP 失敗")
             raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
 
     from_repack_ok = bool(repack_fn) and repack_err is None
@@ -1454,7 +1446,7 @@ def rag_tab_unit_mp3_file(
             except ValueError as e2:
                 raise HTTPException(status_code=400, detail=f"{e!s}（upload 備援：{e2!s}）") from e
             except Exception as e2:
-                logging.exception("讀取 upload ZIP 備援失敗")
+                _logger.exception("讀取 upload ZIP 備援失敗")
                 raise HTTPException(
                     status_code=500,
                     detail=f"{e!s}（upload 備援讀取失敗：{e2!s}）",
@@ -1571,7 +1563,6 @@ def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonI
                 "answer_user_prompt_text": row.get("answer_user_prompt_text"),
                 "quiz_answer": ans,
                 "answer_content": ans,
-                "answer_grade": quiz_grade_from_answer_critique(row.get("answer_critique")),
                 "answer_critique": row.get("answer_critique"),
                 "for_exam": row.get("for_exam"),
                 "deleted": row.get("deleted"),
@@ -1582,7 +1573,7 @@ def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonI
     except HTTPException:
         raise
     except Exception as e:
-        logging.exception("POST /rag/tab/unit/quiz/create 錯誤")
+        _logger.exception("POST /rag/tab/unit/quiz/create 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1624,7 +1615,7 @@ def update_rag_quiz_name(body: UpdateRagQuizQuizNameRequest, caller_person_id: P
     except HTTPException:
         raise
     except Exception as e:
-        logging.exception("PUT /rag/tab/unit/quiz/quiz-name 錯誤")
+        _logger.exception("PUT /rag/tab/unit/quiz/quiz-name 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1667,6 +1658,6 @@ def delete_rag_quiz(
     except HTTPException:
         raise
     except Exception as e:
-        logging.exception("PUT /rag/tab/quiz/delete/{rag_quiz_id} 錯誤")
+        _logger.exception("PUT /rag/tab/quiz/delete/{rag_quiz_id} 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -169,23 +169,6 @@ def _grade_field_display(raw: str) -> str:
 # ---------------------------------------------------------------------------
 # 以下函式不呼叫 LLM，僅處理「模型已回傳」或「DB 已儲存」的 JSON／欄位，供路由與寫回共用。
 
-def clamp_quiz_grade(v: Any) -> int:
-    """將任意型別之分數化為 0～5 整數；無法解析則 0（與 DB／API 滿分一致）。"""
-    if v is None:
-        return 0
-    try:
-        n = int(round(float(v)))
-    except (TypeError, ValueError):
-        return 0
-    return max(0, min(5, n))
-
-
-def quiz_grade_from_llm_json(llm_json: dict[str, Any]) -> int:
-    """批改不再產出數值分數；永遠回傳 0（相容舊呼叫介面）。"""
-    _ = llm_json
-    return 0
-
-
 def normalize_grading_llm_json(llm_json: dict[str, Any]) -> None:
     """就地修改：舊鍵 comments → quiz_comments（與前端／DB 欄位命名一致）。"""
     if "quiz_comments" not in llm_json and "comments" in llm_json:
@@ -271,48 +254,10 @@ def answer_critique_plain_text_from_result(result_dict: dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
-def quiz_grade_from_answer_critique(critique_raw: Any) -> int | None:
-    """
-    自 answer_critique（JSON 字串或 dict）解析 quiz_grade；失敗則 None。
-
-    讀取順序：頂層 quiz_grade → quiz_grade_metadata 內 quiz_grade／score。
-    用於 update_* 寫入後「讀回驗證」與前端顯示分數一致性檢查。
-    """
-    if critique_raw is None:
-        return None
-    try:
-        data: Any
-        if isinstance(critique_raw, dict):
-            data = critique_raw
-        else:
-            s = str(critique_raw).strip()
-            if not s:
-                return None
-            data = json.loads(s)
-        if not isinstance(data, dict):
-            return None
-        g = data.get("quiz_grade")
-        if g is None:
-            meta = data.get("quiz_grade_metadata")
-            if isinstance(meta, dict):
-                g = meta.get("quiz_grade", meta.get("score"))
-        if g is None:
-            return None
-        return int(round(float(g)))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-
-
 def critique_stored_grade_matches(critique_raw: Any, expected: int) -> bool:
-    """寫回後一致性檢查；目前不依數字評分，預期分數為 0 時通過。"""
-    if critique_raw is None:
-        return False
-    if int(expected) == 0:
-        return True
-    g = quiz_grade_from_answer_critique(critique_raw)
-    if g is None:
-        return True
-    return int(g) == int(expected)
+    """寫回後讀回驗證：answer_critique 欄位存在即可（已無數值得分／quiz_grade）。expected 保留以相容呼叫端。"""
+    _ = expected
+    return critique_raw is not None
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +616,7 @@ def update_rag_quiz_with_grade(
         cr0 = chk.data[0]
         if not critique_stored_grade_matches(cr0.get("answer_critique"), 0):
             _logger.warning(
-                "Rag_Quiz 讀回 answer_critique 內數值評分（若有）與預期 0／無分數不符（rag_quiz_id=%s）",
+                "Rag_Quiz 讀回 answer_critique 為空（rag_quiz_id=%s）",
                 rag_quiz_id,
             )
             return None
@@ -720,7 +665,7 @@ def update_exam_quiz_with_grade(
             return None
         if not critique_stored_grade_matches(chk.data[0].get("answer_critique"), 0):
             _logger.warning(
-                "Exam_Quiz 讀回 answer_critique 與無分數預期不符（exam_quiz_id=%s）",
+                "Exam_Quiz 讀回 answer_critique 為空（exam_quiz_id=%s）",
                 exam_quiz_id,
             )
             return None

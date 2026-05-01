@@ -1,6 +1,6 @@
 """
 課程分析 API 模組。
-回傳 Exam_Quiz 資料表全部內容。新 schema 中答案欄位（answer_content／answer_critique，分數於 critique 之 quiz_grade）
+回傳 Exam_Quiz 資料表全部內容。新 schema 中答案欄位（answer_content／answer_critique）
 直接內嵌於 Exam_Quiz，不再有獨立的 Exam_Answer 表。
 - GET /course-analysis/quizzes：回傳全部 Exam_Quiz，依 exam_tab_id 分群對應 Exam；
   每筆 Exam 含 quizzes（Exam_Quiz 列，answer 內嵌）與 answers（Exam 下所有已作答的摘要）。
@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException
 from dependencies.person_id import PersonId
 from pydantic import BaseModel, Field
 
-from services.exam_queries import all_exam_quizzes, exams_by_tab_ids, exam_quiz_grade_from_critique
+from services.exam_queries import all_exam_quizzes, exams_by_tab_ids
 from utils.json_utils import to_json_safe
 
 router = APIRouter(prefix="/course-analysis", tags=["course analysis"])
@@ -36,7 +36,6 @@ def _synthetic_answer_from_quiz(quiz: dict) -> dict:
     return {
         "exam_quiz_id": quiz.get("exam_quiz_id"),
         "quiz_answer": quiz.get("answer_content"),
-        "answer_grade": exam_quiz_grade_from_critique(quiz),
         "answer_critique": quiz.get("answer_critique"),
     }
 
