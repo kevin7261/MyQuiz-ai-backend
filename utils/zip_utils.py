@@ -87,6 +87,31 @@ def build_folder_map(zip_file) -> dict[str, list[tuple[str, str]]]:
     return folder_map
 
 
+def repack_zip_stem_from_filename(filename: str) -> str:
+    """
+    自 repack 產出之 ZIP 檔名取得 stem（不含 .zip）。
+    不可使用 Path(filename).stem：若檔名為 ``A/tB.zip``，Path 會誤取最後一段 ``tB``。
+    """
+    s = (filename or "").strip()
+    if s.lower().endswith(".zip"):
+        return s[:-4].strip()
+    return Path(s).stem.strip()
+
+
+def folder_combination_stem_from_targets(targets: list[str]) -> str:
+    """
+    多資料夾組合鍵（寫入 Rag_Unit.folder_combination、與 repack ZIP 檔名 stem 一致）：
+    ``folder1/tfolder2/tfolder3``（第一個資料夾名後以 ``/t`` 連接其餘資料夾名）。
+    單一資料夾時即該名稱本身。
+    """
+    cleaned = [t.strip() for t in targets if (t or "").strip()]
+    if not cleaned:
+        return ""
+    if len(cleaned) == 1:
+        return cleaned[0]
+    return cleaned[0] + "".join(f"/t{x}" for x in cleaned[1:])
+
+
 def repack_tasks_to_zips(
     source_zip_path: Path,
     folder_map: dict[str, list[tuple[str, str]]],
@@ -97,6 +122,8 @@ def repack_tasks_to_zips(
 
     格式：逗號分隔多個輸出 ZIP；加號表示同一 ZIP 內包含多個資料夾。
     範例："220222+220301"、"10_ERGMs"、"社會網絡分析,10_ERGMs"
+
+    輸出 ZIP 檔名 stem 為 ``folder1/tfolder2/...``（多資料夾以 ``/t`` 連接），不再使用底線 ``_``。
 
     回傳 [(zip_bytes, filename), ...]；
     每個 ZIP 內的路徑只保留目標資料夾名稱該段之後（如 10_ERGMs/10_ERGMs.pdf）。
@@ -113,7 +140,7 @@ def repack_tasks_to_zips(
             targets = [t.strip() for t in task.split("+") if t.strip()]
             if not targets:
                 continue
-            zip_filename = "_".join(targets) + ".zip"
+            zip_filename = folder_combination_stem_from_targets(targets) + ".zip"
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z_out:
                 for target in targets:

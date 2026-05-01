@@ -8,6 +8,8 @@ from pathlib import Path
 from fastapi import HTTPException
 from postgrest.exceptions import APIError
 
+from utils.zip_utils import repack_zip_stem_from_filename
+
 
 def instruction_from_rag_row(row: dict | None) -> str:
     """Rag 表層說明文：**Rag.transcription**（與出題時注入 LLM 的內容一致）。"""
@@ -53,7 +55,7 @@ def _stem_from_output_entry(entry: dict) -> str:
         or ""
     ).strip()
     if not stem and entry.get("filename"):
-        stem = Path(str(entry["filename"])).stem.strip()
+        stem = repack_zip_stem_from_filename(str(entry["filename"]))
     return stem
 
 
@@ -68,7 +70,7 @@ def _output_unit_candidates(entry: dict) -> set[str]:
             out.add(v)
     fn = entry.get("filename")
     if fn:
-        st = Path(str(fn)).stem.strip()
+        st = repack_zip_stem_from_filename(str(fn))
         if st:
             out.add(st)
     return out
@@ -231,14 +233,16 @@ def get_rag_stem_from_rag_id(
 
     wanted = (unit_name or "").strip()
     stem = ""
+    matched_output: dict | None = None
     if not wanted:
-        first = outputs[0] if isinstance(outputs[0], dict) else {}
-        stem = _stem_from_output_entry(first)
+        matched_output = outputs[0] if isinstance(outputs[0], dict) else None
+        stem = _stem_from_output_entry(matched_output or {})
     else:
         for o in outputs:
             if not isinstance(o, dict):
                 continue
             if wanted in _output_unit_candidates(o):
+                matched_output = o
                 stem = _stem_from_output_entry(o) or wanted
                 break
         if not stem:
@@ -258,5 +262,24 @@ def get_rag_stem_from_rag_id(
             status_code=400,
             detail=f"該筆 Rag（rag_id={rag_id}）的 outputs 第一筆缺少可辨識的 repack stem",
         )
-    rag_zip_tab_id = f"{stem}_rag"
+    rag_zip_tab_id = ""
+    src = matched_output if matched_output is not None else (
+        outputs[0] if isinstance(outputs[0], dict) else None
+    )
+    if isinstance(src, dict):
+        rf = (src.get("rag_filename") or "").strip()
+        if rf.lower().endswith(".zip"):
+            rid = rf[:-4].strip()
+            if rid.endswith("_rag") and "/" not in rid and "\\" not in rid:
+                rag_zip_tab_id = rid
+    if not rag_zip_tab_id:
+        if "/" in stem or "\\" in stem:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "此 Rag 僅有舊版 rag_metadata.outputs，且 folder_combination 含路徑字元，"
+                    "無法自 stem 組出 rag ZIP tab_id；請改用含 Rag_Unit 的資料或傳 rag_unit_id"
+                ),
+            )
+        rag_zip_tab_id = f"{stem}_rag"
     return (row, stem, rag_zip_tab_id) if include_row else (stem, rag_zip_tab_id)

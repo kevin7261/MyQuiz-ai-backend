@@ -81,12 +81,19 @@ def _zip_members(z: zipfile.ZipFile) -> Iterator[tuple[str, str]]:
 
 
 def path_has_folder_segment(decoded_path: str, folder_name: str) -> bool:
-    """路徑任一段與 folder_name 完全相同即視為該單元底下。"""
+    """
+    路徑任一段與 folder_name 完全相同即視為該單元底下。
+    folder_name 可為 build-rag-zip 之組合鍵 ``a/tb/tc``（以 ``/t`` 連接多資料夾名），
+    則任一段與組合內任一資料夾名相同即命中。
+    """
     needle = (folder_name or "").strip()
-    if not needle or "/" in needle or "\\" in needle:
+    if not needle or "\\" in needle:
         return False
     parts = decoded_path.replace("\\", "/").strip("/").split("/")
-    return needle in parts
+    if "/t" not in needle:
+        return needle in parts
+    segs = [s.strip() for s in needle.split("/t") if s.strip()]
+    return any(s in parts for s in segs)
 
 
 def read_upload_zip_bytes(person_id: str, rag_tab_id: str) -> bytes:
