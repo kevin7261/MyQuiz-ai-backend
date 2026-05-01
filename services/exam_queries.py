@@ -17,28 +17,32 @@ from utils.supabase_client import get_supabase
 # ---------------------------------------------------------------------------
 
 def select_rag_row_with_transcription_fallback(supabase: Any, rag_id: int) -> Any:
-    """Rag 表部分環境尚無 transcription 欄位（42703）時改選 rag_id, rag_tab_id。"""
-    try:
-        return (
-            supabase.table("Rag")
-            .select("rag_id, rag_tab_id, transcription")
-            .eq("rag_id", rag_id)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
-        )
-    except APIError as e:
-        msg = (e.message or "").lower()
-        if e.code == "42703" and "transcription" in msg:
+    """讀取 public.Rag；SELECT 欄位順序同 public.Rag DDL。缺欄（42703）時依序降級。"""
+    candidates = (
+        "rag_id, rag_tab_id, person_id, tab_name, file_size, file_metadata, local, deleted, updated_at, created_at",
+        "rag_id, rag_tab_id, person_id, tab_name, file_size, local, deleted, updated_at, created_at",
+        "rag_id, rag_tab_id, transcription",
+        "rag_id, rag_tab_id",
+    )
+    last_err: APIError | None = None
+    for cols in candidates:
+        try:
             return (
                 supabase.table("Rag")
-                .select("rag_id, rag_tab_id")
+                .select(cols)
                 .eq("rag_id", rag_id)
                 .eq("deleted", False)
                 .limit(1)
                 .execute()
             )
-        raise
+        except APIError as e:
+            last_err = e
+            msg = (e.message or "").lower()
+            if e.code == "42703" and any(x in msg for x in ("file_metadata", "person_id", "tab_name", "transcription")):
+                continue
+            raise
+    assert last_err is not None
+    raise last_err
 
 
 # ---------------------------------------------------------------------------
@@ -60,8 +64,8 @@ def exam_default_row(
         "person_id": person_id,
         "local": local,
         "deleted": False,
-        "created_at": ts,
         "updated_at": ts,
+        "created_at": ts,
     }
 
 
@@ -272,7 +276,11 @@ def rag_quiz_for_exam_response_row(row: dict[str, Any]) -> dict[str, Any]:
         "rag_quiz_id": rag_quiz_id,
         "rag_tab_id": rag_tab_id,
         "rag_unit_id": rag_unit_id,
+        "person_id": str(row.get("person_id") or ""),
         "quiz_name": str(row.get("quiz_name") or ""),
         "quiz_user_prompt_text": str(row.get("quiz_user_prompt_text") or ""),
+        "quiz_content": str(row.get("quiz_content") or ""),
+        "quiz_hint": str(row.get("quiz_hint") or ""),
+        "quiz_answer_reference": str(row.get("quiz_answer_reference") or ""),
         "answer_user_prompt_text": str(row.get("answer_user_prompt_text") or ""),
     }
