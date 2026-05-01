@@ -1,7 +1,7 @@
 """
 ZIP 與 RAG 相關 API 模組。
 提供：
-- GET /rag/tabs：列出 Rag 表（含 units→quizzes）；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；unit_type=mp3 且含 mp3_file_name 時另附 mp3_audio_url（GET /rag/tab/unit/mp3-file 之 query，含 rag_unit_id，供前端 `<audio src>`）
+- GET /rag/tabs：列出 Rag 表（含 units→quizzes）；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；unit_type=mp3 且含 mp3_file_name 時另附 mp3_audio_url（GET /rag/tab/unit/mp3-file 之 query，含 rag_unit_id，供前端 `<audio src>`）；unit_type=youtube 且含 youtube_url 時另附 youtube_url_api（GET /rag/tab/unit/youtube-url 之 query，含 rag_unit_id）
 - GET /rag/units：依 rag_tab_id 列出 Rag_Unit（含 quizzes）
 - POST /rag/tab/create：建立一筆 Rag（可傳 local）
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
@@ -11,6 +11,7 @@ ZIP 與 RAG 相關 API 模組。
 - PUT /rag/tab/quiz/delete/{rag_quiz_id}：依 rag_quiz_id 軟刪除 Rag_Quiz（deleted=true；須為該列 person_id）
 - PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
 - GET /rag/tab/unit/mp3-file：query rag_tab_id、rag_unit_id；僅 unit_type=3 時回傳音訊（優先該單元 **repack** ZIP；repack 缺漏時改讀該 tab 之 upload ZIP，與 GET /rag/unit/audio-file 相同語意）
+- GET /rag/tab/unit/youtube-url：query rag_tab_id、rag_unit_id；僅 unit_type=4 時回傳 `youtube_url`（Rag_Unit.youtube_url，建 RAG 時擷取自上傳 ZIP 內文字檔）
 - POST /rag/tab/unit/quiz/create：body `rag_tab_id`、`rag_unit_id` 定位 Rag_Unit 後新增一筆 Rag_Quiz（無 LLM）；`rag_quiz_id` 由資料庫產生。
 - PUT /rag/tab/unit/quiz/quiz-name：更新 Rag_Quiz 的 quiz_name（body：rag_quiz_id、quiz_name）
 """
@@ -345,6 +346,13 @@ class ListRagResponse(BaseModel):
     """GET /rag/tabs 回應：每筆 Rag 含 units（Rag_Unit），每個 unit 含 quizzes（Rag_Quiz）。"""
     rags: list[dict]
     count: int
+
+
+class RagUnitYoutubeUrlResponse(BaseModel):
+    """GET /rag/tab/unit/youtube-url 回應。"""
+    rag_unit_id: int
+    rag_tab_id: str
+    youtube_url: str
 
 
 class CreateRagRequest(BaseModel):
@@ -805,7 +813,8 @@ def list_rag(
     列出 Rag 表內容（deleted=False），僅回傳與 query person_id 相符之列，Rag.local 須與 query local 相符（未傳 local 時依連線自動判定）。
     回傳列依 created_at 由舊到新排序。
     每筆 Rag 含 units（Rag_Unit 列表），每個 unit 含 quizzes（Rag_Quiz 列表）。
-    音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /rag/unit/audio-file 查詢字串（已含 person_id），可接在後端 origin 後作為 `<audio src>`。
+    音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /rag/tab/unit/mp3-file 查詢字串（已含 person_id），可接在後端 origin 後作為 `<audio src>`。
+    YouTube 單元（unit_type=4）且 youtube_url 非空時，另含 youtube_url_api：相對於 API 根路徑的 GET /rag/tab/unit/youtube-url 查詢字串（已含 person_id）。
     """
     try:
         local_filter = local if local is not None else is_localhost_request(request)
@@ -852,6 +861,22 @@ def list_rag(
                 ):
                     unit["mp3_audio_url"] = (
                         "/rag/tab/unit/mp3-file?"
+                        + urlencode(
+                            {
+                                "person_id": pid,
+                                "rag_tab_id": str(tab_id).strip(),
+                                "rag_unit_id": str(uid_int),
+                            }
+                        )
+                    )
+                if (
+                    utype == RAG_UNIT_TYPE_YOUTUBE
+                    and (unit.get("youtube_url") or "").strip()
+                    and tab_id
+                    and uid_int is not None
+                ):
+                    unit["youtube_url_api"] = (
+                        "/rag/tab/unit/youtube-url?"
                         + urlencode(
                             {
                                 "person_id": pid,
@@ -1539,6 +1564,71 @@ def rag_tab_unit_mp3_file(
         content=contents,
         media_type=media,
         headers={"Content-Disposition": f'inline; filename="{safe_disp}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /rag/tab/unit/youtube-url
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/tab/unit/youtube-url",
+    summary="Rag Tab Unit Youtube Url",
+    operation_id="rag_tab_unit_youtube_url",
+    response_model=RagUnitYoutubeUrlResponse,
+)
+def rag_tab_unit_youtube_url(
+    caller_person_id: PersonId,
+    rag_tab_id: str = Query(..., description="Rag.rag_tab_id（parent tab）"),
+    rag_unit_id: int = Query(..., gt=0, description="Rag_Unit 主鍵"),
+):
+    """
+    依 rag_tab_id 與 rag_unit_id 回傳 **unit_type=4（YouTube 單元）** 之 `youtube_url`。
+    youtube_url 為上傳 ZIP 內文字檔所記錄之 YouTube 連結（建 RAG 時由 `extract_transcript_for_rag_build` 擷取並寫入 `Rag_Unit.youtube_url`）。
+    """
+    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    tab = (rag_tab_id or "").strip()
+    supabase = get_supabase()
+    try:
+        sel = (
+            supabase.table("Rag_Unit")
+            .select("rag_unit_id, rag_tab_id, unit_type, youtube_url, deleted")
+            .eq("rag_unit_id", rag_unit_id)
+            .eq("person_id", caller_person_id.strip())
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        _logger.exception("GET /rag/tab/unit/youtube-url 查詢 Rag_Unit 失敗")
+        raise HTTPException(status_code=500, detail=f"查詢失敗: {e!s}") from e
+
+    if not sel.data:
+        raise HTTPException(status_code=404, detail="找不到該 rag_unit_id，或不屬於此 person_id")
+    row = sel.data[0]
+    if row.get("deleted"):
+        raise HTTPException(status_code=404, detail="該單元已刪除")
+    if (row.get("rag_tab_id") or "").strip() != tab:
+        raise HTTPException(
+            status_code=400,
+            detail="rag_tab_id 與該 rag_unit_id 所屬之 Rag_Unit.rag_tab_id 不一致",
+        )
+    try:
+        ut = int(row.get("unit_type") or 0)
+    except (TypeError, ValueError):
+        ut = 0
+    if ut != RAG_UNIT_TYPE_YOUTUBE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"僅 unit_type=4（YouTube 單元）可使用此端點，目前 unit_type={ut}",
+        )
+    yt_url = (row.get("youtube_url") or "").strip()
+    if not yt_url:
+        raise HTTPException(status_code=404, detail="該 YouTube 單元未記錄 youtube_url，請重新建置 RAG")
+    return RagUnitYoutubeUrlResponse(
+        rag_unit_id=int(row["rag_unit_id"]),
+        rag_tab_id=tab,
+        youtube_url=yt_url,
     )
 
 

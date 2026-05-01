@@ -6,6 +6,7 @@ RAG 評分與出題 API 模組。
 - GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
 - GET /rag/transcript/text、audio、youtube：自 Storage upload ZIP 讀取逐字稿。
 - GET /rag/unit/audio-file：自 upload ZIP 依單元資料夾回傳原始音訊 bytes（供 `<audio src>`；與 transcript/audio 相同之 rag_tab_id、folder_name）。
+- GET /rag/unit/youtube-url：自 upload ZIP 依 folder_name（單元資料夾）內唯一文字檔解析 YouTube 連結／video_id，回傳 `youtube_url`（語意對齊 `GET /rag/tab/unit/youtube-url` 存庫連結與 transcript/youtube 之解析規則，不依 rag_unit_id）。
 """
 
 import json
@@ -135,6 +136,12 @@ class RagTranscriptMarkdownResponse(BaseModel):
     """GET /rag/transcript/text、audio、youtube 共用回傳：markdown 僅為正文，無額外標題或 meta 區塊。"""
 
     markdown: str = Field(..., description="正文純文字或原檔內容（無 # Transcript 包裝）")
+
+
+class RagUnitYoutubeUrlFromZipResponse(BaseModel):
+    """GET /rag/unit/youtube-url：自 upload ZIP 解析之標準 watch URL。"""
+
+    youtube_url: str = Field(..., description="https://www.youtube.com/watch?v=…")
 
 
 # ---------------------------------------------------------------------------
@@ -744,6 +751,43 @@ def rag_unit_audio_file(
         media_type=media,
         headers={"Content-Disposition": f'inline; filename="{safe_disp}"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /rag/unit/youtube-url
+# ---------------------------------------------------------------------------
+
+
+@router.get("/unit/youtube-url", response_model=RagUnitYoutubeUrlFromZipResponse)
+def rag_unit_youtube_url(
+    caller_person_id: PersonId,
+    rag_tab_id: str = Query(..., description="Rag.rag_tab_id（upload ZIP 路徑）"),
+    folder_name: str = Query(
+        ...,
+        description="與 Rag_Unit.unit_name、upload ZIP 內單元資料夾名相同（與 GET /rag/transcript/youtube、GET /rag/unit/audio-file 一致）",
+    ),
+):
+    """
+    自 upload ZIP 內指定資料夾讀取**恰好一個**文字檔（.md／.txt／.doc／.docx），解析 YouTube 連結或 video_id，
+    回傳標準 `watch` URL（不擷取字幕）。前端可嵌入 iframe 或開新分頁。
+    """
+    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    try:
+        zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        _logger.exception("讀取 upload ZIP 失敗")
+        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+
+    try:
+        vid, _inner_path = read_youtube_video_id_from_upload_zip(zip_bytes, folder_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return RagUnitYoutubeUrlFromZipResponse(youtube_url=f"https://www.youtube.com/watch?v={vid}")
 
 
 # ---------------------------------------------------------------------------
