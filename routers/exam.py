@@ -835,7 +835,8 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
     prompt_rag_unit_id = int(selected.get("rag_unit_id") or 0) if selected else int(qrow.get("rag_unit_id") or 0)
     prompt_rag_qid = cand_rag_qid
     un_for_prompt = (qrow.get("unit_name") or "").strip() or None
-    qn_for_prompt = (qrow.get("quiz_name") or "").strip() or None
+    rq_quiz_name = (rq_row0.get("quiz_name") or "").strip()
+    qn_for_prompt = (qrow.get("quiz_name") or "").strip() or rq_quiz_name or None
     api_instr = _exam_llm_generate_api_instruction(
         exam_quiz_id=body.exam_quiz_id,
         exam_tab_id=(qrow.get("exam_tab_id") or "").strip() or None,
@@ -879,7 +880,14 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
         unit_name_for_display = (
             _ru_display or (qrow.get("unit_name") or "").strip() or unit_filter or stem or ""
         ).strip()
-        quiz_name = ((stem or "").strip() or unit_name_for_display or (qrow.get("quiz_name") or "").strip() or "")
+        # quiz_name 須為題目顯示名：優先 Rag_Quiz／既有 Exam_Quiz；勿用 stem（ZIP 檔 stem，常像 tab_id）
+        quiz_name = (
+            rq_quiz_name
+            or (qrow.get("quiz_name") or "").strip()
+            or unit_name_for_display
+            or ((stem or "").strip())
+            or ""
+        )
         result["quiz_name"] = quiz_name
         # 與寫入 Exam_Quiz 相同，供前端顯示 Rag_Quiz 模板快照（非送進 LLM 的 api_instr 全文）
         result["quiz_user_prompt_text"] = quiz_user_prompt_resolved
