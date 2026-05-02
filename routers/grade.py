@@ -848,10 +848,14 @@ def rag_transcript_youtube(
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id"),
     folder_name: str = Query(
         ...,
-        description="ZIP 內單元資料夾名；該資料夾下須恰好一個文字檔（.md .txt .doc .docx，內含 YouTube 連結或 video_id），擷取 en 字幕為正文",
+        description="ZIP 內單元資料夾名；該資料夾下須恰好一個文字檔（.md .txt .doc .docx，內含 YouTube 連結或 video_id），擷取字幕為正文",
+    ),
+    languages: str | None = Query(
+        None,
+        description="字幕語言代碼優先序，逗號分隔（如 en,zh-Hant）；未填則 YOUTUBE_TRANSCRIPT_LANGUAGES 或預設 en→中文→日韓",
     ),
 ):
-    """自 upload ZIP 內 folder_name 下唯一文字檔讀取連結，擷取 en 字幕；markdown 僅為字幕合併文字。"""
+    """自 upload ZIP 內 folder_name 下唯一文字檔讀取連結，擷取字幕；markdown 僅為字幕合併文字。"""
     _require_rag_tab_owner(caller_person_id, rag_tab_id)
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
@@ -868,8 +872,13 @@ def rag_transcript_youtube(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+    raw_langs = (languages or "").strip()
+    lang_list: list[str] | None = (
+        [x.strip() for x in raw_langs.split(",") if x.strip()] if raw_langs else None
+    )
+
     try:
-        text, _elapsed = youtube_transcript_plain_text(vid, languages=["en"])
+        text, _elapsed = youtube_transcript_plain_text(vid, languages=lang_list)
         return RagTranscriptMarkdownResponse(markdown=(text or "").strip())
     except InvalidVideoId as e:
         raise HTTPException(status_code=400, detail=youtube_transcript_api_user_message(e)) from e

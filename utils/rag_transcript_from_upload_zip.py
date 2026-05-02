@@ -478,14 +478,16 @@ def extract_transcript_for_rag_build(zip_bytes: bytes, unit_type: int) -> dict[s
         if not vid:
             raise ValueError(f"{Path(dec).name} 內找不到有效的 YouTube 連結或 video_id")
         try:
-            cap, _elapsed = youtube_transcript_plain_text(vid, languages=["en"])
+            cap, _elapsed = youtube_transcript_plain_text(vid, languages=None)
         except Exception as e:
             raise ValueError(
-                "擷取 YouTube 英文字幕失敗: " + youtube_transcript_api_user_message(e)
+                "擷取 YouTube 字幕失敗: " + youtube_transcript_api_user_message(e)
             ) from e
         cap = (cap or "").strip()
         if not cap:
-            raise ValueError("YouTube 英文字幕為空（請確認影片有 en 字幕）")
+            raise ValueError(
+                "YouTube 字幕為空（請確認影片有字幕，或調整 YOUTUBE_TRANSCRIPT_LANGUAGES）"
+            )
         out["transcript"] = cap
         out["youtube_url"] = f"https://www.youtube.com/watch?v={vid}"
         return out

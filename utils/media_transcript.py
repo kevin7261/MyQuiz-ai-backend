@@ -143,6 +143,8 @@ def _youtube_transcript_api_from_env():
       YOUTUBE_TRANSCRIPT_PROXY_RETRIES_WHEN_BLOCKED：遇阻擋時重試次數，預設 8（0=不重試；輪換代理可加大）。
       YOUTUBE_TRANSCRIPT_PROXY_CLOSE_CONNECTION：預設 1；設 0/false/off 則不強制 Connection: close（靜態單一 IP 可試）。
 
+    字幕語言預設優先序（未傳入 languages 時）：YOUTUBE_TRANSCRIPT_LANGUAGES，或內建 en→中文→日韓。
+
     若同時設定 Webshare 帳密與 HTTP 代理，優先使用 Webshare。
     """
     from youtube_transcript_api import YouTubeTranscriptApi
@@ -289,14 +291,28 @@ def parse_youtube_video_id(raw: str) -> str | None:
     return None
 
 
-def youtube_transcript_plain_text(video_id: str, languages: list[str] | None) -> tuple[str, float]:
+def youtube_transcript_default_languages() -> list[str]:
+    """
+    字幕語言嘗試順序（前者優先，套件會依序嘗試至成功）。
+    環境變數 YOUTUBE_TRANSCRIPT_LANGUAGES：逗號分隔代碼，例如 ``en,zh-Hant,zh-TW``。
+    """
+    raw = (os.environ.get("YOUTUBE_TRANSCRIPT_LANGUAGES") or "").strip()
+    if raw:
+        out = [x.strip() for x in raw.split(",") if x.strip()]
+        return out if out else ["en"]
+    return ["en", "zh-Hant", "zh-TW", "zh-Hans", "zh-CN", "ja", "ko"]
+
+
+def youtube_transcript_plain_text(video_id: str, languages: list[str] | None = None) -> tuple[str, float]:
     """
     擷取 YouTube 字幕並併成單一純文字（與 Colab 範例一致：以空白連接各段）。
     回傳 (全文, 耗時秒數)。
+
+    languages 為 None 或空串列時，使用 :func:`youtube_transcript_default_languages`。
     """
     from youtube_transcript_api import YouTubeTranscriptApi
 
-    langs = languages if languages else ["en"]
+    langs = languages if languages else youtube_transcript_default_languages()
     t0 = time.perf_counter()
     api = _youtube_transcript_api_from_env()
     if hasattr(api, "fetch"):
