@@ -2,7 +2,8 @@
 個人分析 API 模組。
 依 person_id 查詢 Exam_Quiz 資料。新 schema 答案欄位直接內嵌於 Exam_Quiz（answer_content, answer_critique），不再有獨立的 Exam_Answer 表。
 - GET /person-analysis/quizzes/{person_id}：依 person_id 取得已作答的 Exam_Quiz（answer_content 非空），
-  依 exam_tab_id 分群回傳；另帶 weakness_report（系統有 LLM API Key 時由 AI 產生）。
+  依 exam_tab_id 分群回傳 Exam；每筆 Exam 的題目結構與 GET /exam/tabs 相同（units[]，依 unit_name 分群之 Exam_Quiz，含 enrich／rag 鍵）。
+  另帶 weakness_report（系統有 LLM API Key 時由 AI 產生）。
 
 重要：弱點報告 prompt 與回應皆為 Markdown；與 json_object 出題／批改分流。
 
@@ -19,7 +20,13 @@ from dependencies.person_id import PersonId
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
-from services.exam_queries import exams_by_tab_ids, quizzes_by_person_id
+from services.exam_queries import (
+    exams_by_tab_ids,
+    enrich_exam_quizzes_rag_tab_from_units,
+    ensure_exam_quiz_rag_id_keys,
+    group_exam_quizzes_into_units,
+    quizzes_by_person_id,
+)
 from utils.json_utils import to_json_safe
 from utils.llm_api_key_utils import get_llm_api_key
 
@@ -61,7 +68,7 @@ PROMPT_WEAKNESS_REPORT = textwrap.dedent("""
 # ---------------------------------------------------------------------------
 
 class ListQuizzesByPersonResponse(BaseModel):
-    """GET /person-analysis/quizzes/{person_id} 回應。"""
+    """GET /person-analysis/quizzes/{person_id} 回應。exams[] 每筆與 GET /exam/tabs 相同含 units[]（另含 weakness_report）。"""
     exams: list[dict]
     count: int
     weakness_report: Optional[str] = Field(
@@ -248,7 +255,8 @@ def list_quizzes_by_person(
     person_id: str = PathParam(..., description="要查詢的 person_id"),
 ):
     """
-    依 person_id 取得已作答的 Exam_Quiz（answer_content 非空），依 exam_tab_id 分群後對應 Exam。
+    依 person_id 取得已作答的 Exam_Quiz（answer_content 非空），依 exam_tab_id 分群後對應 Exam；
+    每筆 Exam 的 units／quizzes 形狀與 GET /exam/tabs 一致（題目為完整 Exam_Quiz 列，含作答欄位）。
     另帶 weakness_report（系統設定 LLM API Key 時由 AI 產生）。
     query 的 person_id 須與路徑 {person_id} 一致。
     """
@@ -270,11 +278,13 @@ def list_quizzes_by_person(
             if tid is not None:
                 quizzes_by_tab.setdefault(str(tid), []).append(q)
 
+        flat_for_enrich = [qz for tid in tab_ids for qz in quizzes_by_tab.get(tid, [])]
+        enrich_exam_quizzes_rag_tab_from_units(flat_for_enrich)
+        ensure_exam_quiz_rag_id_keys(flat_for_enrich)
+
         for row in exam_rows:
             tid = str(row.get("exam_tab_id") or "")
-            row_quizzes = quizzes_by_tab.get(tid, [])
-            row["quizzes"] = row_quizzes
-            row["answers"] = [_synthetic_answer_from_quiz(q) for q in row_quizzes]
+            row["units"] = group_exam_quizzes_into_units(quizzes_by_tab.get(tid, []))
 
         data = to_json_safe(exam_rows)
         weakness_report: Optional[str] = None
