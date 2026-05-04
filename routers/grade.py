@@ -5,8 +5,8 @@ RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/for-exam：更新 Rag_Quiz.for_exam（body `for_exam` 預設 true；false 取消測驗用）。
 - GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
 - GET /rag/transcript/text、audio、youtube：自 Storage upload ZIP 讀取逐字稿。
-- GET /rag/unit/audio-file：自 upload ZIP 依單元資料夾回傳原始音訊 bytes（供 `<audio src>`；與 transcript/audio 相同之 rag_tab_id、folder_name）。
-- GET /rag/unit/youtube-url：自 upload ZIP 依 folder_name（單元資料夾）內唯一文字檔解析 YouTube 連結／video_id，回傳 `youtube_url`（語意對齊 `GET /rag/tab/unit/youtube-url` 存庫連結與 transcript/youtube 之解析規則，不依 rag_unit_id）。
+- GET /rag/unit/audio-file：自 upload ZIP 依單元資料夾回傳原始音訊 bytes（供 `<audio src>`；僅需 rag_tab_id、folder_name，不依 query person_id）。
+- GET /rag/unit/youtube-url：自 upload ZIP 依 folder_name 解析 YouTube 連結／video_id（僅需 rag_tab_id、folder_name，不依 query person_id）；語意對齊存庫 transcript 規則，不依 rag_unit_id。
 """
 
 import json
@@ -168,6 +168,28 @@ def _require_rag_tab_owner(person_id: str, rag_tab_id: str) -> None:
             status_code=404,
             detail="找不到該 rag_tab_id，或已刪除／不屬於此 person_id",
         )
+
+
+def _resolve_rag_tab_upload_owner_person_id(rag_tab_id: str) -> str:
+    """依 rag_tab_id 取得 upload ZIP 所屬 person_id（不驗證呼叫者 query person_id）。"""
+    rid = (rag_tab_id or "").strip()
+    if not rid or "/" in rid or "\\" in rid:
+        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
+    supabase = get_supabase()
+    sel = (
+        supabase.table("Rag")
+        .select("person_id")
+        .eq("rag_tab_id", rid)
+        .eq("deleted", False)
+        .limit(1)
+        .execute()
+    )
+    if not sel.data:
+        raise HTTPException(status_code=404, detail="找不到該 rag_tab_id，或已刪除")
+    owner = (sel.data[0].get("person_id") or "").strip()
+    if not owner:
+        raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 之 person_id")
+    return owner
 
 
 # ---------------------------------------------------------------------------
@@ -716,7 +738,6 @@ def rag_transcript_text(
 
 @router.get("/unit/audio-file")
 def rag_unit_audio_file(
-    caller_person_id: PersonId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（upload ZIP 路徑）"),
     folder_name: str = Query(
         ...,
@@ -725,11 +746,11 @@ def rag_unit_audio_file(
 ):
     """
     自 upload ZIP 內指定資料夾擷取第一個支援的音訊檔，**不**經 Deepgram，直接回傳二進位內容。
-    前端可將完整 URL（含 query `person_id`）設為 `<audio src>`。
+    不需 query `person_id`；後端依 `rag_tab_id` 自 Rag 解析擁有者後讀 Storage。
     """
-    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    owner_pid = _resolve_rag_tab_upload_owner_person_id(rag_tab_id)
     try:
-        zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
+        zip_bytes = read_upload_zip_bytes(owner_pid, rag_tab_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
@@ -760,7 +781,6 @@ def rag_unit_audio_file(
 
 @router.get("/unit/youtube-url", response_model=RagUnitYoutubeUrlFromZipResponse)
 def rag_unit_youtube_url(
-    caller_person_id: PersonId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（upload ZIP 路徑）"),
     folder_name: str = Query(
         ...,
@@ -769,11 +789,11 @@ def rag_unit_youtube_url(
 ):
     """
     自 upload ZIP 內指定資料夾讀取**恰好一個**文字檔（.md／.txt／.doc／.docx），解析 YouTube 連結或 video_id，
-    回傳標準 `watch` URL（不擷取字幕）。前端可嵌入 iframe 或開新分頁。
+    回傳標準 `watch` URL（不擷取字幕）。不需 query `person_id`；後端依 rag_tab_id 自 Rag 解析擁有者後讀 ZIP。
     """
-    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    owner_pid = _resolve_rag_tab_upload_owner_person_id(rag_tab_id)
     try:
-        zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
+        zip_bytes = read_upload_zip_bytes(owner_pid, rag_tab_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
