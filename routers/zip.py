@@ -1,7 +1,7 @@
 """
 ZIP 與 RAG 相關 API 模組。
 提供：
-- GET /rag/tabs：列出 Rag 表（含 units→quizzes）；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；unit_type=mp3 且含 mp3_file_name 時另附 mp3_audio_url（GET /rag/tab/unit/mp3-file 之 query，含 rag_unit_id，供前端 `<audio src>`）；unit_type=youtube 且含 youtube_url 時另附 youtube_url_api（GET /rag/tab/unit/youtube-url 之 query，含 rag_unit_id）
+- GET /rag/tabs：列出 Rag 表（含 units→quizzes）；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；unit_type=mp3 且含 mp3_file_name 時另附 mp3_audio_url（GET /rag/tab/unit/mp3-file 之 query：`rag_tab_id`、`rag_unit_id` 即可，**不需** person_id，供前端 `<audio src>`）；unit_type=youtube 且含 youtube_url 時另附 youtube_url_api（同上，**不需** person_id）
 - GET /rag/units：依 rag_tab_id 列出 Rag_Unit（含 quizzes）
 - POST /rag/tab/create：建立一筆 Rag（可傳 local）
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
@@ -10,8 +10,8 @@ ZIP 與 RAG 相關 API 模組。
 - POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名；`.md`/`.txt` 內容 UTF-8 原文寫入 Rag_Unit.transcription，含 Markdown）；可選 body.build_faiss 覆寫；**chunk_size／chunk_overlap** 為全批預設，**chunk_sizes／chunk_overlaps**（逗號字串或 JSON 整數陣列）可與任務同序逐段覆寫；**unit_names**（逗號字串或 JSON 字串陣列）同序非空段覆寫 Rag_Unit.unit_name（顯示名）；**folder_combination** 恒為 repack ZIP 檔名 stem 寫入 DB（多資料夾為 ``folder1/tfolder2``，非底線 ``_``）；**unit_type≠1** 時寫入／回傳之 chunk 為 0；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
 - PUT /rag/tab/quiz/delete/{rag_quiz_id}：依 rag_quiz_id 軟刪除 Rag_Quiz（deleted=true；須為該列 person_id）
 - PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
-- GET /rag/tab/unit/mp3-file：query rag_tab_id、rag_unit_id；僅 unit_type=3 時回傳音訊（優先該單元 **repack** ZIP；repack 缺漏時改讀該 tab 之 upload ZIP，與 GET /rag/unit/mp3-file 相同語意）
-- GET /rag/tab/unit/youtube-url：query rag_tab_id、rag_unit_id；僅 unit_type=4 時回傳 `youtube_url`（Rag_Unit.youtube_url，建 RAG 時擷取自上傳 ZIP 內文字檔）
+- GET /rag/tab/unit/mp3-file：query rag_tab_id、rag_unit_id（**不需** query person_id；後端依 rag_tab_id 自 Rag 解析擁有者）；僅 unit_type=3 時回傳音訊（優先該單元 **repack** ZIP；repack 缺漏時改讀該 tab 之 upload ZIP，與 GET /rag/unit/mp3-file 相同語意）
+- GET /rag/tab/unit/youtube-url：query rag_tab_id、rag_unit_id（**不需** person_id）；僅 unit_type=4 時回傳 `youtube_url`（Rag_Unit.youtube_url，建 RAG 時擷取自上傳 ZIP 內文字檔）
 - POST /rag/tab/unit/quiz/create：body `rag_tab_id`、`rag_unit_id` 定位 Rag_Unit 後新增一筆 Rag_Quiz（無 LLM）；`rag_quiz_id` 由資料庫產生。
 - PUT /rag/tab/unit/quiz/quiz-name：更新 Rag_Quiz 的 quiz_name（body：rag_quiz_id、quiz_name）
 """
@@ -102,6 +102,28 @@ def _require_rag_tab_owner(person_id: str, rag_tab_id: str) -> None:
             status_code=404,
             detail="找不到該 rag_tab_id，或已刪除／不屬於此 person_id",
         )
+
+
+def _resolve_rag_tab_upload_owner_person_id(rag_tab_id: str) -> str:
+    """依 rag_tab_id 取得 upload ZIP 所屬 person_id（不驗證呼叫者 query person_id）。"""
+    rid = (rag_tab_id or "").strip()
+    if not rid or "/" in rid or "\\" in rid:
+        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
+    supabase = get_supabase()
+    sel = (
+        supabase.table("Rag")
+        .select("person_id")
+        .eq("rag_tab_id", rid)
+        .eq("deleted", False)
+        .limit(1)
+        .execute()
+    )
+    if not sel.data:
+        raise HTTPException(status_code=404, detail="找不到該 rag_tab_id，或已刪除")
+    owner = (sel.data[0].get("person_id") or "").strip()
+    if not owner:
+        raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 之 person_id")
+    return owner
 
 
 def _bytes_to_mb(size_bytes: int) -> float:
@@ -813,8 +835,8 @@ def list_rag(
     列出 Rag 表內容（deleted=False），僅回傳與 query person_id 相符之列，Rag.local 須與 query local 相符（未傳 local 時依連線自動判定）。
     回傳列依 created_at 由舊到新排序。
     每筆 Rag 含 units（Rag_Unit 列表），每個 unit 含 quizzes（Rag_Quiz 列表）。
-    音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /rag/tab/unit/mp3-file 查詢字串（已含 person_id），可接在後端 origin 後作為 `<audio src>`。
-    YouTube 單元（unit_type=4）且 youtube_url 非空時，另含 youtube_url_api：相對於 API 根路徑的 GET /rag/tab/unit/youtube-url 查詢字串（已含 person_id）。
+    音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /rag/tab/unit/mp3-file 查詢字串（`rag_tab_id`、`rag_unit_id`，不需 person_id），可接在後端 origin 後作為 `<audio src>`。
+    YouTube 單元（unit_type=4）且 youtube_url 非空時，另含 youtube_url_api：相對於 API 根路徑的 GET /rag/tab/unit/youtube-url 查詢字串（同上，不需 person_id）。
     """
     try:
         local_filter = local if local is not None else is_localhost_request(request)
@@ -863,7 +885,6 @@ def list_rag(
                         "/rag/tab/unit/mp3-file?"
                         + urlencode(
                             {
-                                "person_id": pid,
                                 "rag_tab_id": str(tab_id).strip(),
                                 "rag_unit_id": str(uid_int),
                             }
@@ -879,7 +900,6 @@ def list_rag(
                         "/rag/tab/unit/youtube-url?"
                         + urlencode(
                             {
-                                "person_id": pid,
                                 "rag_tab_id": str(tab_id).strip(),
                                 "rag_unit_id": str(uid_int),
                             }
@@ -1426,18 +1446,18 @@ def update_rag_unit_name(body: UpdateRagUnitUnitNameRequest, caller_person_id: P
     operation_id="rag_tab_unit_mp3_file",
 )
 def rag_tab_unit_mp3_file(
-    caller_person_id: PersonId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（parent tab；repack/upload 路徑皆在其下）"),
     rag_unit_id: int = Query(..., gt=0, description="Rag_Unit 主鍵"),
 ):
     """
     依 rag_tab_id 與 rag_unit_id；**僅 Rag_Unit.unit_type=3（音訊單元）** 時回傳原始音訊。
+    **不需** query `person_id`；後端依 `rag_tab_id` 自 Rag 解析擁有者後讀 Storage。
     **優先**自該單元之 **repack** ZIP（`Rag_Unit.repack_file_name`／Storage `…/repack/{單元}.zip`）內，依 **folder_combination**（無則 **unit_name**）
     路徑段擷取第一個支援的音訊檔（repack 內仍保留上傳時之資料夾名，與 `repack_tasks_to_zips` 一致）。
     repack 無法讀取時**改讀**該 tab 之 **upload** ZIP（與 GET /rag/unit/mp3-file 相同）。
     Storage `…/rag/{tab}_rag.zip` 僅為逐字稿封包，不含原始 mp3。
     """
-    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    owner_pid = _resolve_rag_tab_upload_owner_person_id(rag_tab_id)
     tab = (rag_tab_id or "").strip()
     supabase = get_supabase()
     try:
@@ -1445,7 +1465,7 @@ def rag_tab_unit_mp3_file(
             supabase.table("Rag_Unit")
             .select("rag_tab_id, unit_name, folder_combination, unit_type, deleted, repack_file_name")
             .eq("rag_unit_id", rag_unit_id)
-            .eq("person_id", caller_person_id.strip())
+            .eq("person_id", owner_pid)
             .limit(1)
             .execute()
         )
@@ -1456,7 +1476,7 @@ def rag_tab_unit_mp3_file(
                 supabase.table("Rag_Unit")
                 .select("rag_tab_id, unit_name, unit_type, deleted, repack_file_name")
                 .eq("rag_unit_id", rag_unit_id)
-                .eq("person_id", caller_person_id.strip())
+                .eq("person_id", owner_pid)
                 .limit(1)
                 .execute()
             )
@@ -1465,7 +1485,7 @@ def rag_tab_unit_mp3_file(
     if not sel.data:
         raise HTTPException(
             status_code=404,
-            detail="找不到該 rag_unit_id，或不屬於此 person_id",
+            detail="找不到該 rag_unit_id，或與此 rag_tab_id／擁有者不一致",
         )
     row = sel.data[0]
     if row.get("deleted"):
@@ -1509,7 +1529,7 @@ def rag_tab_unit_mp3_file(
 
     if zip_bytes is None:
         try:
-            zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
+            zip_bytes = read_upload_zip_bytes(owner_pid, rag_tab_id)
             zip_is_unit_repack = False
         except FileNotFoundError as e:
             detail = str(e)
@@ -1532,7 +1552,7 @@ def rag_tab_unit_mp3_file(
     except ValueError as e:
         if from_repack_ok and zip_is_unit_repack:
             try:
-                zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
+                zip_bytes = read_upload_zip_bytes(owner_pid, rag_tab_id)
             except FileNotFoundError as e2:
                 raise HTTPException(
                     status_code=400,
@@ -1579,15 +1599,15 @@ def rag_tab_unit_mp3_file(
     response_model=RagUnitYoutubeUrlResponse,
 )
 def rag_tab_unit_youtube_url(
-    caller_person_id: PersonId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（parent tab）"),
     rag_unit_id: int = Query(..., gt=0, description="Rag_Unit 主鍵"),
 ):
     """
     依 rag_tab_id 與 rag_unit_id 回傳 **unit_type=4（YouTube 單元）** 之 `youtube_url`。
+    **不需** query `person_id`；後端依 `rag_tab_id` 自 Rag 解析擁有者。
     youtube_url 為上傳 ZIP 內文字檔所記錄之 YouTube 連結（建 RAG 時由 `extract_transcript_for_rag_build` 擷取並寫入 `Rag_Unit.youtube_url`）。
     """
-    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    owner_pid = _resolve_rag_tab_upload_owner_person_id(rag_tab_id)
     tab = (rag_tab_id or "").strip()
     supabase = get_supabase()
     try:
@@ -1595,7 +1615,7 @@ def rag_tab_unit_youtube_url(
             supabase.table("Rag_Unit")
             .select("rag_unit_id, rag_tab_id, unit_type, youtube_url, deleted")
             .eq("rag_unit_id", rag_unit_id)
-            .eq("person_id", caller_person_id.strip())
+            .eq("person_id", owner_pid)
             .limit(1)
             .execute()
         )
@@ -1604,7 +1624,10 @@ def rag_tab_unit_youtube_url(
         raise HTTPException(status_code=500, detail=f"查詢失敗: {e!s}") from e
 
     if not sel.data:
-        raise HTTPException(status_code=404, detail="找不到該 rag_unit_id，或不屬於此 person_id")
+        raise HTTPException(
+            status_code=404,
+            detail="找不到該 rag_unit_id，或與此 rag_tab_id／擁有者不一致",
+        )
     row = sel.data[0]
     if row.get("deleted"):
         raise HTTPException(status_code=404, detail="該單元已刪除")
