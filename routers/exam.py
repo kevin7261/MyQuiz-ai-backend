@@ -4,7 +4,7 @@ Exam API 模組。對應 public.Exam、public.Exam_Quiz。
 檔案結構（由上而下）：模型／檢索說明 → LLM Prompt → 型別與作業快取 → Pydantic → 輔助函式與路由。
 
 - GET /exam/tabs：列出 Exam（deleted=false，person_id 篩選，local 篩選），每筆帶 units（依 unit_name 分群之 Exam_Quiz）。
-- GET /exam/rag-for-exams：列出 for_exam 測驗用 RAG 資料（Rag_Unit.for_exam=true 或含 Rag_Quiz.for_exam=true）。
+- GET /exam/rag-for-exams：列出 for_exam 測驗用 RAG 資料（Rag_Unit.for_exam=true 或含 Rag_Quiz.for_exam=true）；僅含隸屬 Rag.local 與 query local 相符之分頁（未傳 local 時依連線是否本機判定）。
 - POST /exam/tab/create：建立一筆 Exam。
 - PUT /exam/tab/tab-name：更新既有 Exam 的 tab_name。
 - POST /exam/tab/quiz/create：新增空白 Exam_Quiz（不呼叫 LLM）。
@@ -315,14 +315,38 @@ def list_exams(
     response_model=ListRagForExamsResponse,
     summary="List RAG units & quizzes marked for exam",
 )
-def list_rag_for_exams(_person_id: PersonId):
+def list_rag_for_exams(
+    request: Request,
+    _person_id: PersonId,
+    local: bool | None = Query(
+        None,
+        description="僅回傳 rag_tab_id 隸屬 Rag.local 與此值相同之單元／題目。未傳時：本機連線視為 true，否則 false",
+    ),
+):
     """
     回傳 for-exam 相關 RAG 單元與題目（不限 person_id）：
+    - 僅 rag_tab_id 對應之 Rag 列（deleted=false）其 local 與 query local 相符者（未傳 local 時同 GET /exam/tabs 依連線判定）。
     - 單元：Rag_Unit.deleted=false 且（Rag_Unit.for_exam=true 或至少一筆 Rag_Quiz.for_exam=true 隸屬該 rag_unit_id）。
     - quizzes：僅 Rag_Quiz.for_exam=true 且 deleted=false。
     """
     try:
         supabase = get_supabase()
+        local_filter = local if local is not None else is_localhost_request(request)
+
+        tabs_for_local = (
+            supabase.table("Rag")
+            .select("rag_tab_id")
+            .eq("deleted", False)
+            .eq("local", local_filter)
+            .execute()
+            .data
+            or []
+        )
+        allowed_tab_ids = list(dict.fromkeys(
+            r["rag_tab_id"] for r in tabs_for_local if r.get("rag_tab_id") is not None
+        ))
+        if not allowed_tab_ids:
+            return ListRagForExamsResponse(units=[], count=0)
 
         quizzes_resp = (
             supabase.table("Rag_Quiz")
@@ -332,6 +356,7 @@ def list_rag_for_exams(_person_id: PersonId):
             )
             .eq("for_exam", True)
             .eq("deleted", False)
+            .in_("rag_tab_id", allowed_tab_ids)
             .order("created_at", desc=False)
             .execute()
         )
@@ -357,6 +382,7 @@ def list_rag_for_exams(_person_id: PersonId):
                 .select("rag_unit_id")
                 .eq("for_exam", True)
                 .eq("deleted", False)
+                .in_("rag_tab_id", allowed_tab_ids)
                 .execute()
             )
             for u in units_flag_resp.data or []:
@@ -381,6 +407,7 @@ def list_rag_for_exams(_person_id: PersonId):
             supabase.table("Rag_Unit")
             .select("*")
             .in_("rag_unit_id", all_unit_ids)
+            .in_("rag_tab_id", allowed_tab_ids)
             .eq("deleted", False)
             .order("created_at", desc=False)
             .execute()

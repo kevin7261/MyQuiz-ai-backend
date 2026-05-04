@@ -87,7 +87,7 @@ def resolve_exam_content_rag_id(
     """
     供測驗出題／批改選擇 Rag.rag_id。
 
-    GET /exam/rag-for-exams 可列出多個 rag_tab_id 底下之單元；若僅依 System_Setting
+    GET /exam/rag-for-exams 可列出多個 rag_tab_id 底下之單元（並依 Rag.local／連線篩選）；若僅依 System_Setting
     單一 rag_id，會與 rag_unit_id 所屬 tab 不一致。故優先：
 
     1. stem_rag_unit_id > 0：由 Rag_Unit.rag_tab_id → Rag.rag_id
