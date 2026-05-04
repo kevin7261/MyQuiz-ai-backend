@@ -5,7 +5,7 @@ RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/for-exam：更新 Rag_Quiz.for_exam（body `for_exam` 預設 true；false 取消測驗用）。
 - GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
 - GET /rag/transcript/text、audio、youtube：自 Storage upload ZIP 讀取逐字稿。
-- GET /rag/unit/audio-file：自 upload ZIP 依單元資料夾回傳原始音訊 bytes（供 `<audio src>`；與 transcript/audio 相同之 rag_tab_id、folder_name）。
+- GET /rag/unit/mp3-file：自 upload ZIP 依單元資料夾回傳原始音訊 bytes（供 `<audio src>`；與 transcript/audio 相同之 rag_tab_id、folder_name）。
 - GET /rag/unit/youtube-url：自 upload ZIP 依 folder_name（單元資料夾）內唯一文字檔解析 YouTube 連結／video_id，回傳 `youtube_url`（語意對齊 `GET /rag/tab/unit/youtube-url` 存庫連結與 transcript/youtube 之解析規則，不依 rag_unit_id）。
 """
 
@@ -710,11 +710,11 @@ def rag_transcript_text(
 
 
 # ---------------------------------------------------------------------------
-# GET /rag/unit/audio-file
+# GET /rag/unit/mp3-file
 # ---------------------------------------------------------------------------
 
 
-@router.get("/unit/audio-file")
+@router.get("/unit/mp3-file")
 def rag_unit_audio_file(
     caller_person_id: PersonId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（upload ZIP 路徑）"),
@@ -764,7 +764,7 @@ def rag_unit_youtube_url(
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（upload ZIP 路徑）"),
     folder_name: str = Query(
         ...,
-        description="與 Rag_Unit.unit_name、upload ZIP 內單元資料夾名相同（與 GET /rag/transcript/youtube、GET /rag/unit/audio-file 一致）",
+        description="與 Rag_Unit.unit_name、upload ZIP 內單元資料夾名相同（與 GET /rag/transcript/youtube、GET /rag/unit/mp3-file 一致）",
     ),
 ):
     """
