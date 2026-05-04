@@ -52,6 +52,7 @@ from services.grading import (
     update_exam_quiz_with_grade,
 )
 from utils.datetime_utils import now_taipei_iso, to_taipei_iso
+from utils.http_transient_retry import call_with_transient_http_retry
 from utils.json_utils import to_json_safe
 from utils.llm_api_key_utils import get_llm_api_key
 from utils.rag_exam_setting import is_localhost_request, rag_id_from_rag_tab_id, resolve_exam_content_rag_id
@@ -281,7 +282,8 @@ def list_exams(
     ),
 ):
     """列出 Exam（deleted=false，person_id 篩選，local 篩選）。每筆 Exam 帶 units（依 unit_name 分群的 Exam_Quiz）。"""
-    try:
+
+    def _list_exams_once() -> ListExamResponse:
         local_filter = local if local is not None else is_localhost_request(request)
         data = exams_table_select(exclude_deleted=True, local_match=local_filter)
         pid = person_id.strip()
@@ -301,6 +303,9 @@ def list_exams(
 
         data = to_json_safe(data)
         return ListExamResponse(exams=data, count=len(data))
+
+    try:
+        return call_with_transient_http_retry(_list_exams_once)
     except Exception as e:
         _logger.exception("GET /exam/tabs 錯誤")
         raise HTTPException(status_code=500, detail=f"列出 Exam 失敗: {e!s}")
@@ -329,7 +334,8 @@ def list_rag_for_exams(
     - 單元：Rag_Unit.deleted=false 且（Rag_Unit.for_exam=true 或至少一筆 Rag_Quiz.for_exam=true 隸屬該 rag_unit_id）。
     - quizzes：僅 Rag_Quiz.for_exam=true 且 deleted=false。
     """
-    try:
+
+    def _list_rag_for_exams_once() -> ListRagForExamsResponse:
         supabase = get_supabase()
         local_filter = local if local is not None else is_localhost_request(request)
 
@@ -420,6 +426,9 @@ def list_rag_for_exams(
 
         out = to_json_safe(units)
         return ListRagForExamsResponse(units=out, count=len(out))
+
+    try:
+        return call_with_transient_http_retry(_list_rag_for_exams_once)
     except HTTPException:
         raise
     except Exception as e:
