@@ -68,16 +68,149 @@ def audio_media_type_for_suffix(suffix: str) -> str:
     return _suffix_to_content_type(suffix)
 
 
+def _deepgram_start_seconds_to_tag(start: Any) -> str:
+    """將 Deepgram utterance/word 的 start（秒）格式化成 ``[MM:SS]`` 或 ``[H:MM:SS]``。"""
+    try:
+        sec = float(start)
+    except (TypeError, ValueError):
+        sec = 0.0
+    if sec < 0:
+        sec = 0.0
+    h = int(sec // 3600)
+    rem = sec % 3600
+    m = int(rem // 60)
+    s = int(rem % 60)
+    if h > 0:
+        return f"[{h}:{m:02d}:{s:02d}]"
+    return f"[{m:02d}:{s:02d}]"
+
+
+def _transcript_from_deepgram_utterances(payload: dict[str, Any]) -> str | None:
+    raw = payload.get("results")
+    if not isinstance(raw, dict):
+        return None
+    utterances = raw.get("utterances")
+    if not isinstance(utterances, list) or not utterances:
+        return None
+    lines: list[str] = []
+    for u in utterances:
+        if not isinstance(u, dict):
+            continue
+        chunk = (u.get("transcript") or "").strip()
+        if not chunk:
+            words = u.get("words")
+            if isinstance(words, list):
+                chunk = _join_deepgram_word_tokens(words).strip()
+        if not chunk:
+            continue
+        lines.append(f"{_deepgram_start_seconds_to_tag(u.get('start'))} {chunk}")
+    out = "\n".join(lines).strip()
+    return out if out else None
+
+
+def _join_deepgram_word_tokens(words: list[Any]) -> str:
+    parts: list[str] = []
+    for w in words:
+        if not isinstance(w, dict):
+            continue
+        tok = (w.get("punctuated_word") or w.get("word") or "").strip()
+        if tok:
+            parts.append(tok)
+    return " ".join(parts)
+
+
+def _transcript_from_deepgram_paragraph_sentences(ch0: dict[str, Any]) -> str | None:
+    """備援：paragraphs=true 時 alternatives 內段落／句子的 start／text。"""
+    paras = ch0.get("paragraphs")
+    if not isinstance(paras, dict):
+        return None
+    blocks = paras.get("paragraphs")
+    if not isinstance(blocks, list) or not blocks:
+        return None
+    lines: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        sents = block.get("sentences")
+        if isinstance(sents, list):
+            for sent in sents:
+                if not isinstance(sent, dict):
+                    continue
+                t = (sent.get("text") or "").strip()
+                if not t:
+                    continue
+                lines.append(f"{_deepgram_start_seconds_to_tag(sent.get('start'))} {t}")
+        else:
+            t = (block.get("text") or "").strip()
+            if t:
+                lines.append(f"{_deepgram_start_seconds_to_tag(block.get('start'))} {t}")
+    out = "\n".join(lines).strip()
+    return out if out else None
+
+
+def _transcript_from_deepgram_words_by_pause(ch0: dict[str, Any], *, gap_sec: float = 0.85) -> str | None:
+    """備援：依字級時間與停頓切段（gap_sec 與 Deepgram utt_split 預設相近）。"""
+    words = ch0.get("words")
+    if not isinstance(words, list) or not words:
+        return None
+    lines: list[str] = []
+    buf: list[str] = []
+    line_start: float | None = None
+    prev_end: float | None = None
+
+    def flush() -> None:
+        nonlocal buf, line_start
+        if not buf:
+            return
+        tag = _deepgram_start_seconds_to_tag(line_start if line_start is not None else 0.0)
+        lines.append(f"{tag} {' '.join(buf)}")
+        buf = []
+        line_start = None
+
+    for w in words:
+        if not isinstance(w, dict):
+            continue
+        tok = (w.get("punctuated_word") or w.get("word") or "").strip()
+        if not tok:
+            continue
+        start_w = w.get("start")
+        try:
+            start_f = float(start_w) if start_w is not None else None
+        except (TypeError, ValueError):
+            start_f = None
+        end_w = w.get("end")
+        try:
+            end_f = float(end_w) if end_w is not None else start_f
+        except (TypeError, ValueError):
+            end_f = start_f
+
+        if line_start is None and start_f is not None:
+            line_start = start_f
+        if prev_end is not None and start_f is not None and (start_f - prev_end) >= gap_sec and buf:
+            flush()
+            line_start = start_f
+
+        buf.append(tok)
+        prev_end = end_f if end_f is not None else prev_end
+
+    flush()
+    out = "\n".join(lines).strip()
+    return out if out else None
+
+
 def transcribe_audio_bytes_deepgram(
     data: bytes,
     *,
     suffix: str,
     model: str | None = None,
     api_key: str | None = None,
+    with_timestamps: bool = False,
 ) -> tuple[str, float]:
     """
     以 Deepgram 預錄 API 轉錄音訊 bytes。
     回傳 (全文逐字稿, 耗時秒數)。
+    ``with_timestamps=True`` 時會啟用 utterances／punctuate／paragraphs，並優先依 utterances 輸出
+    每行 ``[MM:SS]`` 或 ``[H:MM:SS]`` 句首時間；無法分段時依段落句子、字級停頓備援；皆不可用时於全文前加上 ``[00:00]``。
     API Key 優先序：參數 api_key → 環境變數 DEEPGRAM_API_KEY。
     模型預設 nova-2，可覆寫 DEEPGRAM_MODEL。
     """
@@ -91,11 +224,16 @@ def transcribe_audio_bytes_deepgram(
         raise ValueError(f"不支援的 Deepgram model 名稱: {m!r}")
 
     ct = _suffix_to_content_type(suffix if suffix else ".mp3")
+    params: dict[str, str] = {"model": m}
+    if with_timestamps:
+        params["utterances"] = "true"
+        params["punctuate"] = "true"
+        params["paragraphs"] = "true"
     t0 = time.perf_counter()
     try:
         resp = requests.post(
             _DEEPGRAM_LISTEN_URL,
-            params={"model": m},
+            params=params,
             headers={
                 "Authorization": f"Token {k}",
                 "Content-Type": ct,
@@ -122,6 +260,21 @@ def transcribe_audio_bytes_deepgram(
     except (KeyError, IndexError, TypeError):
         logger.warning("Deepgram JSON 結構異常，略過 channels: keys=%s", list(payload.keys()))
         text = ""
+        ch0 = {}
+
+    if with_timestamps and text:
+        stamped = _transcript_from_deepgram_utterances(payload)
+        if not stamped and isinstance(ch0, dict):
+            stamped = _transcript_from_deepgram_paragraph_sentences(ch0)
+        if not stamped and isinstance(ch0, dict):
+            stamped = _transcript_from_deepgram_words_by_pause(ch0)
+        if stamped:
+            text = stamped
+        else:
+            text = f"{_deepgram_start_seconds_to_tag(0)} {text}"
+            logger.warning(
+                "Deepgram 已請求分段（utterances／paragraphs／words），仍無可用時間列；於全文前加上 [00:00]"
+            )
 
     return text, elapsed
 
@@ -303,9 +456,33 @@ def youtube_transcript_default_languages() -> list[str]:
     return ["en", "zh-Hant", "zh-TW", "zh-Hans", "zh-CN", "ja", "ko"]
 
 
-def youtube_transcript_plain_text(video_id: str, languages: list[str] | None = None) -> tuple[str, float]:
+def _youtube_transcript_entry_text_and_start(entry: Any) -> tuple[str, float]:
+    """自字幕項目取出正文（換行改空白）與起點秒數。"""
+    if isinstance(entry, dict):
+        raw_text = entry.get("text", "")
+        try:
+            start = float(entry.get("start", 0) or 0)
+        except (TypeError, ValueError):
+            start = 0.0
+    else:
+        raw_text = getattr(entry, "text", "")
+        try:
+            start = float(getattr(entry, "start", 0) or 0)
+        except (TypeError, ValueError):
+            start = 0.0
+    return str(raw_text).replace("\n", " ").strip(), start
+
+
+def youtube_transcript_plain_text(
+    video_id: str,
+    languages: list[str] | None = None,
+    *,
+    with_timestamps: bool = False,
+) -> tuple[str, float]:
     """
-    擷取 YouTube 字幕並併成單一純文字（與 Colab 範例一致：以空白連接各段）。
+    擷取 YouTube 字幕並併成單一字串。
+    ``with_timestamps=False``（預設）：各段以空白連接（與 Colab 範例一致）。
+    ``with_timestamps=True``：每行 ``[MM:SS]`` 或 ``[H:MM:SS]``（套件提供之 segment ``start``）+ 該段文字。
     回傳 (全文, 耗時秒數)。
 
     languages 為 None 或空串列時，使用 :func:`youtube_transcript_default_languages`。
@@ -320,17 +497,29 @@ def youtube_transcript_plain_text(video_id: str, languages: list[str] | None = N
         if hasattr(fetched, "to_raw_data"):
             transcript = fetched.to_raw_data()
         else:
-            transcript = [{"text": getattr(s, "text", "")} for s in fetched]
+            transcript = [
+                {"text": getattr(s, "text", ""), "start": float(getattr(s, "start", 0) or 0)}
+                for s in fetched
+            ]
     else:
         transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=langs)
 
-    texts: list[str] = []
-    for entry in transcript:
-        if isinstance(entry, dict):
-            text_content = entry.get("text", "")
-        else:
-            text_content = getattr(entry, "text", "")
-        texts.append(str(text_content).replace("\n", " "))
-    full_text = " ".join(texts).strip()
+    if with_timestamps:
+        lines: list[str] = []
+        for entry in transcript:
+            text_content, start_sec = _youtube_transcript_entry_text_and_start(entry)
+            if not text_content:
+                continue
+            lines.append(f"{_deepgram_start_seconds_to_tag(start_sec)} {text_content}")
+        full_text = "\n".join(lines).strip()
+    else:
+        texts: list[str] = []
+        for entry in transcript:
+            if isinstance(entry, dict):
+                text_content = entry.get("text", "")
+            else:
+                text_content = getattr(entry, "text", "")
+            texts.append(str(text_content).replace("\n", " "))
+        full_text = " ".join(texts).strip()
     elapsed = time.perf_counter() - t0
     return full_text, elapsed

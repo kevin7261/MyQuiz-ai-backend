@@ -4,7 +4,7 @@ RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/llm-grade：非同步 RAG+LLM 評分（body 以 rag_id 置頂；quiz_content 可空，自 Rag_Quiz 讀題幹）；回傳 202 + job_id，輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
 - POST /rag/tab/unit/quiz/for-exam：更新 Rag_Quiz.for_exam（body `for_exam` 預設 true；false 取消測驗用）。
 - GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
-- GET /rag/transcript/text、audio、youtube：自 Storage upload ZIP 讀取逐字稿。
+- GET /rag/transcript/text、audio（預設含句首時間標記；query ``with_timestamps=false`` 可改為純全文）、youtube（同上）：自 Storage upload ZIP 讀取逐字稿。
 - GET /rag/unit/mp3-file：自 upload ZIP 依單元資料夾回傳原始音訊 bytes（供 `<audio src>`）；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者。
 - GET /rag/unit/youtube-url：自 upload ZIP 依 folder_name 解析 YouTube 連結／video_id；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者；語意對齊存庫 transcript 規則，不依 rag_unit_id。
 """
@@ -802,8 +802,12 @@ def rag_transcript_audio(
         ...,
         description="ZIP 內單元資料夾名；該資料夾下須有音訊檔。若僅有文字檔（內含 YouTube 連結）請改呼叫 GET /rag/transcript/youtube",
     ),
+    with_timestamps: bool = Query(
+        True,
+        description="true（預設）：分段時間標記（utterances／段落／字級備援）；false：單段全文",
+    ),
 ):
-    """自 upload ZIP 內 folder_name 路徑找音訊檔，Deepgram 轉文字；markdown 僅為逐字稿正文。"""
+    """自 upload ZIP 內 folder_name 路徑找音訊檔，Deepgram 轉文字；預設 markdown 含句首時間標記。"""
     _require_rag_tab_owner(caller_person_id, rag_tab_id)
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
@@ -826,6 +830,7 @@ def rag_transcript_audio(
             contents,
             suffix=suffix or ".mp3",
             model=dg_model,
+            with_timestamps=with_timestamps,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
@@ -854,8 +859,12 @@ def rag_transcript_youtube(
         None,
         description="字幕語言代碼優先序，逗號分隔（如 en,zh-Hant）；未填則 YOUTUBE_TRANSCRIPT_LANGUAGES 或預設 en→中文→日韓",
     ),
+    with_timestamps: bool = Query(
+        True,
+        description="true（預設）：每行「[MM:SS]」字幕片段起點 + 文字；false：各段空白接成單段全文",
+    ),
 ):
-    """自 upload ZIP 內 folder_name 下唯一文字檔讀取連結，擷取字幕；markdown 僅為字幕合併文字。"""
+    """自 upload ZIP 內 folder_name 下唯一文字檔讀取連結，擷取字幕；預設含句首時間標記。"""
     _require_rag_tab_owner(caller_person_id, rag_tab_id)
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
@@ -878,7 +887,9 @@ def rag_transcript_youtube(
     )
 
     try:
-        text, _elapsed = youtube_transcript_plain_text(vid, languages=lang_list)
+        text, _elapsed = youtube_transcript_plain_text(
+            vid, languages=lang_list, with_timestamps=with_timestamps
+        )
         return RagTranscriptMarkdownResponse(markdown=(text or "").strip())
     except InvalidVideoId as e:
         raise HTTPException(status_code=400, detail=youtube_transcript_api_user_message(e)) from e
