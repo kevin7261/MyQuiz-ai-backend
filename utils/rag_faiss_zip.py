@@ -201,8 +201,8 @@ def process_zip_to_docs(
 def build_faiss_zip_from_docs(
     documents: list[Document],
     api_key: str,
-    chunk_size: int,
-    chunk_overlap: int,
+    rag_chunk_size: int,
+    rag_chunk_overlap: int,
 ) -> bytes:
     """
     將 Document 列表做切分、Embedding、FAISS 建索引，打包成 ZIP bytes 回傳。
@@ -213,8 +213,8 @@ def build_faiss_zip_from_docs(
         raise ValueError("無文件可處理")
 
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
+        chunk_size=rag_chunk_size,
+        chunk_overlap=rag_chunk_overlap,
     )
     split_docs = text_splitter.split_documents(documents)
 
@@ -239,8 +239,8 @@ def build_faiss_zip_from_docs(
 def make_rag_zip_from_zip_path(
     zip_path: Path,
     api_key: str,
-    chunk_size: int,
-    chunk_overlap: int,
+    rag_chunk_size: int,
+    rag_chunk_overlap: int,
     unit_type: int = UNIT_TYPE_DEFAULT,
 ) -> bytes:
     """
@@ -254,7 +254,10 @@ def make_rag_zip_from_zip_path(
         if not all_docs:
             raise ValueError(_empty_docs_user_message(unit_type))
         return build_faiss_zip_from_docs(
-            all_docs, api_key, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+            all_docs,
+            api_key,
+            rag_chunk_size=rag_chunk_size,
+            rag_chunk_overlap=rag_chunk_overlap,
         )
     finally:
         shutil.rmtree(tmp_extract, ignore_errors=True)

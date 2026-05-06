@@ -7,7 +7,7 @@ ZIP 與 RAG 相關 API 模組。
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
 - PUT /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除 Rag 及其 Rag_Unit，並刪除儲存（須傳 query person_id）
 - POST /rag/tab/upload-zip：上傳 ZIP
-- POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名；`.md`/`.txt` 內容 UTF-8 原文寫入 Rag_Unit.transcription，含 Markdown）；可選 body.build_faiss 覆寫；**chunk_size／chunk_overlap** 為全批預設，**chunk_sizes／chunk_overlaps**（逗號字串或 JSON 整數陣列）可與任務同序逐段覆寫；**unit_names**（逗號字串或 JSON 字串陣列）同序非空段覆寫 Rag_Unit.unit_name（顯示名）；**folder_combination** 恒為 repack ZIP 檔名 stem 寫入 DB（多資料夾為 ``folder1/tfolder2``，非底線 ``_``）；**unit_type≠1** 時寫入／回傳之 chunk 為 0；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
+- POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名；`.md`/`.txt` 內容 UTF-8 原文寫入 Rag_Unit.transcription，含 Markdown）；可選 body.build_faiss 覆寫；**rag_chunk_size／rag_chunk_overlap** 為全批預設，**rag_chunk_sizes／rag_chunk_overlaps**（逗號字串或 JSON 整數陣列）可與任務同序逐段覆寫；**unit_names**（逗號字串或 JSON 字串陣列）同序非空段覆寫 Rag_Unit.unit_name（顯示名）；**folder_combination** 恒為 repack ZIP 檔名 stem 寫入 DB（多資料夾為 ``folder1/tfolder2``，非底線 ``_``）；**unit_type≠1** 時寫入／回傳之 rag_chunk_size／rag_chunk_overlap 為 0；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
 - PUT /rag/tab/quiz/delete/{rag_quiz_id}：依 rag_quiz_id 軟刪除 Rag_Quiz（deleted=true；須為該列 person_id）
 - PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
 - GET /rag/tab/unit/mp3-file：query rag_tab_id、rag_unit_id（**不需** query person_id；後端依 rag_tab_id 自 Rag 解析擁有者）；僅 unit_type=3 時回傳音訊（優先該單元 **repack** ZIP；repack 缺漏時改讀該 tab 之 upload ZIP，與 GET /rag/unit/mp3-file 相同語意）
@@ -222,7 +222,7 @@ def _chunk_params_per_task(
     default_size: int,
     default_overlap: int,
 ) -> list[tuple[int, int]]:
-    """每個 repack 任務一組 (chunk_size, chunk_overlap)；CSV 缺段則用 default_*（經 clamp）。"""
+    """每個 repack 任務一組 (rag_chunk_size, rag_chunk_overlap)；CSV 缺段則用 default_*（經 clamp）。"""
     sz = _split_csv_optional_ints(sizes_csv, task_count)
     ov = _split_csv_optional_ints(overlaps_csv, task_count)
     d_sz, d_ov = _clamp_chunk_pair(default_size, default_overlap)
@@ -252,7 +252,7 @@ def _rag_default_row(
         "person_id": person_id if person_id is not None else "",
         "file_metadata": file_metadata,
     }
-    # rag_metadata／chunk_size 等欄位在 Rag_Unit 層管理，建立時不主動寫入以避免 schema 未同步時 500
+    # rag_metadata／rag_chunk_size 等欄位在 Rag_Unit 層管理，建立時不主動寫入以避免 schema 未同步時 500
     row["local"] = local
     row["deleted"] = False
     row["created_at"] = ts
@@ -274,10 +274,10 @@ def _rag_unit_default_row(
     text_file_name: str = "",
     mp3_file_name: str = "",
     youtube_url: str = "",
-    chunk_size: int = 1000,
-    chunk_overlap: int = 200,
+    rag_chunk_size: int = 1000,
+    rag_chunk_overlap: int = 200,
 ) -> dict[str, Any]:
-    """Rag_Unit 表一筆新增時的預設欄位（含 chunk_size／chunk_overlap，與 build-rag-zip 向量分段一致）。"""
+    """Rag_Unit 表一筆新增時的預設欄位（含 rag_chunk_size／rag_chunk_overlap，與 build-rag-zip 向量分段一致）。"""
     ts = now_taipei_iso()
     return {
         "rag_tab_id": rag_tab_id,
@@ -285,8 +285,8 @@ def _rag_unit_default_row(
         "unit_name": unit_name,
         "folder_combination": folder_combination,
         "unit_type": unit_type,
-        "chunk_size": int(chunk_size),
-        "chunk_overlap": int(chunk_overlap),
+        "rag_chunk_size": int(rag_chunk_size),
+        "rag_chunk_overlap": int(rag_chunk_overlap),
         "repack_file_name": repack_file_name,
         "rag_file_name": rag_file_name,
         "rag_file_size": rag_file_size,
@@ -394,25 +394,25 @@ class UpdateRagUnitNameRequest(BaseModel):
 class PackRequest(BaseModel):
     """
     rag_tab_id、person_id、unit_list。
-    chunk_size／chunk_overlap：全批預設（寫入 Rag_Unit、建 FAISS 時用）。
-    chunk_sizes／chunk_overlaps：可選逗號字串或整數陣列（JSON），與 unit_list 解出之任務數同序；某段空白則該段用 chunk_size／chunk_overlap。
+    rag_chunk_size／rag_chunk_overlap：全批預設（寫入 Rag_Unit、建 FAISS 時用）。
+    rag_chunk_sizes／rag_chunk_overlaps：可選逗號字串或整數陣列（JSON），與 unit_list 解出之任務數同序；某段空白則該段用 rag_chunk_size／rag_chunk_overlap。
     unit_names：可選逗號字串或字串陣列（JSON），與任務同序；某段 strip 後非空則覆寫該單元 Rag_Unit.unit_name（顯示名），空白則與 folder_combination 相同（皆為檔名 stem）。
     """
     rag_tab_id: str
     person_id: str
     unit_list: str  # 指定要打包的資料夾；例："220222+220301"（加號=同一 ZIP 多資料夾）；結果存入 Rag_Unit 表
-    chunk_size: int = 1000
-    chunk_overlap: int = 200
-    chunk_sizes: str = Field(
+    rag_chunk_size: int = 1000
+    rag_chunk_overlap: int = 200
+    rag_chunk_sizes: str = Field(
         "",
-        description="可選；逗號字串或 [1000,800] 陣列，與 packed 任務同序；空段→該任務用 chunk_size",
+        description="可選；逗號字串或 [1000,800] 陣列，與 packed 任務同序；空段→該任務用 rag_chunk_size",
     )
-    chunk_overlaps: str = Field(
+    rag_chunk_overlaps: str = Field(
         "",
-        description="可選；逗號字串或 [200,100] 陣列，與 packed 任務同序；空段→該任務用 chunk_overlap",
+        description="可選；逗號字串或 [200,100] 陣列，與 packed 任務同序；空段→該任務用 rag_chunk_overlap",
     )
 
-    @field_validator("chunk_sizes", "chunk_overlaps", mode="before")
+    @field_validator("rag_chunk_sizes", "rag_chunk_overlaps", mode="before")
     @classmethod
     def _coerce_chunk_segments_csv(cls, v: Any) -> str:
         """相容前端傳 JSON 陣列；統一成逗號字串供 _chunk_params_per_task 解析。"""
@@ -567,8 +567,8 @@ def _build_one_rag_zip_output_item(
     *,
     do_rag: bool = True,
     unit_type: int = RAG_UNIT_TYPE_DEFAULT,
-    task_chunk_size: int,
-    task_chunk_overlap: int,
+    task_rag_chunk_size: int,
+    task_rag_chunk_overlap: int,
     transcript_override: str | None = None,
 ) -> dict[str, Any]:
     """
@@ -579,7 +579,7 @@ def _build_one_rag_zip_output_item(
     do_rag 為 False 且無法推斷時：將與 repack 相同內容複製至 rag（rag_mode=repack_copy），transcription 為空。
     註：bucket 內檔名仍為 stem_rag.zip；請看 output.rag_mode。
     回傳與 build-rag-zip outputs[] 單筆相同結構；失敗時含 rag_error。
-    每筆皆含 **folder_combination**（檔名 stem，寫入 Rag_Unit.folder_combination）、**unit_name**（顯示名，可經請求 unit_names 覆寫）、chunk_size／chunk_overlap（本任務實際使用，供寫入 Rag_Unit）。
+    每筆皆含 **folder_combination**（檔名 stem，寫入 Rag_Unit.folder_combination）、**unit_name**（顯示名，可經請求 unit_names 覆寫）、rag_chunk_size／rag_chunk_overlap（本任務實際使用，供寫入 Rag_Unit）。
     """
     repack_tab_id = repack_zip_stem_from_filename(filename) if filename else None
     if not repack_tab_id or "\\" in repack_tab_id:
@@ -599,8 +599,8 @@ def _build_one_rag_zip_output_item(
             "text_file_name": "",
             "mp3_file_name": "",
             "youtube_url": "",
-            "chunk_size": int(task_chunk_size),
-            "chunk_overlap": int(task_chunk_overlap),
+            "rag_chunk_size": int(task_rag_chunk_size),
+            "rag_chunk_overlap": int(task_rag_chunk_overlap),
         }
         if effective_ut != unit_type:
             item_zip["unit_type_declared"] = unit_type
@@ -676,8 +676,8 @@ def _build_one_rag_zip_output_item(
             "rag_filename": f"{repack_tab_id}_rag.zip",
             "unit_type": unit_type,
             "rag_mode": "faiss",
-            "chunk_size": int(task_chunk_size),
-            "chunk_overlap": int(task_chunk_overlap),
+            "rag_chunk_size": int(task_rag_chunk_size),
+            "rag_chunk_overlap": int(task_rag_chunk_overlap),
         }
         rag_bytes_out: bytes | None = None
         try:
@@ -703,8 +703,8 @@ def _build_one_rag_zip_output_item(
                 rag_bytes_out = make_rag_zip_from_zip_path(
                     repack_local,
                     api_key,
-                    chunk_size=task_chunk_size,
-                    chunk_overlap=task_chunk_overlap,
+                    rag_chunk_size=task_rag_chunk_size,
+                    rag_chunk_overlap=task_rag_chunk_overlap,
                     unit_type=unit_type,
                 )
             finally:
@@ -793,10 +793,12 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
             if unit_type_val == RAG_UNIT_TYPE_YOUTUBE:
                 yt_url = output.get("youtube_url") or ""
         try:
-            cs_out = int(output.get("chunk_size", body.chunk_size))
-            co_out = int(output.get("chunk_overlap", body.chunk_overlap))
+            cs_raw = output.get("rag_chunk_size", output.get("chunk_size", body.rag_chunk_size))
+            co_raw = output.get("rag_chunk_overlap", output.get("chunk_overlap", body.rag_chunk_overlap))
+            cs_out = int(cs_raw)
+            co_out = int(co_raw)
         except (TypeError, ValueError):
-            cs_out, co_out = _clamp_chunk_pair(body.chunk_size, body.chunk_overlap)
+            cs_out, co_out = _clamp_chunk_pair(body.rag_chunk_size, body.rag_chunk_overlap)
         else:
             cs_out, co_out = _clamp_chunk_pair(cs_out, co_out)
         fc = (output.get("folder_combination") or "").strip() or (output.get("unit_name") or "").strip()
@@ -813,8 +815,8 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
             text_file_name=text_fn,
             mp3_file_name=mp3_fn,
             youtube_url=yt_url,
-            chunk_size=cs_out,
-            chunk_overlap=co_out,
+            rag_chunk_size=cs_out,
+            rag_chunk_overlap=co_out,
         )
         try:
             supabase.table("Rag_Unit").insert(unit_row).execute()
@@ -1178,7 +1180,7 @@ def build_rag_zip(
     事件列舉（每行一個物件）：
     - `{"type":"start","total":N,"source_rag_tab_id":"...","unit_list":"...","user_type":int,"build_faiss_request":bool|null,"repack_only":bool,"allow_faiss":bool}`（allow_faiss=各 unit 是否可建 FAISS，仍需 unit_type==1 才實際建）
     - `{"type":"building","index":i,"total":N,"completed_before":i-1,"filename":"..."}`
-    - `{"type":"unit",...,"output":{...}}`：output 含 **folder_combination**（單元 repack ZIP 檔名 stem，寫入 Rag_Unit.folder_combination；多資料夾為 ``folder1/tfolder2``）、**unit_name**（顯示名，可經 unit_names 覆寫）、rag_mode（`faiss`＝向量庫；`transcript_md`＝逐字稿 md ZIP；`repack_copy`＝與 repack 同內容複製）、`transcript_plain`（鍵名沿用舊版；**unit_type=2 且來源為 .md/.txt 時為檔案 UTF-8 全文，Markdown 原樣**，與寫入 Rag_Unit.transcription 一致）；**text_file_name** 僅 **unit_type=2** 有值（來源文字檔檔名）；**mp3_file_name** 僅 3；**youtube_url** 僅 4；**chunk_size**、**chunk_overlap**（本任務實際使用，與 Rag_Unit 一致）；rag_filename（物件鍵仍為 *_rag.zip）
+    - `{"type":"unit",...,"output":{...}}`：output 含 **folder_combination**（單元 repack ZIP 檔名 stem，寫入 Rag_Unit.folder_combination；多資料夾為 ``folder1/tfolder2``）、**unit_name**（顯示名，可經 unit_names 覆寫）、rag_mode（`faiss`＝向量庫；`transcript_md`＝逐字稿 md ZIP；`repack_copy`＝與 repack 同內容複製）、`transcript_plain`（鍵名沿用舊版；**unit_type=2 且來源為 .md/.txt 時為檔案 UTF-8 全文，Markdown 原樣**，與寫入 Rag_Unit.transcription 一致）；**text_file_name** 僅 **unit_type=2** 有值（來源文字檔檔名）；**mp3_file_name** 僅 3；**youtube_url** 僅 4；**rag_chunk_size**、**rag_chunk_overlap**（本任務實際使用，與 Rag_Unit 一致）；rag_filename（物件鍵仍為 *_rag.zip）
     - `{"type":"complete","success":bool,"total","built_ok","built_failed","source_rag_tab_id","unit_list","outputs"}`
 
     串流階段 HTTP 狀態碼固定 **200**；請以最後一則 `type===complete` 的 `success` 判斷整批成敗。
@@ -1233,11 +1235,11 @@ def build_rag_zip(
     total = len(packed)
     unit_types_per_task = _unit_types_per_task(body.unit_types, total)
     chunk_pairs = _chunk_params_per_task(
-        body.chunk_sizes,
-        body.chunk_overlaps,
+        body.rag_chunk_sizes,
+        body.rag_chunk_overlaps,
         total,
-        body.chunk_size,
-        body.chunk_overlap,
+        body.rag_chunk_size,
+        body.rag_chunk_overlap,
     )
     unit_name_overrides = _unit_name_overrides_per_task(body.unit_names, total)
 
@@ -1290,8 +1292,8 @@ def build_rag_zip(
                     filename,
                     do_rag=_do_rag_for_unit(ut),
                     unit_type=ut,
-                    task_chunk_size=t_cs,
-                    task_chunk_overlap=t_co,
+                    task_rag_chunk_size=t_cs,
+                    task_rag_chunk_overlap=t_co,
                     transcript_override=transcript_override,
                 )
                 name_ov = unit_name_overrides[idx] if idx < len(unit_name_overrides) else None
@@ -1302,8 +1304,8 @@ def build_rag_zip(
                 except (TypeError, ValueError):
                     ut_out = 0
                 if ut_out != RAG_UNIT_TYPE_RAG:
-                    item["chunk_size"] = 0
-                    item["chunk_overlap"] = 0
+                    item["rag_chunk_size"] = 0
+                    item["rag_chunk_overlap"] = 0
                 outputs.append(item)
                 yield (
                     json.dumps(

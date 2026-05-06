@@ -794,19 +794,19 @@ def exam_llm_generate_quiz(request: Request, body: ExamLlmGenerateQuizRequest, c
 
         _cols_full = (
             "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, chunk_size, chunk_overlap, transcription"
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcription"
         )
         _cols_no_tr = (
             "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, chunk_size, chunk_overlap"
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap"
         )
         _cols_no_fc = (
             "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, chunk_size, chunk_overlap, transcription"
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcription"
         )
         _cols_min = (
             "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, chunk_size, chunk_overlap"
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap"
         )
         try:
             unit_q = _unit_q_select(_cols_full)
@@ -1055,19 +1055,19 @@ async def exam_grade_submission(
 
         _gcols_full = (
             "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, chunk_size, chunk_overlap, transcription"
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcription"
         )
         _gcols_no_tr = (
             "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, chunk_size, chunk_overlap"
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap"
         )
         _gcols_no_fc = (
             "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, chunk_size, chunk_overlap, transcription"
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcription"
         )
         _gcols_min = (
             "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, chunk_size, chunk_overlap"
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap"
         )
         try:
             unit_sel = _grade_unit_sel(_gcols_full)
