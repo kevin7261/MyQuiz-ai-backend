@@ -1,7 +1,5 @@
 """
 系統設定相關 API 模組。
-- GET /system-settings/course-name：取得 course_name（key=course_name）。
-- PUT /system-settings/course-name：寫入 course_name。
 - GET /system-settings/person_analysis_user_prompt_text：取得 person_analysis_user_prompt_text（key=person_analysis_user_prompt_text）；須為有效登入使用者（不限 user_type）。
 - PUT /system-settings/person_analysis_user_prompt_text：寫入 person_analysis_user_prompt_text；僅 user_type 1／2。
 
@@ -23,7 +21,6 @@ ACTIVE_USER_DELETED_FILTER = "deleted.eq.false,deleted.is.null"
 
 router = APIRouter(prefix="/system-settings", tags=["system-settings"])
 
-SYSTEM_SETTING_COURSE_NAME_KEY = "course_name"
 SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY = "person_analysis_user_prompt_text"
 SYSTEM_SETTING_COLUMNS = "system_setting_id, key, value"
 
@@ -68,17 +65,6 @@ def _require_developer_or_manager_for_person_analysis_prompt_write(person_id: st
         raise HTTPException(status_code=403, detail="僅開發者或管理者可變更分析報告規則")
 
 
-class CourseNameResponse(BaseModel):
-    """GET/PUT /system-settings/course-name 回應。"""
-    system_setting_id: Optional[int] = None
-    course_name: Optional[str] = None
-
-
-class PutCourseNameRequest(BaseModel):
-    """PUT /system-settings/course-name 的 body。"""
-    course_name: str = Field(..., description="課程名稱")
-
-
 class PersonAnalysisUserPromptTextResponse(BaseModel):
     """GET/PUT /system-settings/person_analysis_user_prompt_text 回應。"""
     system_setting_id: Optional[int] = None
@@ -88,31 +74,6 @@ class PersonAnalysisUserPromptTextResponse(BaseModel):
 class PutPersonAnalysisUserPromptTextRequest(BaseModel):
     """PUT /system-settings/person_analysis_user_prompt_text 的 body。"""
     person_analysis_user_prompt_text: str = Field(..., description="個人分析使用者 Prompt 文字")
-
-
-@router.get("/course-name", response_model=CourseNameResponse)
-def get_course_name_setting(_person_id: PersonId):
-    """取得 course_name（System_Setting key=course_name）。"""
-    try:
-        supabase = get_supabase()
-        resp = (
-            supabase.table("System_Setting")
-            .select(SYSTEM_SETTING_COLUMNS)
-            .eq("key", SYSTEM_SETTING_COURSE_NAME_KEY)
-            .limit(1)
-            .execute()
-        )
-        if not resp.data or len(resp.data) == 0:
-            return CourseNameResponse()
-        row = resp.data[0]
-        return CourseNameResponse(
-            system_setting_id=row.get("system_setting_id"),
-            course_name=row.get("value"),
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/person_analysis_user_prompt_text", response_model=PersonAnalysisUserPromptTextResponse)
@@ -174,25 +135,6 @@ def _upsert_setting_and_get_row(supabase, key: str, value: str):
     if not resp2.data or len(resp2.data) == 0:
         return None
     return resp2.data[0]
-
-
-@router.put("/course-name", response_model=CourseNameResponse)
-def put_course_name_setting(body: PutCourseNameRequest, _person_id: PersonId):
-    """寫入 course_name（System_Setting key=course_name）。"""
-    value_to_save = (body.course_name or "").strip() or ""
-    try:
-        supabase = get_supabase()
-        row = _upsert_setting_and_get_row(supabase, SYSTEM_SETTING_COURSE_NAME_KEY, value_to_save)
-        if not row:
-            return CourseNameResponse(course_name=value_to_save or None)
-        return CourseNameResponse(
-            system_setting_id=row.get("system_setting_id"),
-            course_name=row.get("value"),
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/person_analysis_user_prompt_text", response_model=PersonAnalysisUserPromptTextResponse)
