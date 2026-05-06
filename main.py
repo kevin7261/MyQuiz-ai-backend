@@ -47,11 +47,15 @@ app = FastAPI(title="MyQuiz.ai_backend")
 # 請用對應的 GET .../grade-result/{job_id} 輪詢結果；
 # 若出現 502 表示 Render 代理逾時（約 30 秒），回應不帶 CORS 標頭。
 
+# localhost／127.0.0.1 的 8080–8086（Vue CLI／webpack 等常見本機埠）
+_cors_local_808x = [
+    u
+    for p in range(8080, 8087)
+    for u in (f"http://localhost:{p}", f"http://127.0.0.1:{p}")
+]
+
 _cors_base = [
-    "http://localhost:8080",        # Vue CLI／webpack 常見埠
-    "http://127.0.0.1:8080",
-    "http://localhost:8081",
-    "http://127.0.0.1:8081",
+    *_cors_local_808x,
     "http://localhost:5173",        # Vite 預設埠
     "http://127.0.0.1:5173",
     "http://localhost:4173",        # vite preview
