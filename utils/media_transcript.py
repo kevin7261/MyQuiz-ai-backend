@@ -85,14 +85,89 @@ def _deepgram_start_seconds_to_tag(start: Any) -> str:
     return f"[{m:02d}:{s:02d}]"
 
 
-def _transcript_from_deepgram_utterances(payload: dict[str, Any]) -> str | None:
+def resolve_timestamp_merge_seconds(explicit: float | None) -> float:
+    """
+    時間標記合併間隔（秒）。
+    ``explicit`` 有傳（含 ``0``）時優先；否則讀環境變數 ``TRANSCRIPT_TIMESTAMP_MERGE_SECONDS``；
+    皆無效時預設 ``10``（約每 10 秒一個標記；片段過長會於時間窗前切段）。
+    ``0`` 表示不合併（維持字幕／utterance 原始粒度）。
+    """
+    if explicit is not None:
+        try:
+            return max(0.0, float(explicit))
+        except (TypeError, ValueError):
+            return 10.0
+    raw = (os.environ.get("TRANSCRIPT_TIMESTAMP_MERGE_SECONDS") or "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            pass
+    return 10.0
+
+
+def merge_transcript_segments_by_interval(
+    segments: list[tuple[float, str]],
+    interval_sec: float,
+) -> list[tuple[float, str]]:
+    """依時間將連續片段合併為較長區塊；``interval_sec <= 0`` 時不改變順序與粒度。"""
+    cleaned: list[tuple[float, str]] = []
+    for start_any, text_any in segments:
+        try:
+            start_f = float(start_any)
+        except (TypeError, ValueError):
+            start_f = 0.0
+        piece = (text_any or "").strip()
+        if not piece:
+            continue
+        cleaned.append((start_f, piece))
+    cleaned.sort(key=lambda x: x[0])
+    if interval_sec <= 0 or len(cleaned) <= 1:
+        return cleaned
+
+    merged: list[tuple[float, str]] = []
+    anchor: float | None = None
+    buf: list[str] = []
+
+    def flush() -> None:
+        nonlocal anchor, buf
+        if anchor is None or not buf:
+            anchor = None
+            buf = []
+            return
+        merged.append((anchor, " ".join(buf)))
+        anchor = None
+        buf = []
+
+    for start_f, piece in cleaned:
+        if anchor is None:
+            anchor = start_f
+            buf = [piece]
+            continue
+        if start_f >= anchor + interval_sec and buf:
+            flush()
+            anchor = start_f
+            buf = [piece]
+        else:
+            buf.append(piece)
+    flush()
+    return merged
+
+
+def format_timestamp_segments(segments: list[tuple[float, str]]) -> str:
+    """將 ``(秒起點, 正文)`` 列格式化為多行 ``[MM:SS] text``。"""
+    lines = [f"{_deepgram_start_seconds_to_tag(s)} {t}" for s, t in segments]
+    return "\n".join(lines).strip()
+
+
+def _deepgram_segments_from_utterances(payload: dict[str, Any]) -> list[tuple[float, str]] | None:
     raw = payload.get("results")
     if not isinstance(raw, dict):
         return None
     utterances = raw.get("utterances")
     if not isinstance(utterances, list) or not utterances:
         return None
-    lines: list[str] = []
+    out: list[tuple[float, str]] = []
     for u in utterances:
         if not isinstance(u, dict):
             continue
@@ -103,8 +178,11 @@ def _transcript_from_deepgram_utterances(payload: dict[str, Any]) -> str | None:
                 chunk = _join_deepgram_word_tokens(words).strip()
         if not chunk:
             continue
-        lines.append(f"{_deepgram_start_seconds_to_tag(u.get('start'))} {chunk}")
-    out = "\n".join(lines).strip()
+        try:
+            st = float(u.get("start", 0) or 0)
+        except (TypeError, ValueError):
+            st = 0.0
+        out.append((st, chunk))
     return out if out else None
 
 
@@ -119,7 +197,7 @@ def _join_deepgram_word_tokens(words: list[Any]) -> str:
     return " ".join(parts)
 
 
-def _transcript_from_deepgram_paragraph_sentences(ch0: dict[str, Any]) -> str | None:
+def _deepgram_segments_from_paragraph_sentences(ch0: dict[str, Any]) -> list[tuple[float, str]] | None:
     """備援：paragraphs=true 時 alternatives 內段落／句子的 start／text。"""
     paras = ch0.get("paragraphs")
     if not isinstance(paras, dict):
@@ -127,7 +205,7 @@ def _transcript_from_deepgram_paragraph_sentences(ch0: dict[str, Any]) -> str | 
     blocks = paras.get("paragraphs")
     if not isinstance(blocks, list) or not blocks:
         return None
-    lines: list[str] = []
+    out: list[tuple[float, str]] = []
     for block in blocks:
         if not isinstance(block, dict):
             continue
@@ -139,21 +217,29 @@ def _transcript_from_deepgram_paragraph_sentences(ch0: dict[str, Any]) -> str | 
                 t = (sent.get("text") or "").strip()
                 if not t:
                     continue
-                lines.append(f"{_deepgram_start_seconds_to_tag(sent.get('start'))} {t}")
+                try:
+                    st = float(sent.get("start", 0) or 0)
+                except (TypeError, ValueError):
+                    st = 0.0
+                out.append((st, t))
         else:
             t = (block.get("text") or "").strip()
-            if t:
-                lines.append(f"{_deepgram_start_seconds_to_tag(block.get('start'))} {t}")
-    out = "\n".join(lines).strip()
+            if not t:
+                continue
+            try:
+                st = float(block.get("start", 0) or 0)
+            except (TypeError, ValueError):
+                st = 0.0
+            out.append((st, t))
     return out if out else None
 
 
-def _transcript_from_deepgram_words_by_pause(ch0: dict[str, Any], *, gap_sec: float = 0.85) -> str | None:
+def _deepgram_segments_from_words_by_pause(ch0: dict[str, Any], *, gap_sec: float = 0.85) -> list[tuple[float, str]] | None:
     """備援：依字級時間與停頓切段（gap_sec 與 Deepgram utt_split 預設相近）。"""
     words = ch0.get("words")
     if not isinstance(words, list) or not words:
         return None
-    lines: list[str] = []
+    segments: list[tuple[float, str]] = []
     buf: list[str] = []
     line_start: float | None = None
     prev_end: float | None = None
@@ -162,8 +248,8 @@ def _transcript_from_deepgram_words_by_pause(ch0: dict[str, Any], *, gap_sec: fl
         nonlocal buf, line_start
         if not buf:
             return
-        tag = _deepgram_start_seconds_to_tag(line_start if line_start is not None else 0.0)
-        lines.append(f"{tag} {' '.join(buf)}")
+        st = line_start if line_start is not None else 0.0
+        segments.append((st, " ".join(buf)))
         buf = []
         line_start = None
 
@@ -194,8 +280,7 @@ def _transcript_from_deepgram_words_by_pause(ch0: dict[str, Any], *, gap_sec: fl
         prev_end = end_f if end_f is not None else prev_end
 
     flush()
-    out = "\n".join(lines).strip()
-    return out if out else None
+    return segments if segments else None
 
 
 def transcribe_audio_bytes_deepgram(
@@ -205,12 +290,15 @@ def transcribe_audio_bytes_deepgram(
     model: str | None = None,
     api_key: str | None = None,
     with_timestamps: bool = False,
+    timestamp_merge_seconds: float | None = None,
 ) -> tuple[str, float]:
     """
     以 Deepgram 預錄 API 轉錄音訊 bytes。
     回傳 (全文逐字稿, 耗時秒數)。
     ``with_timestamps=True`` 時會啟用 utterances／punctuate／paragraphs，並優先依 utterances 輸出
-    每行 ``[MM:SS]`` 或 ``[H:MM:SS]`` 句首時間；無法分段時依段落句子、字級停頓備援；皆不可用时於全文前加上 ``[00:00]``。
+    含時間之段落；再以 :func:`resolve_timestamp_merge_seconds` 依時間窗合併（預設約每 10 秒一標）。
+    ``timestamp_merge_seconds=0`` 表示不按時間窗合併（維持 utterance／句級粒度；即「一段一標」）。
+    無法分段時依段落句子、字級停頓備援；皆不可用時於全文前加上 ``[00:00]``。
     API Key 優先序：參數 api_key → 環境變數 DEEPGRAM_API_KEY。
     模型預設 nova-2，可覆寫 DEEPGRAM_MODEL。
     """
@@ -263,13 +351,16 @@ def transcribe_audio_bytes_deepgram(
         ch0 = {}
 
     if with_timestamps and text:
-        stamped = _transcript_from_deepgram_utterances(payload)
-        if not stamped and isinstance(ch0, dict):
-            stamped = _transcript_from_deepgram_paragraph_sentences(ch0)
-        if not stamped and isinstance(ch0, dict):
-            stamped = _transcript_from_deepgram_words_by_pause(ch0)
-        if stamped:
-            text = stamped
+        merge_sec = resolve_timestamp_merge_seconds(timestamp_merge_seconds)
+        segments: list[tuple[float, str]] | None = None
+        segments = _deepgram_segments_from_utterances(payload)
+        if not segments and isinstance(ch0, dict):
+            segments = _deepgram_segments_from_paragraph_sentences(ch0)
+        if not segments and isinstance(ch0, dict):
+            segments = _deepgram_segments_from_words_by_pause(ch0)
+        if segments:
+            segments = merge_transcript_segments_by_interval(segments, merge_sec)
+            text = format_timestamp_segments(segments)
         else:
             text = f"{_deepgram_start_seconds_to_tag(0)} {text}"
             logger.warning(
@@ -478,11 +569,14 @@ def youtube_transcript_plain_text(
     languages: list[str] | None = None,
     *,
     with_timestamps: bool = False,
+    timestamp_merge_seconds: float | None = None,
 ) -> tuple[str, float]:
     """
     擷取 YouTube 字幕並併成單一字串。
     ``with_timestamps=False``（預設）：各段以空白連接（與 Colab 範例一致）。
-    ``with_timestamps=True``：每行 ``[MM:SS]`` 或 ``[H:MM:SS]``（套件提供之 segment ``start``）+ 該段文字。
+    ``with_timestamps=True``：依各字幕片段 ``start`` 輸出時間標記；再以
+    :func:`resolve_timestamp_merge_seconds` 合併相近片段（預設約每 10 秒一個標記）。
+    ``timestamp_merge_seconds=0`` 表示維持每一字幕片段一行。
     回傳 (全文, 耗時秒數)。
 
     languages 為 None 或空串列時，使用 :func:`youtube_transcript_default_languages`。
@@ -505,13 +599,15 @@ def youtube_transcript_plain_text(
         transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=langs)
 
     if with_timestamps:
-        lines: list[str] = []
+        segments: list[tuple[float, str]] = []
         for entry in transcript:
             text_content, start_sec = _youtube_transcript_entry_text_and_start(entry)
             if not text_content:
                 continue
-            lines.append(f"{_deepgram_start_seconds_to_tag(start_sec)} {text_content}")
-        full_text = "\n".join(lines).strip()
+            segments.append((start_sec, text_content))
+        merge_sec = resolve_timestamp_merge_seconds(timestamp_merge_seconds)
+        segments = merge_transcript_segments_by_interval(segments, merge_sec)
+        full_text = format_timestamp_segments(segments)
     else:
         texts: list[str] = []
         for entry in transcript:

@@ -4,7 +4,7 @@ RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/llm-grade：非同步 RAG+LLM 評分（body 以 rag_id 置頂；quiz_content 可空，自 Rag_Quiz 讀題幹）；回傳 202 + job_id，輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
 - POST /rag/tab/unit/quiz/for-exam：更新 Rag_Quiz.for_exam（body `for_exam` 預設 true；false 取消測驗用）。
 - GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
-- GET /rag/transcript/text、audio（預設含句首時間標記；query ``with_timestamps=false`` 可改為純全文）、youtube（同上）：自 Storage upload ZIP 讀取逐字稿。
+- GET /rag/transcript/text、audio／youtube：`with_timestamps` 預設 true；``timestamp_merge_seconds`` 控制標記稀疏度（預設約每 10 秒一標；``0``＝每一段／字幕一行，最密）。
 - GET /rag/unit/mp3-file：自 upload ZIP 依單元資料夾回傳原始音訊 bytes（供 `<audio src>`）；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者。
 - GET /rag/unit/youtube-url：自 upload ZIP 依 folder_name 解析 YouTube 連結／video_id；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者；語意對齊存庫 transcript 規則，不依 rag_unit_id。
 """
@@ -806,8 +806,16 @@ def rag_transcript_audio(
         True,
         description="true（預設）：分段時間標記（utterances／段落／字級備援）；false：單段全文",
     ),
+    timestamp_merge_seconds: float | None = Query(
+        None,
+        ge=0,
+        description=(
+            "時間標記合併間隔（秒）：未傳時預設約 10（約每 10 秒或累積一段再換標），或由環境變數 TRANSCRIPT_TIMESTAMP_MERGE_SECONDS；"
+            "0＝不按時間窗合併（一句／一 utterance／一字幕片段一行）；僅 with_timestamps=true 時生效"
+        ),
+    ),
 ):
-    """自 upload ZIP 內 folder_name 路徑找音訊檔，Deepgram 轉文字；預設 markdown 含句首時間標記。"""
+    """自 upload ZIP 內 folder_name 路徑找音訊檔，Deepgram 轉文字；預設 markdown 含較稀疏的句首時間標記。"""
     _require_rag_tab_owner(caller_person_id, rag_tab_id)
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
@@ -831,6 +839,7 @@ def rag_transcript_audio(
             suffix=suffix or ".mp3",
             model=dg_model,
             with_timestamps=with_timestamps,
+            timestamp_merge_seconds=timestamp_merge_seconds,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
@@ -861,10 +870,18 @@ def rag_transcript_youtube(
     ),
     with_timestamps: bool = Query(
         True,
-        description="true（預設）：每行「[MM:SS]」字幕片段起點 + 文字；false：各段空白接成單段全文",
+        description="true（預設）：含時間標記；false：各段空白接成單段全文",
+    ),
+    timestamp_merge_seconds: float | None = Query(
+        None,
+        ge=0,
+        description=(
+            "時間標記合併間隔（秒）：未傳時預設約 10，或由環境變數 TRANSCRIPT_TIMESTAMP_MERGE_SECONDS；"
+            "0＝每一字幕片段一行；僅 with_timestamps=true 時生效"
+        ),
     ),
 ):
-    """自 upload ZIP 內 folder_name 下唯一文字檔讀取連結，擷取字幕；預設含句首時間標記。"""
+    """自 upload ZIP 內 folder_name 下唯一文字檔讀取連結，擷取字幕；預設為較稀疏的時間標記。"""
     _require_rag_tab_owner(caller_person_id, rag_tab_id)
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
@@ -888,7 +905,10 @@ def rag_transcript_youtube(
 
     try:
         text, _elapsed = youtube_transcript_plain_text(
-            vid, languages=lang_list, with_timestamps=with_timestamps
+            vid,
+            languages=lang_list,
+            with_timestamps=with_timestamps,
+            timestamp_merge_seconds=timestamp_merge_seconds,
         )
         return RagTranscriptMarkdownResponse(markdown=(text or "").strip())
     except InvalidVideoId as e:
