@@ -25,3 +25,8 @@ env/
 
 # 上傳暫存（後端儲存的 ZIP）
 storage/
+
+# YouTube 字幕多代理清單（含帳密；範例見 youtube_transcript_proxies.example.txt）
+youtube_transcript_proxies.txt
+# 本地產生、供複製到 Render 的單行值（勿提交）
+render_YOUTUBE_TRANSCRIPT_PROXY_LIST.value.txt

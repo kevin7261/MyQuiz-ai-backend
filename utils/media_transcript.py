@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 
 _DEEPGRAM_LISTEN_URL = "https://api.deepgram.com/v1/listen"
 
+# 與 main.py 同層；存在且含可解析列時自動作為 YouTube 字幕代理清單（免設 YOUTUBE_TRANSCRIPT_PROXY_LIST_FILE）
+_YOUTUBE_TRANSCRIPT_DEFAULT_PROXY_LIST = "youtube_transcript_proxies.txt"
+
+
+def _youtube_transcript_default_proxy_list_path() -> Path:
+    return Path(__file__).resolve().parent.parent / _YOUTUBE_TRANSCRIPT_DEFAULT_PROXY_LIST
+
 
 def _env_generic_proxy_config_for_youtube(
     http_url: str | None,
@@ -86,8 +93,12 @@ def youtube_transcript_proxy_url_list_from_env() -> list[str] | None:
     多代理輪換：若設定且解析出非空清單，:func:`youtube_transcript_plain_text` 會依序使用，
     遇可重試錯誤時改採下一個。此模式**優先於** ``YOUTUBE_TRANSCRIPT_WEBSHARE_*`` 與單一 HTTP 代理。
 
-    - ``YOUTUBE_TRANSCRIPT_PROXY_LIST_FILE``：檔案路徑，一行一個代理（格式同 :func:`_parse_proxy_line_to_http_url`）。
-    - ``YOUTUBE_TRANSCRIPT_PROXY_LIST``：逗號分隔的完整 ``http(s)://user:pass@host:port``（不含四段式；四段式請用檔案）。
+    優先序：
+
+    - ``YOUTUBE_TRANSCRIPT_PROXY_LIST_FILE``：自訂檔案路徑，一行一個代理（格式同 :func:`_parse_proxy_line_to_http_url`）。
+    - 專案根目錄（與 ``main.py`` 同層）的 ``youtube_transcript_proxies.txt``：若檔案存在且可解析出列，無需設環境變數亦可使用。
+    - ``YOUTUBE_TRANSCRIPT_PROXY_LIST``：逗號分隔多條；每一段可為 ``host:port:user:pass``（Webshare 常見）或完整 ``http(s)://user:pass@host:port``。
+      注意：**密碼裡若含逗號**，請改寫成 URL 形式並對密碼做 URL 編碼，或改用檔案／`PROXY_LIST_FILE`。
     """
     fp = (os.environ.get("YOUTUBE_TRANSCRIPT_PROXY_LIST_FILE") or "").strip()
     if fp:
@@ -99,6 +110,20 @@ def youtube_transcript_proxy_url_list_from_env() -> list[str] | None:
         if urls:
             logger.info("YouTube transcript: 代理清單模式（檔案），共 %s 個", len(urls))
             return urls
+
+    default_path = _youtube_transcript_default_proxy_list_path()
+    try:
+        if default_path.is_file():
+            urls = _load_youtube_proxy_urls_from_file(str(default_path))
+            if urls:
+                logger.info(
+                    "YouTube transcript: 代理清單模式（專案根目錄 %s），共 %s 個",
+                    default_path.name,
+                    len(urls),
+                )
+                return urls
+    except OSError as e:
+        logger.warning("讀取預設代理清單 %s 失敗: %s", default_path, e)
 
     raw_csv = (os.environ.get("YOUTUBE_TRANSCRIPT_PROXY_LIST") or "").strip()
     if raw_csv:
@@ -500,7 +525,8 @@ def _youtube_transcript_api_from_env():
 
     若同時設定 Webshare 帳密與 HTTP 代理，優先使用 Webshare。
 
-    若設定 ``YOUTUBE_TRANSCRIPT_PROXY_LIST_FILE`` 或 ``YOUTUBE_TRANSCRIPT_PROXY_LIST`` 且解析出非空清單，
+    若 ``YOUTUBE_TRANSCRIPT_PROXY_LIST_FILE``、專案根目錄 ``youtube_transcript_proxies.txt``
+    或 ``YOUTUBE_TRANSCRIPT_PROXY_LIST`` 解析出非空清單，
     :func:`youtube_transcript_plain_text` 會改為清單輪換模式，**不會**呼叫本函式。
     """
     from youtube_transcript_api import YouTubeTranscriptApi

@@ -1,0 +1,9 @@
+# 使用方式：複製本檔為 youtube_transcript_proxies.txt（與 main.py 同層），再貼上代理。
+# youtube_transcript_proxies.txt 已列入 .gitignore，勿把真實帳密提交 git。
+#
+# 一行一個代理，支援：
+#   host:port:user:pass
+#   或 http://user:pass@host:port
+#
+# 例（請換成你自己的；下列為假資料）：
+# 127.0.0.1:8080:myuser:mypass
