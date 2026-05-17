@@ -1,7 +1,9 @@
 """
 RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/llm-generate：依 rag_quiz_id 出題（LLM）；unit_type 1 僅 RAG ZIP 向量檢索；2/3/4 以 transcription 純生成；其餘載 RAG ZIP 向量檢索。
-- POST /rag/tab/unit/quiz/llm-grade：非同步 RAG+LLM 評分（body 以 rag_id 置頂；quiz_content 可空，自 Rag_Quiz 讀題幹）；回傳 202 + job_id，輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
+- POST /rag/tab/unit/quiz/llm-generate-db：同 llm-generate，唯 body 不包含 quiz_user_prompt_text，一律沿用 Rag_Quiz 列上既有值。
+- POST /rag/tab/unit/quiz/llm-grade：非同步 RAG+LLM 評分（body 以 rag_id 置頂；quiz_content 可空，自 Rag_Quiz 讀題幹）；answer_user_prompt_text 可空——空字串會寫入並覆蓋該列。回傳 202 + job_id，輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
+- POST /rag/tab/unit/quiz/llm-grade-db：同 llm-grade，唯 body 不包含 answer_user_prompt_text，評分與寫回一律沿用 Rag_Quiz.answer_user_prompt_text（不論請求）。
 - POST /rag/tab/unit/quiz/for-exam：更新 Rag_Quiz.for_exam（body `for_exam` 預設 true；false 取消測驗用）。
 - GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
 - GET /rag/transcript/text、audio／youtube：`with_timestamps` 預設 true；``timestamp_merge_seconds`` 控制標記稀疏度（預設約每 10 秒一標；``0``＝每一段／字幕一行，最密）。
@@ -17,7 +19,7 @@ import tempfile
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from utils.quiz_generation import generate_quiz, generate_quiz_transcription_only
 
@@ -103,6 +105,39 @@ class QuizGradeRequest(BaseModel):
     answer_user_prompt_text: str = Field(
         "",
         description="作答／批改 user prompt（可空）；寫入 Rag_Quiz.answer_user_prompt_text 並供評分 prompt 參考",
+    )
+    quiz_answer: str = Field(
+        ...,
+        description="學生作答（寫入 Rag_Quiz.answer_content）；相容舊 JSON 欄位 answer",
+        validation_alias=AliasChoices("quiz_answer", "answer"),
+    )
+
+
+class GenerateQuizDbOnlyRequest(BaseModel):
+    """POST /rag/tab/unit/quiz/llm-generate-db；不含 quiz_user_prompt_text，沿用 Rag_Quiz 該列之 quiz_user_prompt_text。"""
+
+    rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
+    quiz_name: str = Field(
+        "",
+        description="測驗名稱；空字串則由 repack stem／單元 unit_name 決定 Rag_Quiz.quiz_name",
+    )
+
+
+class QuizGradeDbOnlyRequest(BaseModel):
+    """
+    POST /rag/tab/unit/quiz/llm-grade-db。
+    不含 answer_user_prompt_text：評分與寫入一律使用 Rag_Quiz 該列之 answer_user_prompt_text。
+    """
+
+    rag_id: str = Field(
+        "",
+        description="必填；Rag 表 rag_id（字串）；載入講義／向量 ZIP 並驗證存取權",
+    )
+    rag_quiz_id: str = Field("", description="必填（數字字串 >0）；Rag_Quiz 主鍵")
+    rag_tab_id: str = Field("", description="選填；後端以 Rag.rag_tab_id 為準")
+    quiz_content: str = Field(
+        "",
+        description="選填；非空時優先並可寫入 Rag_Quiz；空則自該 rag_quiz_id 之 Rag_Quiz.quiz_content 讀取（須於庫記憶中有題幹）",
     )
     quiz_answer: str = Field(
         ...,
@@ -397,17 +432,48 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
 
 
 # ---------------------------------------------------------------------------
+# POST /rag/tab/unit/quiz/llm-generate-db
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/tab/unit/quiz/llm-generate-db",
+    summary="Rag LLM Generate Quiz (stored quiz_user_prompt_text)",
+    operation_id="rag_llm_generate_quiz_db_prompt",
+)
+def rag_llm_generate_quiz_db_prompt(body: GenerateQuizDbOnlyRequest, caller_person_id: PersonId):
+    """
+    與 `llm-generate` 相同，但請求不含 `quiz_user_prompt_text`，出題時一律使用
+    Rag_Quiz 該列既有之 `quiz_user_prompt_text`（行為等同傳空字串至 `llm-generate`）。
+    """
+    return rag_llm_generate_quiz(
+        GenerateQuizRequest(
+            rag_quiz_id=body.rag_quiz_id,
+            quiz_name=body.quiz_name,
+            quiz_user_prompt_text="",
+        ),
+        caller_person_id,
+    )
+
+
+# ---------------------------------------------------------------------------
 # POST /rag/tab/unit/quiz/llm-grade
 # ---------------------------------------------------------------------------
 
-@router.post("/tab/unit/quiz/llm-grade", summary="Rag Grade Quiz")
-async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest, caller_person_id: PersonId):
-    """
-    非同步評分：Body 以 rag_id、rag_quiz_id 為核心；quiz_content 可省略（自 Rag_Quiz 讀）。
-    unit_type 2／3／4 時以 transcription 純 LLM 批改；其餘依 rag_id 載入 RAG ZIP。
-    回傳 202 + job_id；輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
-    """
-    rag_id_str = (body.rag_id or "").strip()
+
+async def _enqueue_rag_llm_grade_job(
+    background_tasks: BackgroundTasks,
+    caller_person_id: str,
+    *,
+    rag_id_str: str,
+    rag_quiz_id_str: str,
+    qc_from_body: str,
+    quiz_answer: str,
+    answer_user_prompt_mode: Literal["from_request", "from_rag_quiz_row"],
+    answer_user_prompt_from_request: str = "",
+) -> JSONResponse:
+    """將 RAG llm-grade 工作排入 BackgroundTasks；`grade-result` 輪詢鍵為記憶體 job_id。"""
+    rag_id_str = (rag_id_str or "").strip()
     if not rag_id_str:
         return JSONResponse(status_code=400, content={"error": "請傳入 rag_id"})
     try:
@@ -428,7 +494,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
         return JSONResponse(status_code=403, content={"error": "無權對該 Rag 評分"})
 
     try:
-        rag_quiz_id_int = int((body.rag_quiz_id or "").strip()) if (body.rag_quiz_id or "").strip() else 0
+        rag_quiz_id_int = int(rag_quiz_id_str.strip()) if rag_quiz_id_str.strip() else 0
     except ValueError:
         rag_quiz_id_int = 0
     if rag_quiz_id_int <= 0:
@@ -445,7 +511,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
 
     rq_sel = (
         supabase.table("Rag_Quiz")
-        .select("rag_unit_id, quiz_user_prompt_text, quiz_content")
+        .select("rag_unit_id, quiz_user_prompt_text, quiz_content, answer_user_prompt_text")
         .eq("rag_quiz_id", rag_quiz_id_int)
         .eq("deleted", False)
         .limit(1)
@@ -455,7 +521,8 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
         return JSONResponse(status_code=404, content={"error": f"找不到 rag_quiz_id={rag_quiz_id_int} 的 Rag_Quiz"})
     rq_row = rq_sel.data[0]
     quiz_user_prompt_db = (rq_row.get("quiz_user_prompt_text") or "").strip()
-    qc_from_body = (body.quiz_content or "").strip()
+    answer_user_prompt_db = (rq_row.get("answer_user_prompt_text") or "").strip()
+    qc_from_body = (qc_from_body or "").strip()
     qc_from_db = (rq_row.get("quiz_content") or "").strip()
     quiz_content_resolved = qc_from_body or qc_from_db
     if not quiz_content_resolved:
@@ -465,6 +532,12 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
                 "error": "缺少測驗題幹：請於請求傳入 quiz_content，或先於該 Rag_Quiz 設定 quiz_content。",
             },
         )
+
+    if answer_user_prompt_mode == "from_rag_quiz_row":
+        aup = answer_user_prompt_db
+    else:
+        aup = (answer_user_prompt_from_request or "").strip()
+
     grade_unit_type = 0
     transcription_text = ""
     try:
@@ -528,7 +601,6 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
 
     job_id = str(uuid.uuid4())
     _grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
-    aup = (body.answer_user_prompt_text or "").strip()
     insert_fn = lambda rd, qa: update_rag_quiz_with_grade(
         rd,
         qa,
@@ -542,7 +614,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
         work_dir,
         api_key,
         quiz_content_resolved,
-        body.quiz_answer or "",
+        quiz_answer or "",
         _grade_job_results,
         insert_fn,
         aup,
@@ -552,6 +624,51 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
         quiz_user_prompt_text=quiz_user_prompt_db,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id})
+
+
+@router.post("/tab/unit/quiz/llm-grade", summary="Rag Grade Quiz")
+async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest, caller_person_id: PersonId):
+    """
+    非同步評分：Body 以 rag_id、rag_quiz_id 為核心；quiz_content 可省略（自 Rag_Quiz 讀）。
+    `answer_user_prompt_text` 以請求為準（可空；空字串會寫入並覆蓋 Rag_Quiz 該列）。
+    unit_type 2／3／4 時以 transcription 純 LLM 批改；其餘依 rag_id 載入 RAG ZIP。
+    回傳 202 + job_id；輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
+    """
+    return await _enqueue_rag_llm_grade_job(
+        background_tasks,
+        caller_person_id,
+        rag_id_str=body.rag_id,
+        rag_quiz_id_str=body.rag_quiz_id,
+        qc_from_body=body.quiz_content,
+        quiz_answer=body.quiz_answer,
+        answer_user_prompt_mode="from_request",
+        answer_user_prompt_from_request=(body.answer_user_prompt_text or "").strip(),
+    )
+
+
+@router.post(
+    "/tab/unit/quiz/llm-grade-db",
+    summary="Rag Grade Quiz (stored answer_user_prompt_text)",
+    operation_id="rag_llm_grade_quiz_db_prompt",
+)
+async def grade_submission_stored_answer_prompt(
+    background_tasks: BackgroundTasks,
+    body: QuizGradeDbOnlyRequest,
+    caller_person_id: PersonId,
+):
+    """
+    與 `llm-grade` 相同，但請求不含 `answer_user_prompt_text`；
+    評分時與寫回皆以 Rag_Quiz 該列既有之 `answer_user_prompt_text` 為準。
+    """
+    return await _enqueue_rag_llm_grade_job(
+        background_tasks,
+        caller_person_id,
+        rag_id_str=body.rag_id,
+        rag_quiz_id_str=body.rag_quiz_id,
+        qc_from_body=body.quiz_content,
+        quiz_answer=body.quiz_answer,
+        answer_user_prompt_mode="from_rag_quiz_row",
+    )
 
 
 # ---------------------------------------------------------------------------
