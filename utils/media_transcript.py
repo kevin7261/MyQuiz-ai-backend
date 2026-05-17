@@ -6,8 +6,9 @@ import logging
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import requests
 
@@ -43,6 +44,114 @@ def _env_generic_proxy_config_for_youtube(
             return v not in ("0", "false", "no", "off")
 
     return _EnvGenericProxy(http_url=http_url, https_url=https_url)
+
+
+_PROXY_LIST_LINE_RE = re.compile(r"^([\w.-]+):(\d+):([^:]+):(.+)$")
+
+
+def _parse_proxy_line_to_http_url(line: str) -> str | None:
+    """
+    接受一行 ``host:port:user:pass``（Webshare 匯出常見格式）或完整 ``http(s)://user:pass@host:port``。
+    ``#`` 開頭或空行略過。
+    """
+    raw = (line or "").strip()
+    if not raw or raw.startswith("#"):
+        return None
+    low = raw.lower()
+    if low.startswith("http://") or low.startswith("https://"):
+        return raw.rstrip("/")
+    m = _PROXY_LIST_LINE_RE.match(raw)
+    if not m:
+        logger.debug(
+            "略過無法解析的 YouTube 代理清單行（須為 host:port:user:pass 或 http(s)://…）"
+        )
+        return None
+    host, port, user, password = m.group(1), m.group(2), m.group(3), m.group(4)
+    return f"http://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}"
+
+
+def _load_youtube_proxy_urls_from_file(path: str) -> list[str]:
+    p = Path(path).expanduser()
+    text = p.read_text(encoding="utf-8")
+    out: list[str] = []
+    for line in text.splitlines():
+        u = _parse_proxy_line_to_http_url(line)
+        if u:
+            out.append(u)
+    return out
+
+
+def youtube_transcript_proxy_url_list_from_env() -> list[str] | None:
+    """
+    多代理輪換：若設定且解析出非空清單，:func:`youtube_transcript_plain_text` 會依序使用，
+    遇可重試錯誤時改採下一個。此模式**優先於** ``YOUTUBE_TRANSCRIPT_WEBSHARE_*`` 與單一 HTTP 代理。
+
+    - ``YOUTUBE_TRANSCRIPT_PROXY_LIST_FILE``：檔案路徑，一行一個代理（格式同 :func:`_parse_proxy_line_to_http_url`）。
+    - ``YOUTUBE_TRANSCRIPT_PROXY_LIST``：逗號分隔的完整 ``http(s)://user:pass@host:port``（不含四段式；四段式請用檔案）。
+    """
+    fp = (os.environ.get("YOUTUBE_TRANSCRIPT_PROXY_LIST_FILE") or "").strip()
+    if fp:
+        try:
+            urls = _load_youtube_proxy_urls_from_file(fp)
+        except OSError as e:
+            logger.warning("讀取 YOUTUBE_TRANSCRIPT_PROXY_LIST_FILE 失敗 %s: %s", fp, e)
+            urls = []
+        if urls:
+            logger.info("YouTube transcript: 代理清單模式（檔案），共 %s 個", len(urls))
+            return urls
+
+    raw_csv = (os.environ.get("YOUTUBE_TRANSCRIPT_PROXY_LIST") or "").strip()
+    if raw_csv:
+        urls = []
+        for part in raw_csv.split(","):
+            u = _parse_proxy_line_to_http_url(part.strip())
+            if u:
+                urls.append(u)
+        if urls:
+            logger.info("YouTube transcript: 代理清單模式（環境變數列表），共 %s 個", len(urls))
+            return urls
+
+    return None
+
+
+def _youtube_transcript_api_with_generic_proxy_url(proxy_url: str):
+    """以單一 ``http(s)://…`` 建立 ``YouTubeTranscriptApi``（沿用環境變數的重試／Connection 設定）。"""
+    from youtube_transcript_api import YouTubeTranscriptApi
+
+    u = proxy_url.strip().rstrip("/")
+    cfg = _env_generic_proxy_config_for_youtube(http_url=u, https_url=u)
+    return YouTubeTranscriptApi(proxy_config=cfg)
+
+
+def _youtube_transcript_proxy_rotate_exceptions() -> tuple[type[BaseException], ...]:
+    from youtube_transcript_api._errors import IpBlocked, PoTokenRequired, RequestBlocked
+
+    import requests.exceptions as rex
+
+    return (
+        RequestBlocked,
+        IpBlocked,
+        PoTokenRequired,
+        rex.ProxyError,
+        rex.ConnectTimeout,
+        rex.ReadTimeout,
+        rex.ConnectionError,
+    )
+
+
+def _youtube_fetch_transcript_data(api: Any, video_id: str, langs: list[str]) -> list[Any]:
+    """自已設好 proxy 的 ``YouTubeTranscriptApi`` 實例擷取字幕資料（統一為可迭代項目）。"""
+    from youtube_transcript_api import YouTubeTranscriptApi
+
+    if hasattr(api, "fetch"):
+        fetched = api.fetch(video_id, languages=langs)
+        if hasattr(fetched, "to_raw_data"):
+            return fetched.to_raw_data()
+        return [
+            {"text": getattr(s, "text", ""), "start": float(getattr(s, "start", 0) or 0)}
+            for s in fetched
+        ]
+    return YouTubeTranscriptApi.get_transcript(video_id, languages=langs)
 
 
 def _suffix_to_content_type(suffix: str) -> str:
@@ -390,6 +499,9 @@ def _youtube_transcript_api_from_env():
     字幕語言預設優先序（未傳入 languages 時）：YOUTUBE_TRANSCRIPT_LANGUAGES，或內建 en→中文→日韓。
 
     若同時設定 Webshare 帳密與 HTTP 代理，優先使用 Webshare。
+
+    若設定 ``YOUTUBE_TRANSCRIPT_PROXY_LIST_FILE`` 或 ``YOUTUBE_TRANSCRIPT_PROXY_LIST`` 且解析出非空清單，
+    :func:`youtube_transcript_plain_text` 會改為清單輪換模式，**不會**呼叫本函式。
     """
     from youtube_transcript_api import YouTubeTranscriptApi
 
@@ -580,23 +692,40 @@ def youtube_transcript_plain_text(
     回傳 (全文, 耗時秒數)。
 
     languages 為 None 或空串列時，使用 :func:`youtube_transcript_default_languages`。
-    """
-    from youtube_transcript_api import YouTubeTranscriptApi
 
+    多代理：若環境變數設定了代理清單（見 :func:`youtube_transcript_proxy_url_list_from_env`），
+    會依序使用；若擲回可重試錯誤（例如 ``RequestBlocked``、代理連線失敗）則換下一個直至成功或清單用盡。
+    """
     langs = languages if languages else youtube_transcript_default_languages()
     t0 = time.perf_counter()
-    api = _youtube_transcript_api_from_env()
-    if hasattr(api, "fetch"):
-        fetched = api.fetch(video_id, languages=langs)
-        if hasattr(fetched, "to_raw_data"):
-            transcript = fetched.to_raw_data()
+    proxy_urls = youtube_transcript_proxy_url_list_from_env()
+    rotate_exc = _youtube_transcript_proxy_rotate_exceptions()
+    last_exc: BaseException | None = None
+    transcript: list[Any]
+
+    if proxy_urls:
+        for idx, purl in enumerate(proxy_urls):
+            try:
+                api = _youtube_transcript_api_with_generic_proxy_url(purl)
+                transcript = _youtube_fetch_transcript_data(api, video_id, langs)
+                break
+            except rotate_exc as e:
+                last_exc = e
+                host = (urlparse(purl).hostname or "?")
+                logger.warning(
+                    "YouTube 字幕代理 %s/%s（%s）失敗：%s，改試下一個",
+                    idx + 1,
+                    len(proxy_urls),
+                    host,
+                    type(e).__name__,
+                )
         else:
-            transcript = [
-                {"text": getattr(s, "text", ""), "start": float(getattr(s, "start", 0) or 0)}
-                for s in fetched
-            ]
+            if last_exc is not None:
+                raise last_exc
+            raise RuntimeError("YouTube 代理清單皆失敗且無可傳遞的例外")
     else:
-        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=langs)
+        api = _youtube_transcript_api_from_env()
+        transcript = _youtube_fetch_transcript_data(api, video_id, langs)
 
     if with_timestamps:
         segments: list[tuple[float, str]] = []
