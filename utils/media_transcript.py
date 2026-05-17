@@ -149,14 +149,29 @@ def _youtube_transcript_api_with_generic_proxy_url(proxy_url: str):
 
 
 def _youtube_transcript_proxy_rotate_exceptions() -> tuple[type[BaseException], ...]:
-    from youtube_transcript_api._errors import IpBlocked, PoTokenRequired, RequestBlocked
+    """
+    下列錯誤會在「代理清單模式」下改試下一條代理。
+    含 RequestBlocked／字幕 XML HTTP 失敗（YouTubeRequestFailed）等；不含 NoTranscriptFound／字幕關閉
+    等換 IP 也無濟於事的類型。
+    """
+    from youtube_transcript_api._errors import (
+        FailedToCreateConsentCookie,
+        PoTokenRequired,
+        RequestBlocked,
+        VideoUnplayable,
+        YouTubeDataUnparsable,
+        YouTubeRequestFailed,
+    )
 
     import requests.exceptions as rex
 
     return (
-        RequestBlocked,
-        IpBlocked,
+        RequestBlocked,  # 含子類 IpBlocked
         PoTokenRequired,
+        YouTubeRequestFailed,
+        YouTubeDataUnparsable,
+        VideoUnplayable,
+        FailedToCreateConsentCookie,
         rex.ProxyError,
         rex.ConnectTimeout,
         rex.ReadTimeout,
@@ -585,6 +600,7 @@ def youtube_transcript_api_user_message(exc: BaseException) -> str:
     Webshare 推銷與 GitHub issue 長段文字。
     """
     from youtube_transcript_api._errors import (
+        AgeRestricted,
         CouldNotRetrieveTranscript,
         InvalidVideoId,
         IpBlocked,
@@ -614,6 +630,11 @@ def youtube_transcript_api_user_message(exc: BaseException) -> str:
         except (TypeError, ValueError):
             lang_part = "指定語言"
         return f"{label}找不到 {lang_part} 的字幕。"
+    if isinstance(exc, AgeRestricted):
+        return (
+            f"{label}為年齡限制內容，現版 youtube-transcript-api 無法在未登入下擷取字幕；"
+            "請改用手動逐字稿或上傳音檔（Deepgram，GET /rag/transcript/audio）。"
+        )
     if isinstance(exc, IpBlocked):
         return (
             f"{label}無法取得字幕：YouTube 回傳驗證／反機器人頁或封鎖此來源 IP。"
@@ -639,8 +660,10 @@ def youtube_transcript_api_user_message(exc: BaseException) -> str:
         )
     if isinstance(exc, CouldNotRetrieveTranscript):
         return (
-            f"{label}無法取得字幕（可能被 YouTube 暫時阻擋或需登入限制）。"
-            "若在受限網路，請設定 YOUTUBE_TRANSCRIPT_HTTP_PROXY／HTTPS_PROXY。"
+            f"{label}無法取得字幕（常見原因：YouTube 阻擋出口 IP、字幕網址下載失敗、"
+            "年齡限制或暫時性錯誤）。若已設 YOUTUBE_TRANSCRIPT_PROXY_LIST 仍失敗，"
+            "請確認為**住宅型**代理、節點夠多並已輪換；或將 youtube-transcript-api 升級至最新版。"
+            "若影片僅缺字幕下載管道，可改上傳音檔使用 Deepgram（GET /rag/transcript/audio）。"
         )
     if isinstance(exc, YouTubeTranscriptApiException):
         line = (str(exc) or "").strip().split("\n", 1)[0]
@@ -720,7 +743,8 @@ def youtube_transcript_plain_text(
     languages 為 None 或空串列時，使用 :func:`youtube_transcript_default_languages`。
 
     多代理：若環境變數設定了代理清單（見 :func:`youtube_transcript_proxy_url_list_from_env`），
-    會依序使用；若擲回可重試錯誤（例如 ``RequestBlocked``、代理連線失敗）則換下一個直至成功或清單用盡。
+    若擲回可重試錯誤（如 ``RequestBlocked``、``YouTubeRequestFailed``、代理連線失敗等）
+    則換下一個直至成功或清單用盡；``NoTranscriptFound``／字幕關閉等不會換代理。
     """
     langs = languages if languages else youtube_transcript_default_languages()
     t0 = time.perf_counter()
