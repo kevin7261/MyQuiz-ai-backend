@@ -54,7 +54,7 @@ from utils.zip_storage import (
     FOLDER_RAG,
 )
 from utils.supabase_client import get_supabase
-from utils.db_tables import USER_TABLE
+from utils.db_tables import ACTIVE_DELETED_FILTER, USER_COURSE_RELATION_TABLE
 from utils.rag_exam_setting import is_localhost_request
 from utils.media_transcript import audio_media_type_for_suffix
 from utils.rag_transcript_from_upload_zip import (
@@ -131,16 +131,18 @@ def _bytes_to_mb(size_bytes: int) -> float:
 
 
 def _fetch_user_llm_key_and_user_type(person_id: str) -> tuple[str | None, int]:
-    """依 person_id 自 User 表取得 llm_api_key、user_type；無列時回傳 (None, 0)。"""
+    """依 person_id 自 User_Course_Relation 取得 llm_api_key、user_type；無列時回傳 (None, 0)。"""
     pid = (person_id or "").strip()
     if not pid:
         return None, 0
     try:
         supabase = get_supabase()
         resp = (
-            supabase.table(USER_TABLE)
+            supabase.table(USER_COURSE_RELATION_TABLE)
             .select("llm_api_key, user_type")
             .eq("person_id", pid)
+            .or_(ACTIVE_DELETED_FILTER)
+            .order("course_user_id")
             .limit(1)
             .execute()
         )
@@ -432,10 +434,10 @@ class PackRequest(BaseModel):
 
     # 與 unit_list 逗號分段對齊；0=未選（後端推斷）、1=rag、2=文字、3=mp3、4=youtube
     unit_types: str = ""
-    # None=依 User.user_type==1 自動判斷；False=強制不建向量；True=強制建 FAISS（須 llm_api_key）
+    # None=依 User_Course_Relation.user_type==1 自動判斷；False=強制不建向量；True=強制建 FAISS（須 llm_api_key）
     build_faiss: bool | None = Field(
         default=None,
-        description="省略時依 User.user_type；False 時僅複製 repack 至 rag；True 時強制建向量 RAG ZIP",
+        description="省略時依 User_Course_Relation.user_type；False 時僅複製 repack 至 rag；True 時強制建向量 RAG ZIP",
     )
     # 與 unit_list 逗號分段同序；非空時覆寫 Rag_Unit.transcription（UTF-8 Markdown 原樣）
     transcriptions: list[str] | None = Field(

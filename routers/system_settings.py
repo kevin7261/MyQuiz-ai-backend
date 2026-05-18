@@ -13,11 +13,8 @@ from pydantic import BaseModel, Field
 
 from dependencies.person_id import PersonId
 from utils.datetime_utils import now_taipei_iso
-from utils.db_tables import USER_TABLE
+from utils.db_tables import ACTIVE_DELETED_FILTER, USER_COURSE_RELATION_TABLE, USER_TABLE
 from utils.supabase_client import get_supabase
-
-# 與 routers/users.py 一致：deleted=false 或 null 為有效帳號
-ACTIVE_USER_DELETED_FILTER = "deleted.eq.false,deleted.is.null"
 
 router = APIRouter(prefix="/system-settings", tags=["system-settings"])
 
@@ -26,17 +23,18 @@ SYSTEM_SETTING_COLUMNS = "system_setting_id, key, value"
 
 
 def _user_type_for_active_person(person_id: str) -> Optional[int]:
-    """依 person_id 查 User.user_type；無列或非有效帳號時回傳 None。"""
+    """依 person_id 查 User_Course_Relation.user_type（先決之一列）；無列或非有效帳號時回傳 None。"""
     pid = (person_id or "").strip()
     if not pid:
         return None
     try:
         supabase = get_supabase()
         resp = (
-            supabase.table(USER_TABLE)
+            supabase.table(USER_COURSE_RELATION_TABLE)
             .select("user_type")
             .eq("person_id", pid)
-            .or_(ACTIVE_USER_DELETED_FILTER)
+            .or_(ACTIVE_DELETED_FILTER)
+            .order("course_user_id")
             .limit(1)
             .execute()
         )
@@ -52,7 +50,24 @@ def _user_type_for_active_person(person_id: str) -> Optional[int]:
 
 def _require_active_person(person_id: str) -> None:
     """person_id 須對應有效 User（未刪除）。"""
-    if _user_type_for_active_person(person_id) is None:
+    pid = (person_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=404, detail="找不到該使用者")
+    try:
+        supabase = get_supabase()
+        resp = (
+            supabase.table(USER_TABLE)
+            .select("user_id")
+            .eq("person_id", pid)
+            .or_(ACTIVE_DELETED_FILTER)
+            .limit(1)
+            .execute()
+        )
+        if not resp.data:
+            raise HTTPException(status_code=404, detail="找不到該使用者")
+    except HTTPException:
+        raise
+    except Exception:
         raise HTTPException(status_code=404, detail="找不到該使用者")
 
 

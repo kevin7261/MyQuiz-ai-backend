@@ -5,7 +5,7 @@
 - POST /user/users：新增單一使用者（person_id、name、user_type）
 - POST /user/users/batch：批次新增使用者（每筆僅 person_id、name；user_type 固定為 3；password 預設 0000）
 - PUT /user/users/delete：軟刪除（body.person_id 指定對象，將 deleted 設為 true）
-- POST /user/login：以 person_id + password 登入
+- POST /user/login：以 person_id + password 登入（成功時另回傳該帳號之 User_Course_Relation 課程列表）
 - PATCH /user/profile：更新個人資料（name、user_type、llm_api_key）
 """
 
@@ -14,38 +14,108 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 
 from dependencies.person_id import PersonId
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from utils.datetime_utils import now_taipei_iso, to_taipei_iso
-from utils.db_tables import USER_TABLE
+from utils.db_tables import (
+    ACTIVE_DELETED_FILTER,
+    USER_COURSE_RELATION_TABLE,
+    USER_TABLE,
+)
 from utils.supabase_client import get_supabase
 
 router = APIRouter(prefix="/user", tags=["user"])
 
-# 查詢 User 表時的公開欄位（不含 password）
-USER_PUBLIC_COLUMNS = "user_id, person_id, name, user_type, llm_api_key, user_metadata, deleted, updated_at, created_at"
-
-# deleted=false 或 null 皆視為有效帳號（相容舊列）
-ACTIVE_USER_DELETED_FILTER = "deleted.eq.false,deleted.is.null"
-
-USER_OUT_KEYS = (
-    "user_id",
-    "person_id",
-    "name",
-    "user_type",
-    "llm_api_key",
-    "user_metadata",
-    "updated_at",
-    "created_at",
-)
+# User 表實體欄位（user_type / llm_api_key 在 User_Course_Relation）
+USER_TABLE_COLUMNS = "user_id, person_id, name, deleted, updated_at, created_at"
 
 
-def _user_public_dict(row: dict) -> dict:
-    """組出對外使用者 dict，updated_at / created_at 為台北時間 ISO 字串。"""
-    out = {k: row.get(k) for k in USER_OUT_KEYS}
+def _pick_primary_relation_rows(relations: list[dict]) -> dict[int, dict]:
+    """每個 user_id 取 course_user_id 最小之一列，作為 API 上單一 user_type／llm_api_key 來源。"""
+    best: dict[int, dict] = {}
+    for r in relations:
+        uid = r.get("user_id")
+        if uid is None:
+            continue
+        cid = r.get("course_user_id")
+        cur = best.get(uid)
+        if cur is None:
+            best[uid] = r
+            continue
+        cur_cid = cur.get("course_user_id")
+        if cid is not None and (cur_cid is None or cid < cur_cid):
+            best[uid] = r
+    return best
+
+
+def _fetch_relations_by_user_ids(supabase, user_ids: list[int]) -> dict[int, dict]:
+    if not user_ids:
+        return {}
+    resp = (
+        supabase.table(USER_COURSE_RELATION_TABLE)
+        .select("course_user_id, user_id, user_type, llm_api_key")
+        .in_("user_id", user_ids)
+        .or_(ACTIVE_DELETED_FILTER)
+        .execute()
+    )
+    rows = resp.data or []
+    return _pick_primary_relation_rows(rows)
+
+
+def _fetch_relation_for_user_id(supabase, user_id: int) -> dict | None:
+    return _fetch_relations_by_user_ids(supabase, [user_id]).get(user_id)
+
+
+def _fetch_all_course_relations_for_user(supabase, user_id: int) -> list[dict]:
+    """該 user_id 於 User_Course_Relation 之全部有效列（依 course_user_id 排序）。"""
+    resp = (
+        supabase.table(USER_COURSE_RELATION_TABLE)
+        .select("course_user_id, course_id, course_name, user_type")
+        .eq("user_id", user_id)
+        .or_(ACTIVE_DELETED_FILTER)
+        .order("course_user_id")
+        .execute()
+    )
+    return list(resp.data or [])
+
+
+def _user_public_dict(user_row: dict, relation_row: dict | None = None) -> dict:
+    """組出對外使用者 dict；user_type／llm_api_key 來自 User_Course_Relation（可為 None）。"""
+    out = {k: user_row.get(k) for k in ("user_id", "person_id", "name", "updated_at", "created_at")}
+    if relation_row:
+        out["user_type"] = relation_row.get("user_type")
+        out["llm_api_key"] = relation_row.get("llm_api_key")
+    else:
+        out["user_type"] = None
+        out["llm_api_key"] = None
+    out["user_metadata"] = None
     out["updated_at"] = to_taipei_iso(out.get("updated_at"))
     out["created_at"] = to_taipei_iso(out.get("created_at"))
     return out
+
+
+def _insert_user_course_relation(
+    supabase,
+    *,
+    user_id: int,
+    person_id: str,
+    name: str,
+    user_type: int,
+    ts: str,
+    llm_api_key: str = "",
+) -> None:
+    supabase.table(USER_COURSE_RELATION_TABLE).insert({
+        "user_id": user_id,
+        "person_id": person_id,
+        "name": (name or "").strip() or "",
+        "course_id": 0,
+        "course_name": "",
+        "user_type": user_type,
+        "llm_api_key": llm_api_key,
+        "deleted": False,
+        "updated_at": ts,
+        "created_at": ts,
+    }).execute()
 
 
 class UserListItem(BaseModel):
@@ -72,9 +142,18 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class UserCourseItem(BaseModel):
+    """User_Course_Relation 單筆課程／選課資訊（不含 llm_api_key）。"""
+    course_user_id: int
+    course_id: int
+    course_name: Optional[str] = None
+    user_type: Optional[int] = None
+
+
 class LoginResponse(BaseModel):
-    """登入成功回傳使用者資訊（不含 password）。"""
+    """登入成功回傳使用者資訊（不含 password）；login 時 courses 為該帳號選課列，其餘使用同一 schema 之端點為空列表。"""
     user: UserListItem
+    courses: list[UserCourseItem] = Field(default_factory=list)
 
 
 class UpdateProfileRequest(BaseModel):
@@ -132,7 +211,7 @@ def _insert_user_upload(
         supabase.table(USER_TABLE)
         .select("user_id")
         .eq("person_id", person_id)
-        .or_(ACTIVE_USER_DELETED_FILTER)
+        .or_(ACTIVE_DELETED_FILTER)
         .limit(1)
         .execute()
     )
@@ -142,25 +221,36 @@ def _insert_user_upload(
     row_in = {
         "person_id": person_id,
         "name": (name or "").strip() or None,
-        "user_type": user_type,
         "password": password,
         "deleted": False,
         "updated_at": ts,
         "created_at": ts,
     }
     ins = supabase.table(USER_TABLE).insert(row_in).execute()
-    if ins.data and len(ins.data) > 0:
-        return UserListItem(**_user_public_dict(ins.data[0]))
-    resp = (
-        supabase.table(USER_TABLE)
-        .select(USER_PUBLIC_COLUMNS)
-        .eq("person_id", person_id)
-        .limit(1)
-        .execute()
+    user_row = ins.data[0] if ins.data else None
+    if not user_row:
+        resp = (
+            supabase.table(USER_TABLE)
+            .select(USER_TABLE_COLUMNS)
+            .eq("person_id", person_id)
+            .limit(1)
+            .execute()
+        )
+        user_row = resp.data[0] if resp.data else None
+    if not user_row:
+        raise HTTPException(status_code=500, detail="新增使用者成功但未回傳資料")
+    uid = user_row["user_id"]
+    _insert_user_course_relation(
+        supabase,
+        user_id=uid,
+        person_id=person_id,
+        name=name,
+        user_type=user_type,
+        ts=ts,
+        llm_api_key="",
     )
-    if resp.data and len(resp.data) > 0:
-        return UserListItem(**_user_public_dict(resp.data[0]))
-    raise HTTPException(status_code=500, detail="新增使用者成功但未回傳資料")
+    rel = _fetch_relation_for_user_id(supabase, uid)
+    return UserListItem(**_user_public_dict(user_row, rel))
 
 
 @router.get("/users", response_model=ListUsersResponse)
@@ -172,13 +262,19 @@ def list_users(_person_id: PersonId):
         supabase = get_supabase()
         resp = (
             supabase.table(USER_TABLE)
-            .select(USER_PUBLIC_COLUMNS)
+            .select(USER_TABLE_COLUMNS)
             .eq("deleted", False)
             .execute()
         )
+        rows = resp.data or []
+        uids = [r["user_id"] for r in rows if r.get("user_id") is not None]
+        rel_by_uid = _fetch_relations_by_user_ids(supabase, uids)
         return ListUsersResponse(
-            users=[UserListItem(**_user_public_dict(r)) for r in resp.data],
-            count=len(resp.data),
+            users=[
+                UserListItem(**_user_public_dict(r, rel_by_uid.get(r["user_id"])))
+                for r in rows
+            ],
+            count=len(rows),
         )
     except Exception as e:
         err = str(e).lower()
@@ -193,9 +289,9 @@ def list_users(_person_id: PersonId):
 def _soft_delete_user(supabase, target_person_id: str) -> LoginResponse:
     resp = (
         supabase.table(USER_TABLE)
-        .select(USER_PUBLIC_COLUMNS)
+        .select(USER_TABLE_COLUMNS)
         .eq("person_id", target_person_id)
-        .or_(ACTIVE_USER_DELETED_FILTER)
+        .or_(ACTIVE_DELETED_FILTER)
         .limit(1)
         .execute()
     )
@@ -204,9 +300,12 @@ def _soft_delete_user(supabase, target_person_id: str) -> LoginResponse:
     row = resp.data[0]
     user_id = row.get("user_id")
     pid = row.get("person_id")
-    supabase.table(USER_TABLE).update({"deleted": True, "updated_at": now_taipei_iso()}).eq("user_id", user_id).eq("person_id", pid).execute()
+    rel = _fetch_relation_for_user_id(supabase, int(user_id)) if user_id is not None else None
+    ts = now_taipei_iso()
+    supabase.table(USER_TABLE).update({"deleted": True, "updated_at": ts}).eq("user_id", user_id).eq("person_id", pid).execute()
+    supabase.table(USER_COURSE_RELATION_TABLE).update({"deleted": True, "updated_at": ts}).eq("user_id", user_id).execute()
     row_out = {**row, "deleted": True}
-    return LoginResponse(user=UserListItem(**_user_public_dict(row_out)))
+    return LoginResponse(user=UserListItem(**_user_public_dict(row_out, rel)))
 
 
 @router.put("/users/delete", response_model=LoginResponse, summary="Soft delete user", operation_id="user_users_delete")
@@ -316,9 +415,9 @@ def update_profile(
         supabase = get_supabase()
         resp = (
             supabase.table(USER_TABLE)
-            .select(USER_PUBLIC_COLUMNS)
+            .select(USER_TABLE_COLUMNS)
             .eq("person_id", person_id)
-            .or_(ACTIVE_USER_DELETED_FILTER)
+            .or_(ACTIVE_DELETED_FILTER)
             .execute()
         )
         if not resp.data or len(resp.data) == 0:
@@ -326,28 +425,39 @@ def update_profile(
         row = resp.data[0]
 
         user_id = row.get("user_id")
-        updates = {}
+        user_updates: dict = {}
+        rel_updates: dict = {}
         if body.name is not None:
-            updates["name"] = (body.name or "").strip() or None
+            user_updates["name"] = (body.name or "").strip() or None
+            rel_updates["name"] = (body.name or "").strip() or ""
         if body.user_type is not None:
-            updates["user_type"] = body.user_type
+            rel_updates["user_type"] = body.user_type
         if body.llm_api_key is not None:
-            updates["llm_api_key"] = (body.llm_api_key or "").strip() or None
-        if not updates:
-            return LoginResponse(user=UserListItem(**_user_public_dict(row)))
+            rel_updates["llm_api_key"] = (body.llm_api_key or "").strip() or ""
+        if not user_updates and not rel_updates:
+            rel = _fetch_relation_for_user_id(supabase, int(user_id)) if user_id is not None else None
+            return LoginResponse(user=UserListItem(**_user_public_dict(row, rel)))
 
-        updates["updated_at"] = now_taipei_iso()
-        supabase.table(USER_TABLE).update(updates).eq("user_id", user_id).eq("person_id", person_id).execute()
+        ts = now_taipei_iso()
+        if user_updates:
+            user_updates["updated_at"] = ts
+            supabase.table(USER_TABLE).update(user_updates).eq("user_id", user_id).eq("person_id", person_id).execute()
+        if rel_updates:
+            rel_updates["updated_at"] = ts
+            supabase.table(USER_COURSE_RELATION_TABLE).update(rel_updates).eq("user_id", user_id).or_(
+                ACTIVE_DELETED_FILTER
+            ).execute()
         resp2 = (
             supabase.table(USER_TABLE)
-            .select(USER_PUBLIC_COLUMNS)
+            .select(USER_TABLE_COLUMNS)
             .eq("user_id", user_id)
             .eq("person_id", person_id)
-            .or_(ACTIVE_USER_DELETED_FILTER)
+            .or_(ACTIVE_DELETED_FILTER)
             .execute()
         )
         out_row = resp2.data[0] if resp2.data else row
-        return LoginResponse(user=UserListItem(**_user_public_dict(out_row)))
+        rel = _fetch_relation_for_user_id(supabase, int(user_id)) if user_id is not None else None
+        return LoginResponse(user=UserListItem(**_user_public_dict(out_row, rel)))
     except HTTPException:
         raise
     except Exception as e:
@@ -357,21 +467,21 @@ def update_profile(
 @router.post("/login", response_model=LoginResponse)
 def login(body: LoginRequest, person_id: PersonId):
     """
-    以 person_id 與 password 驗證登入；成功回傳該使用者資訊（不含 password）。
+    以 person_id 與 password 驗證登入；成功回傳該使用者資訊（不含 password）及 User_Course_Relation 課程列表。
     query 的 person_id 須與 body.person_id 一致。
     """
     body_pid = (body.person_id or "").strip()
     if body_pid != person_id:
         raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
     pwd = (body.password or "").strip()
-    cols = f"{USER_PUBLIC_COLUMNS}, password"
+    cols = f"{USER_TABLE_COLUMNS}, password"
     try:
         supabase = get_supabase()
         resp = (
             supabase.table(USER_TABLE)
             .select(cols)
             .eq("person_id", person_id)
-            .or_(ACTIVE_USER_DELETED_FILTER)
+            .or_(ACTIVE_DELETED_FILTER)
             .execute()
         )
         if not resp.data or len(resp.data) == 0:
@@ -379,7 +489,20 @@ def login(body: LoginRequest, person_id: PersonId):
         row = resp.data[0]
         if (row.get("password") or "").strip() != pwd:
             raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
-        return LoginResponse(user=UserListItem(**_user_public_dict(row)))
+        uid = row.get("user_id")
+        rel = _fetch_relation_for_user_id(supabase, int(uid)) if uid is not None else None
+        course_rows = _fetch_all_course_relations_for_user(supabase, int(uid)) if uid is not None else []
+        courses = [
+            UserCourseItem(
+                course_user_id=int(r["course_user_id"]),
+                course_id=int(r.get("course_id") or 0),
+                course_name=r.get("course_name"),
+                user_type=r.get("user_type"),
+            )
+            for r in course_rows
+            if r.get("course_user_id") is not None
+        ]
+        return LoginResponse(user=UserListItem(**_user_public_dict(row, rel)), courses=courses)
     except HTTPException:
         raise
     except Exception as e:
