@@ -15,3 +15,53 @@ ACTIVE_DELETED_FILTER = "deleted.eq.false,deleted.is.null"
 RAG_TABLE = "Rag"
 RAG_UNIT_TABLE = "Rag_Unit"
 RAG_QUIZ_TABLE = "Rag_Quiz"
+
+# 三表共用 course_id（bigint null default 0）
+RAG_COURSE_ID_DEFAULT = 0
+
+# SELECT 欄位順序同 public DDL（rag_tab_id → person_id → course_id → …）
+RAG_SELECT_COLUMNS = (
+    "rag_id, rag_tab_id, person_id, course_id, tab_name, file_size, file_metadata, "
+    "local, deleted, updated_at, created_at"
+)
+RAG_SELECT_COLUMNS_NO_FILE_METADATA = (
+    "rag_id, rag_tab_id, person_id, course_id, tab_name, file_size, "
+    "local, deleted, updated_at, created_at"
+)
+RAG_SELECT_COLUMNS_LEGACY = (
+    "rag_id, rag_tab_id, person_id, tab_name, file_size, file_metadata, "
+    "local, deleted, updated_at, created_at"
+)
+RAG_SELECT_COLUMNS_LEGACY_NO_FILE_METADATA = (
+    "rag_id, rag_tab_id, person_id, tab_name, file_size, "
+    "local, deleted, updated_at, created_at"
+)
+
+RAG_UNIT_SELECT_COLUMNS = (
+    "rag_unit_id, rag_tab_id, person_id, course_id, unit_name, folder_combination, unit_type, "
+    "repack_file_name, rag_file_name, rag_file_size, rag_chunk_size, rag_chunk_overlap, "
+    "transcription, text_file_name, mp3_file_name, youtube_url, deleted, updated_at, created_at"
+)
+
+RAG_QUIZ_SELECT_COLUMNS = (
+    "rag_quiz_id, rag_tab_id, rag_unit_id, person_id, course_id, quiz_name, "
+    "quiz_user_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, "
+    "answer_user_prompt_text, answer_content, answer_critique, for_exam, deleted, "
+    "updated_at, created_at"
+)
+
+# Exam 相關表名
+EXAM_TABLE = "Exam"
+EXAM_QUIZ_TABLE = "Exam_Quiz"
+
+EXAM_COURSE_ID_DEFAULT = 0
+
+EXAM_SELECT_COLUMNS = (
+    "exam_id, exam_tab_id, person_id, course_id, tab_name, local, deleted, updated_at, created_at"
+)
+
+EXAM_QUIZ_SELECT_COLUMNS = (
+    "exam_quiz_id, exam_tab_id, rag_tab_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
+    "unit_name, quiz_name, quiz_user_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, "
+    "quiz_rate, answer_user_prompt_text, answer_content, answer_critique, updated_at, created_at"
+)

@@ -9,6 +9,13 @@ from typing import Any
 from postgrest.exceptions import APIError
 
 from utils.datetime_utils import now_taipei_iso
+from utils.db_tables import (
+    EXAM_COURSE_ID_DEFAULT,
+    RAG_SELECT_COLUMNS,
+    RAG_SELECT_COLUMNS_LEGACY,
+    RAG_SELECT_COLUMNS_LEGACY_NO_FILE_METADATA,
+    RAG_SELECT_COLUMNS_NO_FILE_METADATA,
+)
 from utils.supabase_client import get_supabase
 
 
@@ -19,8 +26,10 @@ from utils.supabase_client import get_supabase
 def select_rag_row_with_transcription_fallback(supabase: Any, rag_id: int) -> Any:
     """讀取 public.Rag；SELECT 欄位順序同 public.Rag DDL。缺欄（42703）時依序降級。"""
     candidates = (
-        "rag_id, rag_tab_id, person_id, tab_name, file_size, file_metadata, local, deleted, updated_at, created_at",
-        "rag_id, rag_tab_id, person_id, tab_name, file_size, local, deleted, updated_at, created_at",
+        RAG_SELECT_COLUMNS,
+        RAG_SELECT_COLUMNS_NO_FILE_METADATA,
+        RAG_SELECT_COLUMNS_LEGACY,
+        RAG_SELECT_COLUMNS_LEGACY_NO_FILE_METADATA,
         "rag_id, rag_tab_id, transcription",
         "rag_id, rag_tab_id",
     )
@@ -38,7 +47,9 @@ def select_rag_row_with_transcription_fallback(supabase: Any, rag_id: int) -> An
         except APIError as e:
             last_err = e
             msg = (e.message or "").lower()
-            if e.code == "42703" and any(x in msg for x in ("file_metadata", "person_id", "tab_name", "transcription")):
+            if e.code == "42703" and any(
+                x in msg for x in ("course_id", "file_metadata", "person_id", "tab_name", "transcription")
+            ):
                 continue
             raise
     assert last_err is not None
@@ -54,6 +65,7 @@ def exam_default_row(
     *,
     tab_name: str = "",
     person_id: str = "",
+    course_id: int = EXAM_COURSE_ID_DEFAULT,
     local: bool = False,
 ) -> dict[str, Any]:
     """Exam 表新增一筆時的預設欄位（不含 exam_id；created_at／updated_at 為台北時間）。"""
@@ -62,6 +74,7 @@ def exam_default_row(
         "exam_tab_id": exam_tab_id,
         "tab_name": tab_name,
         "person_id": person_id,
+        "course_id": course_id,
         "local": local,
         "deleted": False,
         "updated_at": ts,
@@ -77,14 +90,17 @@ def exams_table_select(
     exclude_deleted: bool = True,
     *,
     local_match: bool | None = None,
+    course_id: int | None = None,
 ) -> list[dict]:
-    """查詢 Exam 表。exclude_deleted=True 時僅回傳 deleted=False；依 created_at 升序。"""
+    """查詢 Exam 表。exclude_deleted=True 時僅回傳 deleted=False；course_id 若指定則僅回傳該課程。依 created_at 升序。"""
     supabase = get_supabase()
     q = supabase.table("Exam").select("*")
     if exclude_deleted:
         q = q.eq("deleted", False)
     if local_match is not None:
         q = q.eq("local", local_match)
+    if course_id is not None:
+        q = q.eq("course_id", course_id)
     q = q.order("created_at", desc=False)
     return q.execute().data or []
 
@@ -123,19 +139,23 @@ def exams_by_tab_ids(exam_tab_ids: list[str]) -> list[dict]:
 # Exam_Quiz 表查詢
 # ---------------------------------------------------------------------------
 
-def quizzes_by_exam_tab_ids(exam_tab_ids: list[str]) -> dict[str, list[dict]]:
-    """依 exam_tab_id 查詢 Exam_Quiz，回傳 exam_tab_id -> list of quiz（依 created_at 升序）。"""
+def quizzes_by_exam_tab_ids(
+    exam_tab_ids: list[str],
+    *,
+    course_id: int | None = None,
+) -> dict[str, list[dict]]:
+    """依 exam_tab_id 查詢 Exam_Quiz，回傳 exam_tab_id -> list of quiz（依 created_at 升序）。course_id 若指定則僅回傳該課程。"""
     if not exam_tab_ids:
         return {}
     supabase = get_supabase()
-    rows = (
+    q = (
         supabase.table("Exam_Quiz")
         .select("*")
         .in_("exam_tab_id", exam_tab_ids)
-        .order("created_at", desc=False)
-        .execute()
-        .data or []
     )
+    if course_id is not None:
+        q = q.eq("course_id", course_id)
+    rows = q.order("created_at", desc=False).execute().data or []
     out: dict[str, list[dict]] = {tid: [] for tid in exam_tab_ids}
     for row in rows:
         tid = row.get("exam_tab_id")

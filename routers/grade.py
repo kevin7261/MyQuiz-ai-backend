@@ -26,6 +26,7 @@ from utils.quiz_generation import generate_quiz, generate_quiz_transcription_onl
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from postgrest.exceptions import APIError
 from dependencies.person_id import PersonId
+from dependencies.course_id import CourseId
 from fastapi.responses import JSONResponse, Response
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -50,6 +51,12 @@ from utils.rag_transcript_from_upload_zip import (
     read_single_transcript_text_from_upload_zip,
     read_upload_zip_bytes,
     read_youtube_video_id_from_upload_zip,
+)
+from utils.rag_course_utils import (
+    assert_row_course_id,
+    execute_with_course_id_fallback,
+    require_rag_tab_owner,
+    select_without_course_id_if_needed,
 )
 from utils.supabase_client import get_supabase
 from utils.zip_storage import get_zip_path
@@ -180,38 +187,12 @@ class RagUnitYoutubeUrlFromZipResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 路由內輔助（僅限此模組）
-# ---------------------------------------------------------------------------
-
-def _require_rag_tab_owner(person_id: str, rag_tab_id: str) -> None:
-    """確認 Rag 列存在且 person_id 一致。"""
-    rid = (rag_tab_id or "").strip()
-    if not rid or "/" in rid or "\\" in rid:
-        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
-    supabase = get_supabase()
-    sel = (
-        supabase.table("Rag")
-        .select("rag_tab_id")
-        .eq("rag_tab_id", rid)
-        .eq("person_id", person_id)
-        .eq("deleted", False)
-        .limit(1)
-        .execute()
-    )
-    if not sel.data:
-        raise HTTPException(
-            status_code=404,
-            detail="找不到該 rag_tab_id，或已刪除／不屬於此 person_id",
-        )
-
-
-# ---------------------------------------------------------------------------
 # POST /rag/tab/unit/quiz/llm-generate
 # ---------------------------------------------------------------------------
 
 @router.post("/tab/unit/quiz/llm-generate", summary="Rag LLM Generate Quiz", operation_id="rag_llm_generate_quiz")
 @router.post("/generate-quiz", include_in_schema=False)
-def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId):
+def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId, course_id: CourseId):
     """
     Body：rag_quiz_id、quiz_name、quiz_user_prompt_text（後兩者可空字串）；
     rag_tab_id／rag_unit_id 由後端依 rag_quiz_id 自資料庫帶入；quiz_user_prompt_text 空則自該列 Rag_Quiz 讀取。
@@ -221,14 +202,23 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
     """
     supabase = get_supabase()
 
-    q_sel = (
-        supabase.table("Rag_Quiz")
-        .select("rag_quiz_id, rag_tab_id, rag_unit_id, quiz_user_prompt_text")
-        .eq("rag_quiz_id", body.rag_quiz_id)
-        .eq("deleted", False)
-        .limit(1)
-        .execute()
-    )
+    def build_quiz_sel(with_course_filter: bool):
+        cols = select_without_course_id_if_needed(
+            "Rag_Quiz",
+            "rag_quiz_id, rag_tab_id, rag_unit_id, quiz_user_prompt_text, course_id",
+            with_course_filter,
+        )
+        q = (
+            supabase.table("Rag_Quiz")
+            .select(cols)
+            .eq("rag_quiz_id", body.rag_quiz_id)
+            .eq("deleted", False)
+        )
+        if with_course_filter and course_id is not None:
+            q = q.eq("course_id", course_id)
+        return q.limit(1)
+
+    q_sel = execute_with_course_id_fallback("Rag_Quiz", build_quiz_sel, course_id)
     if not q_sel.data:
         raise HTTPException(status_code=404, detail=f"找不到 rag_quiz_id={body.rag_quiz_id} 的 Rag_Quiz")
     q_row = q_sel.data[0]
@@ -239,26 +229,32 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
     if source_rag_unit_id <= 0:
         raise HTTPException(status_code=400, detail="該 rag_quiz_id 對應的 rag_unit_id 無效")
 
+    def fetch_unit_row(*, include_folder_combination: bool):
+        def build(with_course_filter: bool):
+            base_cols = (
+                "rag_unit_id, rag_tab_id, unit_name, folder_combination, transcription, unit_type, course_id"
+                if include_folder_combination
+                else "rag_unit_id, rag_tab_id, unit_name, transcription, unit_type, course_id"
+            )
+            cols = select_without_course_id_if_needed("Rag_Unit", base_cols, with_course_filter)
+            q = (
+                supabase.table("Rag_Unit")
+                .select(cols)
+                .eq("rag_unit_id", source_rag_unit_id)
+                .eq("deleted", False)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q.limit(1)
+
+        return execute_with_course_id_fallback("Rag_Unit", build, course_id)
+
     try:
-        unit_sel = (
-            supabase.table("Rag_Unit")
-            .select("rag_unit_id, rag_tab_id, unit_name, folder_combination, transcription, unit_type")
-            .eq("rag_unit_id", source_rag_unit_id)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
-        )
+        unit_sel = fetch_unit_row(include_folder_combination=True)
     except APIError as e:
         msg = (e.message or "").lower()
         if e.code == "42703" and "folder_combination" in msg:
-            unit_sel = (
-                supabase.table("Rag_Unit")
-                .select("rag_unit_id, rag_tab_id, unit_name, transcription, unit_type")
-                .eq("rag_unit_id", source_rag_unit_id)
-                .eq("deleted", False)
-                .limit(1)
-                .execute()
-            )
+            unit_sel = fetch_unit_row(include_folder_combination=False)
         else:
             raise
     if not unit_sel.data:
@@ -279,8 +275,9 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
 
     rag_sel = (
         supabase.table("Rag")
-        .select("rag_id")
+        .select("rag_id, course_id")
         .eq("rag_tab_id", rag_tab_id)
+        .eq("course_id", course_id)
         .eq("deleted", False)
         .limit(1)
         .execute()
@@ -441,7 +438,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId)
     summary="Rag LLM Generate Quiz (stored quiz_user_prompt_text)",
     operation_id="rag_llm_generate_quiz_db_prompt",
 )
-def rag_llm_generate_quiz_db_prompt(body: GenerateQuizDbOnlyRequest, caller_person_id: PersonId):
+def rag_llm_generate_quiz_db_prompt(body: GenerateQuizDbOnlyRequest, caller_person_id: PersonId, course_id: CourseId):
     """
     與 `llm-generate` 相同，但請求不含 `quiz_user_prompt_text`，出題時一律使用
     Rag_Quiz 該列既有之 `quiz_user_prompt_text`（行為等同傳空字串至 `llm-generate`）。
@@ -453,6 +450,7 @@ def rag_llm_generate_quiz_db_prompt(body: GenerateQuizDbOnlyRequest, caller_pers
             quiz_user_prompt_text="",
         ),
         caller_person_id,
+        course_id,
     )
 
 
@@ -464,6 +462,7 @@ def rag_llm_generate_quiz_db_prompt(body: GenerateQuizDbOnlyRequest, caller_pers
 async def _enqueue_rag_llm_grade_job(
     background_tasks: BackgroundTasks,
     caller_person_id: str,
+    course_id: int,
     *,
     rag_id_str: str,
     rag_quiz_id_str: str,
@@ -492,6 +491,7 @@ async def _enqueue_rag_llm_grade_job(
         return JSONResponse(status_code=400, content={"error": "該筆 Rag 的 person_id 為空，無法取得 LLM API Key"})
     if person_id != caller_person_id:
         return JSONResponse(status_code=403, content={"error": "無權對該 Rag 評分"})
+    assert_row_course_id(row, course_id, "Rag")
 
     try:
         rag_quiz_id_int = int(rag_quiz_id_str.strip()) if rag_quiz_id_str.strip() else 0
@@ -509,14 +509,23 @@ async def _enqueue_rag_llm_grade_job(
             },
         )
 
-    rq_sel = (
-        supabase.table("Rag_Quiz")
-        .select("rag_unit_id, quiz_user_prompt_text, quiz_content, answer_user_prompt_text")
-        .eq("rag_quiz_id", rag_quiz_id_int)
-        .eq("deleted", False)
-        .limit(1)
-        .execute()
-    )
+    def build_grade_quiz_sel(with_course_filter: bool):
+        cols = select_without_course_id_if_needed(
+            "Rag_Quiz",
+            "rag_unit_id, quiz_user_prompt_text, quiz_content, answer_user_prompt_text, course_id",
+            with_course_filter,
+        )
+        q = (
+            supabase.table("Rag_Quiz")
+            .select(cols)
+            .eq("rag_quiz_id", rag_quiz_id_int)
+            .eq("deleted", False)
+        )
+        if with_course_filter and course_id is not None:
+            q = q.eq("course_id", course_id)
+        return q.limit(1)
+
+    rq_sel = execute_with_course_id_fallback("Rag_Quiz", build_grade_quiz_sel, course_id)
     if not rq_sel.data:
         return JSONResponse(status_code=404, content={"error": f"找不到 rag_quiz_id={rag_quiz_id_int} 的 Rag_Quiz"})
     rq_row = rq_sel.data[0]
@@ -546,14 +555,23 @@ async def _enqueue_rag_llm_grade_job(
     except (TypeError, ValueError):
         ruid_i = 0
     if ruid_i > 0:
-        uu = (
-            supabase.table("Rag_Unit")
-            .select("unit_type, transcription")
-            .eq("rag_unit_id", ruid_i)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
-        )
+        def build_grade_unit_sel(with_course_filter: bool):
+            cols = select_without_course_id_if_needed(
+                "Rag_Unit",
+                "unit_type, transcription, course_id",
+                with_course_filter,
+            )
+            q = (
+                supabase.table("Rag_Unit")
+                .select(cols)
+                .eq("rag_unit_id", ruid_i)
+                .eq("deleted", False)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q.limit(1)
+
+        uu = execute_with_course_id_fallback("Rag_Unit", build_grade_unit_sel, course_id)
         if uu.data:
             u0 = uu.data[0]
             try:
@@ -627,7 +645,12 @@ async def _enqueue_rag_llm_grade_job(
 
 
 @router.post("/tab/unit/quiz/llm-grade", summary="Rag Grade Quiz")
-async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeRequest, caller_person_id: PersonId):
+async def grade_submission(
+    background_tasks: BackgroundTasks,
+    body: QuizGradeRequest,
+    caller_person_id: PersonId,
+    course_id: CourseId,
+):
     """
     非同步評分：Body 以 rag_id、rag_quiz_id 為核心；quiz_content 可省略（自 Rag_Quiz 讀）。
     `answer_user_prompt_text` 以請求為準（可空；空字串會寫入並覆蓋 Rag_Quiz 該列）。
@@ -637,6 +660,7 @@ async def grade_submission(background_tasks: BackgroundTasks, body: QuizGradeReq
     return await _enqueue_rag_llm_grade_job(
         background_tasks,
         caller_person_id,
+        course_id,
         rag_id_str=body.rag_id,
         rag_quiz_id_str=body.rag_quiz_id,
         qc_from_body=body.quiz_content,
@@ -655,6 +679,7 @@ async def grade_submission_stored_answer_prompt(
     background_tasks: BackgroundTasks,
     body: QuizGradeDbOnlyRequest,
     caller_person_id: PersonId,
+    course_id: CourseId,
 ):
     """
     與 `llm-grade` 相同，但請求不含 `answer_user_prompt_text`；
@@ -663,6 +688,7 @@ async def grade_submission_stored_answer_prompt(
     return await _enqueue_rag_llm_grade_job(
         background_tasks,
         caller_person_id,
+        course_id,
         rag_id_str=body.rag_id,
         rag_quiz_id_str=body.rag_quiz_id,
         qc_from_body=body.quiz_content,
@@ -676,20 +702,29 @@ async def grade_submission_stored_answer_prompt(
 # ---------------------------------------------------------------------------
 
 @router.post("/tab/unit/quiz/for-exam", summary="Set Rag Quiz for_exam flag")
-def mark_rag_quiz_for_exam(body: RagQuizForExamRequest, caller_person_id: PersonId):
+def mark_rag_quiz_for_exam(body: RagQuizForExamRequest, caller_person_id: PersonId, course_id: CourseId):
     """更新 Rag_Quiz.for_exam（true＝測驗用、false＝取消）。以 rag_quiz_id 定位；僅 deleted=false 且 person_id 一致者可更新。"""
     req_tab = (body.rag_tab_id or "").strip()
     req_unit = int(body.rag_unit_id or 0)
     try:
         supabase = get_supabase()
-        sel = (
-            supabase.table("Rag_Quiz")
-            .select("rag_quiz_id, rag_tab_id, rag_unit_id, person_id")
-            .eq("rag_quiz_id", body.rag_quiz_id)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
-        )
+        def build_for_exam_sel(with_course_filter: bool):
+            cols = select_without_course_id_if_needed(
+                "Rag_Quiz",
+                "rag_quiz_id, rag_tab_id, rag_unit_id, person_id, course_id",
+                with_course_filter,
+            )
+            q = (
+                supabase.table("Rag_Quiz")
+                .select(cols)
+                .eq("rag_quiz_id", body.rag_quiz_id)
+                .eq("deleted", False)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q.limit(1)
+
+        sel = execute_with_course_id_fallback("Rag_Quiz", build_for_exam_sel, course_id)
         if not sel.data:
             raise HTTPException(status_code=404, detail="找不到該 rag_quiz_id 的 Rag_Quiz，或已刪除")
 
@@ -745,7 +780,7 @@ def mark_rag_quiz_for_exam(body: RagQuizForExamRequest, caller_person_id: Person
 # ---------------------------------------------------------------------------
 
 @router.get("/tab/unit/quiz/grade-result/{job_id}", summary="Get Grade Result", tags=["rag"])
-async def get_grade_result(job_id: str, _person_id: PersonId):
+async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseId):
     """
     輪詢評分結果。status: pending | ready | error；
     ready 時 result 為 quiz_comments、rag_quiz_id（另含 rag_answer_id），並自資料庫讀取 rag_quiz 整列。
@@ -775,13 +810,20 @@ async def get_grade_result(job_id: str, _person_id: PersonId):
                     rid_int = int(rid)
                     if rid_int > 0:
                         supabase = get_supabase()
-                        q = (
-                            supabase.table("Rag_Quiz")
-                            .select("*")
-                            .eq("rag_quiz_id", rid_int)
-                            .eq("deleted", False)
-                            .limit(1)
-                            .execute()
+
+                        def build_grade_result_sel(with_course_filter: bool):
+                            q = (
+                                supabase.table("Rag_Quiz")
+                                .select("*")
+                                .eq("rag_quiz_id", rid_int)
+                                .eq("deleted", False)
+                            )
+                            if with_course_filter and course_id is not None:
+                                q = q.eq("course_id", course_id)
+                            return q.limit(1)
+
+                        q = execute_with_course_id_fallback(
+                            "Rag_Quiz", build_grade_result_sel, course_id
                         )
                         if q.data:
                             rag_quiz_row = to_json_safe(q.data[0])
@@ -800,6 +842,7 @@ async def get_grade_result(job_id: str, _person_id: PersonId):
 @router.get("/transcript/text", response_model=RagTranscriptMarkdownResponse)
 def rag_transcript_text(
     caller_person_id: PersonId,
+    course_id: CourseId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id"),
     folder_name: str = Query(
         ...,
@@ -807,7 +850,7 @@ def rag_transcript_text(
     ),
 ):
     """自 upload ZIP 之 folder_name 路徑下讀取唯一一個文字檔的全文；markdown 僅為檔案內容，不寫回資料庫。"""
-    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
     except FileNotFoundError as e:
@@ -834,6 +877,7 @@ def rag_transcript_text(
 @router.get("/unit/mp3-file")
 def rag_unit_audio_file(
     caller_person_id: PersonId,
+    course_id: CourseId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（upload ZIP 路徑）"),
     folder_name: str = Query(
         ...,
@@ -844,7 +888,7 @@ def rag_unit_audio_file(
     自 upload ZIP 內指定資料夾擷取第一個支援的音訊檔，**不**經 Deepgram，直接回傳二進位內容。
     query 須含 `person_id`，且須與該 `rag_tab_id` 之 Rag.person_id 一致。
     """
-    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
     except FileNotFoundError as e:
@@ -878,6 +922,7 @@ def rag_unit_audio_file(
 @router.get("/unit/youtube-url", response_model=RagUnitYoutubeUrlFromZipResponse)
 def rag_unit_youtube_url(
     caller_person_id: PersonId,
+    course_id: CourseId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（upload ZIP 路徑）"),
     folder_name: str = Query(
         ...,
@@ -888,7 +933,7 @@ def rag_unit_youtube_url(
     自 upload ZIP 內指定資料夾讀取**恰好一個**文字檔（.md／.txt／.doc／.docx），解析 YouTube 連結或 video_id，
     回傳標準 `watch` URL（不擷取字幕）。query 須含 `person_id`，且須與該 rag_tab_id 之 Rag.person_id 一致。
     """
-    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
     except FileNotFoundError as e:
@@ -914,6 +959,7 @@ def rag_unit_youtube_url(
 @router.get("/transcript/audio", response_model=RagTranscriptMarkdownResponse)
 def rag_transcript_audio(
     caller_person_id: PersonId,
+    course_id: CourseId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（對應 Storage 路徑 {person_id}/{rag_tab_id}/upload/…）"),
     folder_name: str = Query(
         ...,
@@ -933,7 +979,7 @@ def rag_transcript_audio(
     ),
 ):
     """自 upload ZIP 內 folder_name 路徑找音訊檔，Deepgram 轉文字；預設 markdown 含較稀疏的句首時間標記。"""
-    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
     except FileNotFoundError as e:
@@ -976,6 +1022,7 @@ def rag_transcript_audio(
 @router.get("/transcript/youtube", response_model=RagTranscriptMarkdownResponse)
 def rag_transcript_youtube(
     caller_person_id: PersonId,
+    course_id: CourseId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id"),
     folder_name: str = Query(
         ...,
@@ -999,7 +1046,7 @@ def rag_transcript_youtube(
     ),
 ):
     """自 upload ZIP 內 folder_name 下唯一文字檔讀取連結，擷取字幕；預設為較稀疏的時間標記。"""
-    _require_rag_tab_owner(caller_person_id, rag_tab_id)
+    require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
     except FileNotFoundError as e:

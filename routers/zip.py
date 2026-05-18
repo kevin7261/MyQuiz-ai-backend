@@ -1,7 +1,7 @@
 """
 ZIP 與 RAG 相關 API 模組。
 提供：
-- GET /rag/tabs：列出 Rag 表（含 units→quizzes）；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；unit_type=mp3 且含 mp3_file_name 時另附 mp3_audio_url（GET /rag/tab/unit/mp3-file 之 query：`rag_tab_id`、`rag_unit_id` 即可，**不需** person_id，供前端 `<audio src>`）；unit_type=youtube 且含 youtube_url 時另附 youtube_url_api（同上，**不需** person_id）
+- GET /rag/tabs：列出 Rag 表（含 units→quizzes）；須傳 query course_id，僅回傳該課程資料；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；unit_type=mp3 且含 mp3_file_name 時另附 mp3_audio_url（GET /rag/tab/unit/mp3-file 之 query：`rag_tab_id`、`rag_unit_id` 即可，**不需** person_id，供前端 `<audio src>`）；unit_type=youtube 且含 youtube_url 時另附 youtube_url_api（同上，**不需** person_id）
 - GET /rag/units：依 rag_tab_id 列出 Rag_Unit（含 quizzes）
 - POST /rag/tab/create：建立一筆 Rag（可傳 local）
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field, field_validator
 from storage3.exceptions import StorageApiError
 
 from dependencies.person_id import PersonId
+from dependencies.course_id import CourseId
 
 from utils.datetime_utils import now_taipei_iso, to_taipei_iso
 from utils.json_utils import to_json_safe
@@ -54,7 +55,14 @@ from utils.zip_storage import (
     FOLDER_RAG,
 )
 from utils.supabase_client import get_supabase
-from utils.db_tables import ACTIVE_DELETED_FILTER, USER_COURSE_RELATION_TABLE
+from utils.db_tables import ACTIVE_DELETED_FILTER, RAG_COURSE_ID_DEFAULT, USER_COURSE_RELATION_TABLE
+from utils.rag_course_utils import (
+    execute_with_course_id_fallback,
+    insert_rag_child_row,
+    require_rag_tab_owner,
+    resolve_rag_tab_owner_person_id,
+    select_without_course_id_if_needed,
+)
 from utils.rag_exam_setting import is_localhost_request
 from utils.media_transcript import audio_media_type_for_suffix
 from utils.rag_transcript_from_upload_zip import (
@@ -82,56 +90,12 @@ RAG_UNIT_TYPE_YOUTUBE = 4
 RAG_UNIT_TYPE_ZIP_BUILD = RAG_UNIT_TYPE_RAG  # 同義 rag，向下相容
 
 
-def _require_rag_tab_owner(person_id: str, rag_tab_id: str) -> None:
-    """確認 Rag 列存在且 person_id 一致（與 routers/grade 相同語意）。"""
-    rid = (rag_tab_id or "").strip()
-    if not rid or "/" in rid or "\\" in rid:
-        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
-    supabase = get_supabase()
-    sel = (
-        supabase.table("Rag")
-        .select("rag_tab_id")
-        .eq("rag_tab_id", rid)
-        .eq("person_id", person_id)
-        .eq("deleted", False)
-        .limit(1)
-        .execute()
-    )
-    if not sel.data:
-        raise HTTPException(
-            status_code=404,
-            detail="找不到該 rag_tab_id，或已刪除／不屬於此 person_id",
-        )
-
-
-def _resolve_rag_tab_upload_owner_person_id(rag_tab_id: str) -> str:
-    """依 rag_tab_id 取得 upload ZIP 所屬 person_id（不驗證呼叫者 query person_id）。"""
-    rid = (rag_tab_id or "").strip()
-    if not rid or "/" in rid or "\\" in rid:
-        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
-    supabase = get_supabase()
-    sel = (
-        supabase.table("Rag")
-        .select("person_id")
-        .eq("rag_tab_id", rid)
-        .eq("deleted", False)
-        .limit(1)
-        .execute()
-    )
-    if not sel.data:
-        raise HTTPException(status_code=404, detail="找不到該 rag_tab_id，或已刪除")
-    owner = (sel.data[0].get("person_id") or "").strip()
-    if not owner:
-        raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 之 person_id")
-    return owner
-
-
 def _bytes_to_mb(size_bytes: int) -> float:
     return size_bytes / BYTES_PER_MB
 
 
-def _fetch_user_llm_key_and_user_type(person_id: str) -> tuple[str | None, int]:
-    """依 person_id 自 User_Course_Relation 取得 llm_api_key、user_type；無列時回傳 (None, 0)。"""
+def _fetch_user_llm_key_and_user_type(person_id: str, course_id: int) -> tuple[str | None, int]:
+    """依 person_id、course_id 自 User_Course_Relation 取得 llm_api_key、user_type；無列時回傳 (None, 0)。"""
     pid = (person_id or "").strip()
     if not pid:
         return None, 0
@@ -141,6 +105,7 @@ def _fetch_user_llm_key_and_user_type(person_id: str) -> tuple[str | None, int]:
             supabase.table(USER_COURSE_RELATION_TABLE)
             .select("llm_api_key, user_type")
             .eq("person_id", pid)
+            .eq("course_id", course_id)
             .or_(ACTIVE_DELETED_FILTER)
             .order("course_user_id")
             .limit(1)
@@ -243,15 +208,17 @@ def _rag_default_row(
     *,
     tab_name: str | None = None,
     person_id: str | None = None,
+    course_id: int = RAG_COURSE_ID_DEFAULT,
     file_metadata: Any = None,
     local: bool = False,
 ) -> dict[str, Any]:
-    """Rag 表一筆新增時的預設欄位；鍵順序同 public.Rag（rag_tab_id→…；不含 rag_id；created_at／updated_at 為台北時間）。"""
+    """Rag 表一筆新增時的預設欄位；鍵順序同 public.Rag（rag_tab_id→person_id→course_id→…；不含 rag_id；created_at／updated_at 為台北時間）。"""
     ts = now_taipei_iso()
     row: dict[str, Any] = {
         "rag_tab_id": rag_tab_id,
-        "tab_name": tab_name if tab_name is not None else "",
         "person_id": person_id if person_id is not None else "",
+        "course_id": course_id,
+        "tab_name": tab_name if tab_name is not None else "",
         "file_metadata": file_metadata,
     }
     # rag_metadata／rag_chunk_size 等欄位在 Rag_Unit 層管理，建立時不主動寫入以避免 schema 未同步時 500
@@ -266,6 +233,7 @@ def _rag_unit_default_row(
     rag_tab_id: str,
     person_id: str,
     *,
+    course_id: int = RAG_COURSE_ID_DEFAULT,
     unit_name: str = "",
     folder_combination: str = "",
     unit_type: int = RAG_UNIT_TYPE_RAG,
@@ -284,6 +252,7 @@ def _rag_unit_default_row(
     return {
         "rag_tab_id": rag_tab_id,
         "person_id": person_id,
+        "course_id": course_id,
         "unit_name": unit_name,
         "folder_combination": folder_combination,
         "unit_type": unit_type,
@@ -307,32 +276,44 @@ def _rag_table_select(
     exclude_deleted: bool = False,
     *,
     local_match: bool | None = None,
+    course_id: int | None = None,
 ) -> list[dict]:
-    """查詢 Rag 表全部列。回傳 list of dict。exclude_deleted=True 時僅回傳 deleted=False。local_match 若指定則僅回傳 Rag.local 與其相符的列。依 created_at 升序（舊→新）。"""
+    """查詢 Rag 表全部列。回傳 list of dict。exclude_deleted=True 時僅回傳 deleted=False。local_match 若指定則僅回傳 Rag.local 與其相符的列。course_id 若指定則僅回傳該課程。依 created_at 升序（舊→新）。"""
     supabase = get_supabase()
     q = supabase.table("Rag").select(select_columns)
     if exclude_deleted:
         q = q.eq("deleted", False)
     if local_match is not None:
         q = q.eq("local", local_match)
+    if course_id is not None:
+        q = q.eq("course_id", course_id)
     q = q.order("created_at", desc=False)
     resp = q.execute()
     return resp.data or []
 
 
-def _units_by_rag_tab_ids(rag_tab_ids: list[str]) -> dict[str, list[dict]]:
-    """依 rag_tab_id 查詢 Rag_Unit 表，回傳 rag_tab_id -> list of unit 列。僅回傳 deleted=False。依 created_at 升序。"""
+def _units_by_rag_tab_ids(
+    rag_tab_ids: list[str],
+    *,
+    course_id: int | None = None,
+) -> dict[str, list[dict]]:
+    """依 rag_tab_id 查詢 Rag_Unit 表，回傳 rag_tab_id -> list of unit 列。僅回傳 deleted=False。course_id 若指定則僅回傳該課程。依 created_at 升序。"""
     if not rag_tab_ids:
         return {}
     supabase = get_supabase()
-    resp = (
-        supabase.table("Rag_Unit")
-        .select("*")
-        .in_("rag_tab_id", rag_tab_ids)
-        .eq("deleted", False)
-        .order("created_at", desc=False)
-        .execute()
-    )
+
+    def build_unit_query(with_course_filter: bool):
+        q = (
+            supabase.table("Rag_Unit")
+            .select("*")
+            .in_("rag_tab_id", rag_tab_ids)
+            .eq("deleted", False)
+        )
+        if with_course_filter and course_id is not None:
+            q = q.eq("course_id", course_id)
+        return q.order("created_at", desc=False)
+
+    resp = execute_with_course_id_fallback("Rag_Unit", build_unit_query, course_id)
     rows = resp.data or []
     out: dict[str, list[dict]] = {tid: [] for tid in rag_tab_ids}
     for row in rows:
@@ -342,18 +323,28 @@ def _units_by_rag_tab_ids(rag_tab_ids: list[str]) -> dict[str, list[dict]]:
     return out
 
 
-def _quizzes_by_rag_unit_ids(rag_unit_ids: list[int]) -> dict[int, list[dict]]:
-    """依 rag_unit_id 查詢 Rag_Quiz 表，回傳 rag_unit_id -> list of quiz 列。僅回傳 deleted=False。"""
+def _quizzes_by_rag_unit_ids(
+    rag_unit_ids: list[int],
+    *,
+    course_id: int | None = None,
+) -> dict[int, list[dict]]:
+    """依 rag_unit_id 查詢 Rag_Quiz 表，回傳 rag_unit_id -> list of quiz 列。僅回傳 deleted=False。course_id 若指定則僅回傳該課程。"""
     if not rag_unit_ids:
         return {}
     supabase = get_supabase()
-    resp = (
-        supabase.table("Rag_Quiz")
-        .select("*")
-        .in_("rag_unit_id", rag_unit_ids)
-        .eq("deleted", False)
-        .execute()
-    )
+
+    def build_quiz_query(with_course_filter: bool):
+        q = (
+            supabase.table("Rag_Quiz")
+            .select("*")
+            .in_("rag_unit_id", rag_unit_ids)
+            .eq("deleted", False)
+        )
+        if with_course_filter and course_id is not None:
+            q = q.eq("course_id", course_id)
+        return q
+
+    resp = execute_with_course_id_fallback("Rag_Quiz", build_quiz_query, course_id)
     rows = resp.data or []
     out: dict[int, list[dict]] = {uid: [] for uid in rag_unit_ids}
     for row in rows:
@@ -367,7 +358,7 @@ def _quizzes_by_rag_unit_ids(rag_unit_ids: list[int]) -> dict[int, list[dict]]:
 
 
 class ListRagResponse(BaseModel):
-    """GET /rag/tabs 回應：每筆 Rag 含 units（Rag_Unit），每個 unit 含 quizzes（Rag_Quiz）。"""
+    """GET /rag/tabs 回應：每筆 Rag 含 units（Rag_Unit），每個 unit 含 quizzes（Rag_Quiz）；皆已依 query course_id 篩選。"""
     rags: list[dict]
     count: int
 
@@ -753,7 +744,7 @@ def _rag_zip_build_counts(outputs: list[dict[str, Any]]) -> dict[str, int]:
     return {"total": total, "built_ok": total - failed, "built_failed": failed}
 
 
-def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str, Any]) -> None:
+def _persist_rag_build_metadata(body: PackRequest, pid: str, course_id: int, response: dict[str, Any]) -> None:
     """成功建置後更新 Rag 表並為每個成功輸出單元建立 Rag_Unit 記錄。"""
     supabase = get_supabase()
     ts = now_taipei_iso()
@@ -764,7 +755,14 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
             "rag_metadata": response,
             "updated_at": ts,
         }
-        supabase.table("Rag").update(update_payload).eq("rag_tab_id", body.rag_tab_id).eq("person_id", pid).execute()
+        (
+            supabase.table("Rag")
+            .update(update_payload)
+            .eq("rag_tab_id", body.rag_tab_id)
+            .eq("person_id", pid)
+            .eq("course_id", course_id)
+            .execute()
+        )
     except Exception:
         pass
 
@@ -807,6 +805,7 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
         unit_row = _rag_unit_default_row(
             body.rag_tab_id,
             pid,
+            course_id=course_id,
             unit_name=output.get("unit_name", ""),
             folder_combination=fc,
             unit_type=unit_type_val,
@@ -821,7 +820,7 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
             rag_chunk_overlap=co_out,
         )
         try:
-            supabase.table("Rag_Unit").insert(unit_row).execute()
+            insert_rag_child_row("Rag_Unit", unit_row)
         except Exception:
             pass
 
@@ -830,13 +829,15 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, response: dict[str,
 def list_rag(
     request: Request,
     person_id: PersonId,
+    course_id: CourseId,
     local: bool | None = Query(
         None,
         description="僅回傳 Rag.local 與此值相同的列。未傳時：連線來源為 127.0.0.1、localhost、::1 視為 true，否則 false",
     ),
 ):
     """
-    列出 Rag 表內容（deleted=False），僅回傳與 query person_id 相符之列，Rag.local 須與 query local 相符（未傳 local 時依連線自動判定）。
+    列出 Rag 表內容（deleted=False），須傳 course_id，僅回傳該課程的 Rag／Rag_Unit／Rag_Quiz；
+    且僅回傳與 query person_id 相符之列，Rag.local 須與 query local 相符（未傳 local 時依連線自動判定）。
     回傳列依 created_at 由舊到新排序。
     每筆 Rag 含 units（Rag_Unit 列表），每個 unit 含 quizzes（Rag_Quiz 列表）。
     音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /rag/tab/unit/mp3-file 查詢字串（`rag_tab_id`、`rag_unit_id`，不需 person_id），可接在後端 origin 後作為 `<audio src>`。
@@ -844,14 +845,19 @@ def list_rag(
     """
     try:
         local_filter = local if local is not None else is_localhost_request(request)
-        data = _rag_table_select(RAG_SELECT_ALL, exclude_deleted=True, local_match=local_filter)
+        data = _rag_table_select(
+            RAG_SELECT_ALL,
+            exclude_deleted=True,
+            local_match=local_filter,
+            course_id=course_id,
+        )
         pid = person_id.strip()
         data = [r for r in data if (r.get("person_id") or "").strip() == pid]
 
         rag_tab_ids = list(dict.fromkeys(
             r.get("rag_tab_id") for r in data if r.get("rag_tab_id")
         ))
-        units_by_tab = _units_by_rag_tab_ids(rag_tab_ids)
+        units_by_tab = _units_by_rag_tab_ids(rag_tab_ids, course_id=course_id)
 
         all_unit_ids: list[int] = []
         for units in units_by_tab.values():
@@ -863,7 +869,7 @@ def list_rag(
                     except (TypeError, ValueError):
                         pass
         all_unit_ids = list(dict.fromkeys(all_unit_ids))
-        quizzes_by_unit = _quizzes_by_rag_unit_ids(all_unit_ids)
+        quizzes_by_unit = _quizzes_by_rag_unit_ids(all_unit_ids, course_id=course_id)
 
         for row in data:
             tab_id = row.get("rag_tab_id")
@@ -891,6 +897,7 @@ def list_rag(
                             {
                                 "rag_tab_id": str(tab_id).strip(),
                                 "rag_unit_id": str(uid_int),
+                                "course_id": str(course_id),
                             }
                         )
                     )
@@ -906,6 +913,7 @@ def list_rag(
                             {
                                 "rag_tab_id": str(tab_id).strip(),
                                 "rag_unit_id": str(uid_int),
+                                "course_id": str(course_id),
                             }
                         )
                     )
@@ -919,10 +927,11 @@ def list_rag(
 
 
 @router.post("/tab/create")
-def create_unit(body: CreateRagRequest, caller_person_id: PersonId):
+def create_unit(body: CreateRagRequest, caller_person_id: PersonId, course_id: CourseId):
     """
     只建立一筆 Rag 資料，接受 rag_tab_id、person_id、tab_name（必填）、local（選填，預設 false）。
-    回傳新增的 rag_id、rag_tab_id、person_id、tab_name、local、created_at。
+    須傳 query course_id，寫入 Rag.course_id。
+    回傳新增的 rag_id、rag_tab_id、person_id、course_id、tab_name、local、created_at。
     """
     fid = (body.rag_tab_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
@@ -944,6 +953,7 @@ def create_unit(body: CreateRagRequest, caller_person_id: PersonId):
                     fid,
                     tab_name=tab_name,
                     person_id=pid,
+                    course_id=course_id,
                     file_metadata=None,
                     local=body.local,
                 )
@@ -958,6 +968,7 @@ def create_unit(body: CreateRagRequest, caller_person_id: PersonId):
             "rag_tab_id": row["rag_tab_id"],
             "tab_name": row.get("tab_name"),
             "person_id": row.get("person_id"),
+            "course_id": row.get("course_id"),
             "local": row.get("local"),
             "created_at": to_taipei_iso(row.get("created_at")),
         }
@@ -968,7 +979,7 @@ def create_unit(body: CreateRagRequest, caller_person_id: PersonId):
 
 
 @router.put("/tab/tab-name")
-def update_unit_tab_name(body: UpdateRagUnitNameRequest, caller_person_id: PersonId):
+def update_unit_tab_name(body: UpdateRagUnitNameRequest, caller_person_id: PersonId, course_id: CourseId):
     """
     更新既有 Rag 的 tab_name。以 rag_id（Rag 主鍵）比對；僅更新 deleted=false 的列。
     回傳 rag_id、rag_tab_id、person_id、tab_name、updated_at。
@@ -982,8 +993,9 @@ def update_unit_tab_name(body: UpdateRagUnitNameRequest, caller_person_id: Perso
         supabase = get_supabase()
         sel = (
             supabase.table("Rag")
-            .select("rag_id, rag_tab_id, person_id")
+            .select("rag_id, rag_tab_id, person_id, course_id")
             .eq("rag_id", body.rag_id)
+            .eq("course_id", course_id)
             .eq("deleted", False)
             .limit(1)
             .execute()
@@ -1010,10 +1022,17 @@ def update_unit_tab_name(body: UpdateRagUnitNameRequest, caller_person_id: Perso
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _do_delete_rag_file_by_tab_id(fid: str) -> tuple[bool, str]:
-    """依 rag_tab_id 將 Rag 未刪除列軟刪除，同時軟刪除對應 Rag_Unit，並刪除 storage 資料夾。"""
+def _do_delete_rag_file_by_tab_id(fid: str, course_id: int) -> tuple[bool, str]:
+    """依 rag_tab_id、course_id 將 Rag 未刪除列軟刪除，同時軟刪除對應 Rag_Unit，並刪除 storage 資料夾。"""
     supabase = get_supabase()
-    sel = supabase.table("Rag").select("person_id").eq("rag_tab_id", fid).eq("deleted", False).execute()
+    sel = (
+        supabase.table("Rag")
+        .select("person_id")
+        .eq("rag_tab_id", fid)
+        .eq("course_id", course_id)
+        .eq("deleted", False)
+        .execute()
+    )
     if not sel.data:
         raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料，或已刪除")
     pids_ordered: list[str] = []
@@ -1026,11 +1045,29 @@ def _do_delete_rag_file_by_tab_id(fid: str) -> tuple[bool, str]:
         pids_ordered.append(pid)
     primary_pid = pids_ordered[0] if pids_ordered else ""
     try:
-        supabase.table("Rag").update({"deleted": True, "updated_at": now_taipei_iso()}).eq("rag_tab_id", fid).eq("deleted", False).execute()
+        (
+            supabase.table("Rag")
+            .update({"deleted": True, "updated_at": now_taipei_iso()})
+            .eq("rag_tab_id", fid)
+            .eq("course_id", course_id)
+            .eq("deleted", False)
+            .execute()
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新 Rag 表失敗: {e}")
     try:
-        supabase.table("Rag_Unit").update({"deleted": True, "updated_at": now_taipei_iso()}).eq("rag_tab_id", fid).eq("deleted", False).execute()
+        def build_delete_units(with_course_filter: bool):
+            q = (
+                supabase.table("Rag_Unit")
+                .update({"deleted": True, "updated_at": now_taipei_iso()})
+                .eq("rag_tab_id", fid)
+                .eq("deleted", False)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q
+
+        execute_with_course_id_fallback("Rag_Unit", build_delete_units, course_id)
     except Exception:
         pass
     folder_deleted = False
@@ -1046,6 +1083,7 @@ def _do_delete_rag_file_by_tab_id(fid: str) -> tuple[bool, str]:
 @router.put("/tab/delete/{rag_tab_id}", status_code=200, summary="Delete Rag File", operation_id="rag_tab_delete")
 def delete_rag_file(
     _person_id: PersonId,
+    course_id: CourseId,
     rag_tab_id: str = PathParam(..., description="要刪除的 rag_tab_id"),
 ):
     """
@@ -1055,7 +1093,7 @@ def delete_rag_file(
     fid = (rag_tab_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
         raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
-    folder_deleted, pid = _do_delete_rag_file_by_tab_id(fid)
+    folder_deleted, pid = _do_delete_rag_file_by_tab_id(fid, course_id)
     return {
         "message": "已將 RAG 資料標記為刪除並刪除儲存資料夾",
         "rag_tab_id": fid,
@@ -1068,6 +1106,7 @@ def delete_rag_file(
 @router.post("/tab/upload-zip")
 async def upload_zip(
     caller_person_id: PersonId,
+    course_id: CourseId,
     file: UploadFile = File(...),
     rag_tab_id: str = Form(..., description="對應 tab/create 建立的 rag_tab_id，ZIP 會存於此路徑"),
     person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 tab/create 一致"),
@@ -1103,7 +1142,14 @@ async def upload_zip(
 
     try:
         supabase = get_supabase()
-        r = supabase.table("Rag").select("rag_id, created_at").eq("rag_tab_id", fid).eq("person_id", resolved_person_id).execute()
+        r = (
+            supabase.table("Rag")
+            .select("rag_id, created_at")
+            .eq("rag_tab_id", fid)
+            .eq("person_id", resolved_person_id)
+            .eq("course_id", course_id)
+            .execute()
+        )
         if not r.data or len(r.data) == 0:
             raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料，請先呼叫 POST /rag/tab/create 建立")
         row = r.data[0]
@@ -1148,7 +1194,7 @@ async def upload_zip(
         "updated_at": now_taipei_iso(),
     }
     try:
-        supabase.table("Rag").update(update_payload).eq("rag_tab_id", fid).eq("person_id", resolved_person_id).execute()
+        supabase.table("Rag").update(update_payload).eq("rag_tab_id", fid).eq("person_id", resolved_person_id).eq("course_id", course_id).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return file_metadata
@@ -1159,6 +1205,7 @@ async def upload_zip(
 def build_rag_zip(
     body: PackRequest,
     caller_person_id: PersonId,
+    course_id: CourseId,
     repack_only: bool = Query(
         False,
         description="為 True 時強制不建 FAISS（unit_type=1 時 rag 改為 repack 複製）；不影響 unit_type=2/3/4 之逐字稿 rag ZIP",
@@ -1194,6 +1241,8 @@ def build_rag_zip(
     if pid != caller_person_id:
         raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
 
+    require_rag_tab_owner(pid, body.rag_tab_id, course_id)
+
     path = _fetch_source_upload_zip_with_retries(pid, body.rag_tab_id)
 
     try:
@@ -1214,7 +1263,7 @@ def build_rag_zip(
             pass
         raise HTTPException(status_code=400, detail="unit_list 為空或格式錯誤，例：220222+220301")
 
-    api_key, user_type_val = _fetch_user_llm_key_and_user_type(pid)
+    api_key, user_type_val = _fetch_user_llm_key_and_user_type(pid, course_id)
 
     # 允許 FAISS：user_type==1 且未強制關閉；即使允許，unit_type==1 才真正觸發建置
     if repack_only or body.build_faiss is False:
@@ -1325,7 +1374,7 @@ def build_rag_zip(
                 **counts,
             }
             if success:
-                _persist_rag_build_metadata(body, pid, response)
+                _persist_rag_build_metadata(body, pid, course_id, response)
             complete_ev: dict[str, Any] = {
                 "type": "complete",
                 "success": success,
@@ -1356,6 +1405,7 @@ def build_rag_zip(
 @router.get("/tab/units")
 def list_rag_units(
     _caller_person_id: PersonId,
+    course_id: CourseId,
     rag_tab_id: str = Query(..., description="要列出 Rag_Unit 的 rag_tab_id"),
 ):
     """
@@ -1367,14 +1417,19 @@ def list_rag_units(
         if not fid:
             raise HTTPException(status_code=400, detail="請傳入 rag_tab_id")
         supabase = get_supabase()
-        units_resp = (
-            supabase.table("Rag_Unit")
-            .select("*")
-            .eq("rag_tab_id", fid)
-            .eq("deleted", False)
-            .order("created_at", desc=False)
-            .execute()
-        )
+
+        def build_units_query(with_course_filter: bool):
+            q = (
+                supabase.table("Rag_Unit")
+                .select("*")
+                .eq("rag_tab_id", fid)
+                .eq("deleted", False)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q.order("created_at", desc=False)
+
+        units_resp = execute_with_course_id_fallback("Rag_Unit", build_units_query, course_id)
         units = units_resp.data or []
 
         unit_ids: list[int] = []
@@ -1386,7 +1441,7 @@ def list_rag_units(
                 except (TypeError, ValueError):
                     pass
         unit_ids = list(dict.fromkeys(unit_ids))
-        quizzes_by_unit = _quizzes_by_rag_unit_ids(unit_ids)
+        quizzes_by_unit = _quizzes_by_rag_unit_ids(unit_ids, course_id=course_id)
 
         for unit in units:
             uid = unit.get("rag_unit_id")
@@ -1403,7 +1458,7 @@ def list_rag_units(
 
 
 @router.put("/tab/unit/unit-name")
-def update_rag_unit_name(body: UpdateRagUnitUnitNameRequest, caller_person_id: PersonId):
+def update_rag_unit_name(body: UpdateRagUnitUnitNameRequest, caller_person_id: PersonId, course_id: CourseId):
     """
     更新既有 Rag_Unit 的 unit_name。以 rag_unit_id（主鍵）比對；僅更新 deleted=false 的列。
     回傳 rag_unit_id、rag_tab_id、person_id、unit_name、updated_at。
@@ -1415,14 +1470,24 @@ def update_rag_unit_name(body: UpdateRagUnitUnitNameRequest, caller_person_id: P
         raise HTTPException(status_code=400, detail="請傳入 unit_name")
     try:
         supabase = get_supabase()
-        sel = (
-            supabase.table("Rag_Unit")
-            .select("rag_unit_id, rag_tab_id, person_id")
-            .eq("rag_unit_id", body.rag_unit_id)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
-        )
+
+        def build_unit_sel(with_course_filter: bool):
+            cols = select_without_course_id_if_needed(
+                "Rag_Unit",
+                "rag_unit_id, rag_tab_id, person_id, course_id",
+                with_course_filter,
+            )
+            q = (
+                supabase.table("Rag_Unit")
+                .select(cols)
+                .eq("rag_unit_id", body.rag_unit_id)
+                .eq("deleted", False)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q.limit(1)
+
+        sel = execute_with_course_id_fallback("Rag_Unit", build_unit_sel, course_id)
         if not sel.data or len(sel.data) == 0:
             raise HTTPException(status_code=404, detail="找不到該 rag_unit_id 的 Rag_Unit 資料，或已刪除")
         row = sel.data[0]
@@ -1450,6 +1515,7 @@ def update_rag_unit_name(body: UpdateRagUnitUnitNameRequest, caller_person_id: P
     operation_id="rag_tab_unit_mp3_file",
 )
 def rag_tab_unit_mp3_file(
+    course_id: CourseId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（parent tab；repack/upload 路徑皆在其下）"),
     rag_unit_id: int = Query(..., gt=0, description="Rag_Unit 主鍵"),
 ):
@@ -1461,29 +1527,36 @@ def rag_tab_unit_mp3_file(
     repack 無法讀取時**改讀**該 tab 之 **upload** ZIP（與 GET /rag/unit/mp3-file 相同）。
     Storage `…/rag/{tab}_rag.zip` 僅為逐字稿封包，不含原始 mp3。
     """
-    owner_pid = _resolve_rag_tab_upload_owner_person_id(rag_tab_id)
+    owner_pid = resolve_rag_tab_owner_person_id(rag_tab_id, course_id)
     tab = (rag_tab_id or "").strip()
     supabase = get_supabase()
+
+    def fetch_mp3_unit_row(*, include_folder_combination: bool):
+        def build(with_course_filter: bool):
+            base_cols = (
+                "rag_tab_id, unit_name, folder_combination, unit_type, deleted, repack_file_name, course_id"
+                if include_folder_combination
+                else "rag_tab_id, unit_name, unit_type, deleted, repack_file_name, course_id"
+            )
+            cols = select_without_course_id_if_needed("Rag_Unit", base_cols, with_course_filter)
+            q = (
+                supabase.table("Rag_Unit")
+                .select(cols)
+                .eq("rag_unit_id", rag_unit_id)
+                .eq("person_id", owner_pid)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q.limit(1)
+
+        return execute_with_course_id_fallback("Rag_Unit", build, course_id)
+
     try:
-        sel = (
-            supabase.table("Rag_Unit")
-            .select("rag_tab_id, unit_name, folder_combination, unit_type, deleted, repack_file_name")
-            .eq("rag_unit_id", rag_unit_id)
-            .eq("person_id", owner_pid)
-            .limit(1)
-            .execute()
-        )
+        sel = fetch_mp3_unit_row(include_folder_combination=True)
     except APIError as e:
         msg = (e.message or "").lower()
         if e.code == "42703" and "folder_combination" in msg:
-            sel = (
-                supabase.table("Rag_Unit")
-                .select("rag_tab_id, unit_name, unit_type, deleted, repack_file_name")
-                .eq("rag_unit_id", rag_unit_id)
-                .eq("person_id", owner_pid)
-                .limit(1)
-                .execute()
-            )
+            sel = fetch_mp3_unit_row(include_folder_combination=False)
         else:
             raise
     if not sel.data:
@@ -1603,6 +1676,7 @@ def rag_tab_unit_mp3_file(
     response_model=RagUnitYoutubeUrlResponse,
 )
 def rag_tab_unit_youtube_url(
+    course_id: CourseId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（parent tab）"),
     rag_unit_id: int = Query(..., gt=0, description="Rag_Unit 主鍵"),
 ):
@@ -1611,18 +1685,28 @@ def rag_tab_unit_youtube_url(
     **不需** query `person_id`；後端依 `rag_tab_id` 自 Rag 解析擁有者。
     youtube_url 為上傳 ZIP 內文字檔所記錄之 YouTube 連結（建 RAG 時由 `extract_transcript_for_rag_build` 擷取並寫入 `Rag_Unit.youtube_url`）。
     """
-    owner_pid = _resolve_rag_tab_upload_owner_person_id(rag_tab_id)
+    owner_pid = resolve_rag_tab_owner_person_id(rag_tab_id, course_id)
     tab = (rag_tab_id or "").strip()
     supabase = get_supabase()
-    try:
-        sel = (
+
+    def build_youtube_sel(with_course_filter: bool):
+        cols = select_without_course_id_if_needed(
+            "Rag_Unit",
+            "rag_unit_id, rag_tab_id, unit_type, youtube_url, deleted, course_id",
+            with_course_filter,
+        )
+        q = (
             supabase.table("Rag_Unit")
-            .select("rag_unit_id, rag_tab_id, unit_type, youtube_url, deleted")
+            .select(cols)
             .eq("rag_unit_id", rag_unit_id)
             .eq("person_id", owner_pid)
-            .limit(1)
-            .execute()
         )
+        if with_course_filter and course_id is not None:
+            q = q.eq("course_id", course_id)
+        return q.limit(1)
+
+    try:
+        sel = execute_with_course_id_fallback("Rag_Unit", build_youtube_sel, course_id)
     except Exception as e:
         _logger.exception("GET /rag/tab/unit/youtube-url 查詢 Rag_Unit 失敗")
         raise HTTPException(status_code=500, detail=f"查詢失敗: {e!s}") from e
@@ -1660,7 +1744,7 @@ def rag_tab_unit_youtube_url(
 
 
 @router.post("/tab/unit/quiz/create", summary="Rag Create Quiz (no LLM)", operation_id="rag_create_quiz")
-def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonId):
+def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonId, course_id: CourseId):
     """
     依 `rag_tab_id`／`rag_unit_id` 解析 Rag_Unit 後新增一筆空白 `Rag_Quiz`，**不呼叫 LLM**。`rag_quiz_id` 由資料庫自動產生並於回傳中帶出。
     LLM 出題請用 `POST /rag/tab/unit/quiz/llm-generate`。
@@ -1672,14 +1756,26 @@ def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonI
 
         u: dict[str, Any] | None = None
 
+        def build_unit_lookup(with_course_filter: bool, *, by_unit_id: bool):
+            cols = select_without_course_id_if_needed(
+                "Rag_Unit",
+                "rag_unit_id, rag_tab_id, person_id, unit_name, course_id",
+                with_course_filter,
+            )
+            q = supabase.table("Rag_Unit").select(cols).eq("deleted", False)
+            if by_unit_id:
+                q = q.eq("rag_unit_id", resolved_unit_id).limit(1)
+            else:
+                q = q.eq("rag_tab_id", req_tab)
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q
+
         if resolved_unit_id > 0:
-            sel = (
-                supabase.table("Rag_Unit")
-                .select("rag_unit_id, rag_tab_id, person_id, unit_name")
-                .eq("rag_unit_id", resolved_unit_id)
-                .eq("deleted", False)
-                .limit(1)
-                .execute()
+            sel = execute_with_course_id_fallback(
+                "Rag_Unit",
+                lambda with_course: build_unit_lookup(with_course, by_unit_id=True),
+                course_id,
             )
             if sel.data:
                 u = sel.data[0]
@@ -1689,12 +1785,10 @@ def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonI
                     status_code=400,
                     detail="請傳入 rag_unit_id（>0），或傳入 rag_tab_id 且該 tab 下僅有一筆 Rag_Unit",
                 )
-            sel = (
-                supabase.table("Rag_Unit")
-                .select("rag_unit_id, rag_tab_id, person_id, unit_name")
-                .eq("rag_tab_id", req_tab)
-                .eq("deleted", False)
-                .execute()
+            sel = execute_with_course_id_fallback(
+                "Rag_Unit",
+                lambda with_course: build_unit_lookup(with_course, by_unit_id=False),
+                course_id,
             )
             rows = sel.data or []
             if len(rows) != 1:
@@ -1722,6 +1816,7 @@ def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonI
             "rag_tab_id": rag_tab_id,
             "rag_unit_id": uid,
             "person_id": pid,
+            "course_id": course_id,
             "quiz_name": quiz_name,
             "quiz_user_prompt_text": "",
             "quiz_content": "",
@@ -1735,7 +1830,7 @@ def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonI
             "updated_at": ts,
             "created_at": ts,
         }
-        ins = supabase.table("Rag_Quiz").insert(quiz_row).execute()
+        ins = insert_rag_child_row("Rag_Quiz", quiz_row)
         if not ins.data or len(ins.data) == 0:
             raise HTTPException(status_code=500, detail="寫入 Rag_Quiz 失敗（無回傳資料）")
         row = ins.data[0]
@@ -1769,7 +1864,7 @@ def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonI
 
 
 @router.put("/tab/unit/quiz/quiz-name", summary="Update Rag Quiz Name", operation_id="rag_tab_unit_quiz_quiz_name")
-def update_rag_quiz_name(body: UpdateRagQuizQuizNameRequest, caller_person_id: PersonId):
+def update_rag_quiz_name(body: UpdateRagQuizQuizNameRequest, caller_person_id: PersonId, course_id: CourseId):
     """
     更新既有 Rag_Quiz 的 quiz_name。以 rag_quiz_id（主鍵）比對；僅更新 deleted=false 的列。
     回傳 rag_quiz_id、rag_tab_id、rag_unit_id、person_id、quiz_name、updated_at。
@@ -1779,14 +1874,24 @@ def update_rag_quiz_name(body: UpdateRagQuizQuizNameRequest, caller_person_id: P
         raise HTTPException(status_code=400, detail="請傳入 quiz_name")
     try:
         supabase = get_supabase()
-        sel = (
-            supabase.table("Rag_Quiz")
-            .select("rag_quiz_id, rag_tab_id, rag_unit_id, person_id")
-            .eq("rag_quiz_id", body.rag_quiz_id)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
-        )
+
+        def build_quiz_sel(with_course_filter: bool):
+            cols = select_without_course_id_if_needed(
+                "Rag_Quiz",
+                "rag_quiz_id, rag_tab_id, rag_unit_id, person_id, course_id",
+                with_course_filter,
+            )
+            q = (
+                supabase.table("Rag_Quiz")
+                .select(cols)
+                .eq("rag_quiz_id", body.rag_quiz_id)
+                .eq("deleted", False)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q.limit(1)
+
+        sel = execute_with_course_id_fallback("Rag_Quiz", build_quiz_sel, course_id)
         if not sel.data:
             raise HTTPException(status_code=404, detail="找不到該 rag_quiz_id 的 Rag_Quiz 資料，或已刪除")
         row = sel.data[0]
@@ -1813,6 +1918,7 @@ def update_rag_quiz_name(body: UpdateRagQuizQuizNameRequest, caller_person_id: P
 @router.put("/tab/quiz/delete/{rag_quiz_id}", status_code=200, summary="Delete Rag Quiz", operation_id="rag_tab_quiz_delete")
 def delete_rag_quiz(
     caller_person_id: PersonId,
+    course_id: CourseId,
     rag_quiz_id: int = PathParam(..., gt=0, description="要軟刪除的 Rag_Quiz 主鍵"),
 ):
     """
@@ -1821,14 +1927,24 @@ def delete_rag_quiz(
     """
     try:
         supabase = get_supabase()
-        sel = (
-            supabase.table("Rag_Quiz")
-            .select("rag_quiz_id, rag_tab_id, rag_unit_id, person_id")
-            .eq("rag_quiz_id", rag_quiz_id)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
-        )
+
+        def build_quiz_delete_sel(with_course_filter: bool):
+            cols = select_without_course_id_if_needed(
+                "Rag_Quiz",
+                "rag_quiz_id, rag_tab_id, rag_unit_id, person_id, course_id",
+                with_course_filter,
+            )
+            q = (
+                supabase.table("Rag_Quiz")
+                .select(cols)
+                .eq("rag_quiz_id", rag_quiz_id)
+                .eq("deleted", False)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q.limit(1)
+
+        sel = execute_with_course_id_fallback("Rag_Quiz", build_quiz_delete_sel, course_id)
         if not sel.data:
             raise HTTPException(status_code=404, detail="找不到該 rag_quiz_id 的 Rag_Quiz 資料，或已刪除")
         row = sel.data[0]

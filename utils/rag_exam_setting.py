@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from fastapi import Request
 
+from utils.rag_course_utils import execute_with_course_id_fallback
+
 RAG_EXAM_SETTING_KEY_LOCALHOST = "rag_localhost"
 RAG_EXAM_SETTING_KEY_DEPLOY = "rag_deploy"
 
@@ -51,23 +53,25 @@ def fetch_exam_rag_id_from_settings(supabase, request: Request) -> tuple[str, in
         return key, None
 
 
-def rag_id_from_rag_tab_id(supabase, rag_tab_id: str) -> int | None:
-    """由 `Rag.rag_tab_id` 解析 `rag_id`（deleted=false）；供 Exam 等非 System_Setting 路徑使用。"""
-    return _rag_id_from_rag_tab_id(supabase, rag_tab_id)
+def rag_id_from_rag_tab_id(supabase, rag_tab_id: str, course_id: int | None = None) -> int | None:
+    """由 `Rag.rag_tab_id` 解析 `rag_id`（deleted=false）；course_id 若指定則一併篩選。"""
+    return _rag_id_from_rag_tab_id(supabase, rag_tab_id, course_id)
 
 
-def _rag_id_from_rag_tab_id(supabase, rag_tab_id: str) -> int | None:
+def _rag_id_from_rag_tab_id(supabase, rag_tab_id: str, course_id: int | None = None) -> int | None:
     tab = (rag_tab_id or "").strip()
     if not tab:
         return None
-    rag_sel = (
+    q = (
         supabase.table("Rag")
         .select("rag_id")
         .eq("rag_tab_id", tab)
         .eq("deleted", False)
         .limit(1)
-        .execute()
     )
+    if course_id is not None:
+        q = q.eq("course_id", course_id)
+    rag_sel = q.execute()
     if not rag_sel.data:
         return None
     try:
@@ -83,6 +87,7 @@ def resolve_exam_content_rag_id(
     *,
     stem_rag_unit_id: int | None = None,
     rag_quiz_id: int | None = None,
+    course_id: int | None = None,
 ) -> tuple[int | None, str | None]:
     """
     供測驗出題／批改選擇 Rag.rag_id。
@@ -104,16 +109,21 @@ def resolve_exam_content_rag_id(
         except (TypeError, ValueError):
             ruid = 0
     if ruid > 0:
-        ru = (
-            supabase.table("Rag_Unit")
-            .select("rag_tab_id")
-            .eq("rag_unit_id", ruid)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
-        )
+        def build_uq(with_course_filter: bool):
+            q = (
+                supabase.table("Rag_Unit")
+                .select("rag_tab_id")
+                .eq("rag_unit_id", ruid)
+                .eq("deleted", False)
+                .limit(1)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q
+
+        ru = execute_with_course_id_fallback("Rag_Unit", build_uq, course_id)
         if ru.data:
-            found = _rag_id_from_rag_tab_id(supabase, ru.data[0].get("rag_tab_id") or "")
+            found = _rag_id_from_rag_tab_id(supabase, ru.data[0].get("rag_tab_id") or "", course_id)
             if found:
                 return found, None
 
@@ -124,19 +134,24 @@ def resolve_exam_content_rag_id(
         except (TypeError, ValueError):
             rqid = 0
     if rqid > 0:
-        rq = (
-            supabase.table("Rag_Quiz")
-            .select("rag_tab_id, rag_unit_id")
-            .eq("rag_quiz_id", rqid)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
-        )
+        def build_rqq(with_course_filter: bool):
+            q = (
+                supabase.table("Rag_Quiz")
+                .select("rag_tab_id, rag_unit_id")
+                .eq("rag_quiz_id", rqid)
+                .eq("deleted", False)
+                .limit(1)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q
+
+        rq = execute_with_course_id_fallback("Rag_Quiz", build_rqq, course_id)
         if rq.data:
             r0 = rq.data[0]
             tab = (r0.get("rag_tab_id") or "").strip()
             if tab:
-                found = _rag_id_from_rag_tab_id(supabase, tab)
+                found = _rag_id_from_rag_tab_id(supabase, tab, course_id)
                 if found:
                     return found, None
             ru2_raw = r0.get("rag_unit_id")
@@ -145,16 +160,21 @@ def resolve_exam_content_rag_id(
             except (TypeError, ValueError):
                 ru2 = 0
             if ru2 > 0:
-                ru = (
-                    supabase.table("Rag_Unit")
-                    .select("rag_tab_id")
-                    .eq("rag_unit_id", ru2)
-                    .eq("deleted", False)
-                    .limit(1)
-                    .execute()
-                )
+                def build_uq2(with_course_filter: bool):
+                    q = (
+                        supabase.table("Rag_Unit")
+                        .select("rag_tab_id")
+                        .eq("rag_unit_id", ru2)
+                        .eq("deleted", False)
+                        .limit(1)
+                    )
+                    if with_course_filter and course_id is not None:
+                        q = q.eq("course_id", course_id)
+                    return q
+
+                ru = execute_with_course_id_fallback("Rag_Unit", build_uq2, course_id)
                 if ru.data:
-                    found = _rag_id_from_rag_tab_id(supabase, ru.data[0].get("rag_tab_id") or "")
+                    found = _rag_id_from_rag_tab_id(supabase, ru.data[0].get("rag_tab_id") or "", course_id)
                     if found:
                         return found, None
 
