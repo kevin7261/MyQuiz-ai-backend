@@ -13,6 +13,7 @@ from utils.db_tables import (
     EXAM_COURSE_ID_DEFAULT,
     EXAM_QUIZ_SELECT_COLUMNS,
     EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP,
+    EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID,
     RAG_SELECT_COLUMNS,
     RAG_SELECT_COLUMNS_LEGACY,
     RAG_SELECT_COLUMNS_LEGACY_NO_FILE_METADATA,
@@ -163,13 +164,19 @@ def _select_exam_quiz_rows(
 
 
 def _select_exam_quiz_rows_with_follow_up_fallback(**kwargs: Any) -> list[dict]:
-    try:
-        return _select_exam_quiz_rows(columns=EXAM_QUIZ_SELECT_COLUMNS, **kwargs)
-    except APIError as e:
-        msg = (e.message or "").lower()
-        if e.code == "42703" and "follow_up" in msg:
-            return _select_exam_quiz_rows(columns=EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP, **kwargs)
-        raise
+    for cols in (
+        EXAM_QUIZ_SELECT_COLUMNS,
+        EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID,
+        EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP,
+    ):
+        try:
+            return _select_exam_quiz_rows(columns=cols, **kwargs)
+        except APIError as e:
+            msg = (e.message or "").lower()
+            if e.code == "42703" and ("follow_up" in msg or "follow_up_exam_quiz_id" in msg):
+                continue
+            raise
+    return _select_exam_quiz_rows(columns=EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP, **kwargs)
 
 
 def quizzes_by_exam_tab_ids(
