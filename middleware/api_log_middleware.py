@@ -1,5 +1,5 @@
 """
-每次「實際業務」API 請求寫入 public.Log：person_id、api（路徑 URL）、api_metadata（api、method、parameters）。
+每次「實際業務」API 請求寫入 public.Log：person_id、course_id、api（路徑 URL）、api_metadata（api、method、parameters）。
 
 不記錄 OPTIONS／HEAD：瀏覽器跨域會先送 CORS preflight（OPTIONS），沒有 JSON body，
 若一併記錄會變成「前端呼叫 1 次卻出現 2 筆 log、且 parameters 只有 person_id」。
@@ -82,7 +82,28 @@ def _build_parameters(query_params: dict[str, str], body_flat: dict[str, Any]) -
     return out
 
 
-def _insert_log_row(*, person_id: str, api: str, api_metadata: dict[str, Any]) -> None:
+def _parse_course_id(raw: Any) -> int:
+    if raw is None or raw == "":
+        return 0
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _resolve_course_id(query_params: dict[str, str], body_flat: dict[str, Any]) -> int:
+    """query 優先，其次 JSON body 的 course_id。"""
+    cid = _parse_course_id(query_params.get("course_id"))
+    if cid != 0:
+        return cid
+    if "course_id" in body_flat:
+        return _parse_course_id(body_flat.get("course_id"))
+    return 0
+
+
+def _insert_log_row(
+    *, person_id: str, course_id: int, api: str, api_metadata: dict[str, Any]
+) -> None:
     from utils.datetime_utils import now_taipei_iso
     from utils.supabase_client import get_supabase
 
@@ -91,6 +112,7 @@ def _insert_log_row(*, person_id: str, api: str, api_metadata: dict[str, Any]) -
     supabase.table("Log").insert(
         {
             "person_id": (person_id or "")[:255],
+            "course_id": course_id,
             "api": (api or "")[:255],
             "api_metadata": api_metadata,
             "created_at": ts,
@@ -102,6 +124,7 @@ def _insert_log_row(*, person_id: str, api: str, api_metadata: dict[str, Any]) -
 async def _log_request_async(
     *,
     person_id: str,
+    course_id: int,
     api_url: str,
     method: str,
     parameters: dict[str, str],
@@ -117,6 +140,7 @@ async def _log_request_async(
         await asyncio.to_thread(
             _insert_log_row,
             person_id=person_id,
+            course_id=course_id,
             api=api_url,
             api_metadata=api_metadata,
         )
@@ -171,9 +195,11 @@ class APILogMiddleware(BaseHTTPMiddleware):
             body_flat = {"_body": "multipart/form-data"}
 
         parameters = _build_parameters(query_params, body_flat)
+        course_id = _resolve_course_id(query_params, body_flat)
 
         await _log_request_async(
             person_id=person_id,
+            course_id=course_id,
             api_url=api_url,
             method=method,
             parameters=parameters,
