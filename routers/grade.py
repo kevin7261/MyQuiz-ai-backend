@@ -2,6 +2,8 @@
 RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/llm-generate：依 rag_quiz_id 出題（LLM）；選填 quiz_history_list 避免重複出題；unit_type 1 僅 RAG ZIP 向量檢索；2/3/4 以 transcription 純生成；其餘載 RAG ZIP 向量檢索。
 - POST /rag/tab/unit/quiz/llm-generate-db：同 llm-generate，唯 body 不包含 quiz_user_prompt_text，一律沿用 Rag_Quiz 列上既有值。
+- POST /rag/tab/unit/quiz/llm-generate-followup：接續出題；答不好追問弱點，答好則出新題；quiz_history_list 為先前問答（題幹＋作答）列表。
+- POST /rag/tab/unit/quiz/llm-generate-followup-db：同 llm-generate-followup，唯 body 不包含 quiz_user_prompt_text。
 - POST /rag/tab/unit/quiz/llm-grade：非同步 RAG+LLM 評分（body 以 rag_id 置頂；quiz_content 可空，自 Rag_Quiz 讀題幹）；answer_user_prompt_text 可空——空字串會寫入並覆蓋該列。回傳 202 + job_id，輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
 - POST /rag/tab/unit/quiz/llm-grade-db：同 llm-grade，唯 body 不包含 answer_user_prompt_text，評分與寫回一律沿用 Rag_Quiz.answer_user_prompt_text（不論請求）。
 - POST /rag/tab/unit/quiz/for-exam：更新 Rag_Quiz.for_exam（body `for_exam` 預設 true；false 取消測驗用）。
@@ -21,7 +23,12 @@ import zipfile
 from pathlib import Path
 from typing import Any, Literal
 
-from utils.quiz_generation import generate_quiz, generate_quiz_transcription_only
+from utils.quiz_generation import (
+    generate_quiz,
+    generate_quiz_followup,
+    generate_quiz_followup_transcription_only,
+    generate_quiz_transcription_only,
+)
 from utils.openapi_request_body import openapi_body
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
@@ -139,6 +146,63 @@ class GenerateQuizDbOnlyRequest(BaseModel):
     )
 
 
+class QuizHistoryPair(BaseModel):
+    """先前問答一組：題幹、作答、參考答案與評閱（對齊 Rag_Quiz 欄位）。"""
+
+    quiz_content: str = Field(..., description="先前題目題幹")
+    answer_content: str = Field(
+        ...,
+        description="先前作答（學生答案）",
+        validation_alias=AliasChoices("answer_content", "quiz_answer", "answer"),
+    )
+    quiz_answer_reference: str = Field(
+        "",
+        description="該題參考答案（對齊 Rag_Quiz.quiz_answer_reference）",
+        validation_alias=AliasChoices(
+            "quiz_answer_reference",
+            "quiz_reference_answer",
+            "reference_answer",
+        ),
+    )
+    answer_critique: str = Field(
+        "",
+        description="該題評閱／批改評語（對齊 Rag_Quiz.answer_critique）",
+        validation_alias=AliasChoices("answer_critique", "critique", "quiz_comments"),
+    )
+
+
+class GenerateQuizFollowupRequest(BaseModel):
+    """POST /rag/tab/unit/quiz/llm-generate-followup；末欄 quiz_history_list 為先前問答（一問一答一項）。"""
+
+    rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
+    quiz_name: str = Field(
+        "",
+        description="測驗名稱；空字串則由 repack stem／單元 unit_name 決定 Rag_Quiz.quiz_name",
+    )
+    quiz_user_prompt_text: str = Field(
+        "",
+        description="出題 user prompt（可空）；非空時優先並寫入 Rag_Quiz；空則自該列 Rag_Quiz.quiz_user_prompt_text 帶入 LLM",
+    )
+    quiz_history_list: list[QuizHistoryPair] = Field(
+        default_factory=list,
+        description="先前問答列表；每項含 quiz_content、answer_content、quiz_answer_reference、answer_critique",
+    )
+
+
+class GenerateQuizFollowupDbOnlyRequest(BaseModel):
+    """POST /rag/tab/unit/quiz/llm-generate-followup-db；不含 quiz_user_prompt_text。"""
+
+    rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
+    quiz_name: str = Field(
+        "",
+        description="測驗名稱；空字串則由 repack stem／單元 unit_name 決定 Rag_Quiz.quiz_name",
+    )
+    quiz_history_list: list[QuizHistoryPair] = Field(
+        default_factory=list,
+        description="先前問答列表；每項含 quiz_content、answer_content、quiz_answer_reference、answer_critique",
+    )
+
+
 class QuizGradeDbOnlyRequest(BaseModel):
     """
     POST /rag/tab/unit/quiz/llm-grade-db。
@@ -197,21 +261,44 @@ _RAG_LLM_GENERATE_OPENAPI_EXAMPLE = {
     "quiz_history_list": ["先前已出過的題幹文字"],
 }
 
-@router.post("/tab/unit/quiz/llm-generate", summary="Rag LLM Generate Quiz", operation_id="rag_llm_generate_quiz")
-@router.post("/generate-quiz", include_in_schema=False)
-def rag_llm_generate_quiz(
-    body: openapi_body(GenerateQuizRequest, _RAG_LLM_GENERATE_OPENAPI_EXAMPLE),
-    caller_person_id: PersonId,
-    course_id: CourseId,
+_RAG_LLM_GENERATE_FOLLOWUP_OPENAPI_EXAMPLE = {
+    "rag_quiz_id": 1,
+    "quiz_name": "",
+    "quiz_user_prompt_text": "",
+    "quiz_history_list": [
+        {
+            "quiz_content": "先前題目題幹",
+            "answer_content": "學生先前作答",
+            "quiz_answer_reference": "參考答案全文",
+            "answer_critique": "批改評語（指出答不好之處）",
+        },
+    ],
+}
+
+
+def _quiz_history_qa_dicts(pairs: list[QuizHistoryPair]) -> list[dict[str, str]]:
+    return [
+        {
+            "quiz_content": p.quiz_content,
+            "answer_content": p.answer_content,
+            "quiz_answer_reference": p.quiz_answer_reference,
+            "answer_critique": p.answer_critique,
+        }
+        for p in pairs
+    ]
+
+
+def _rag_llm_generate_quiz_impl(
+    *,
+    rag_quiz_id: int,
+    quiz_name: str,
+    quiz_user_prompt_text: str,
+    caller_person_id: str,
+    course_id: int,
+    followup: bool,
+    quiz_history_stems: list[str] | None = None,
+    quiz_history_qa: list[QuizHistoryPair] | None = None,
 ):
-    """
-    Body：rag_quiz_id、quiz_name、quiz_user_prompt_text（可空字串）、quiz_history_list（選填；順序同 public.Rag_Quiz）；
-    rag_tab_id／rag_unit_id 由後端依 rag_quiz_id 自資料庫帶入；quiz_user_prompt_text 空則自該列 Rag_Quiz 讀取。
-    選填 `quiz_history_list`（字串陣列）：已出過的題目題幹，由 `utils.quiz_generation` 併入 user「已出過題目」區塊，避免重複出題。
-    unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcription。
-    unit_type 2／3／4 時不載入 RAG ZIP，改以逐字稿為 context；與 unit_type=1 共用 `SYSTEM_PROMPT_QUIZ`、`USER_PROMPT_COURSE` 與 `_generate_quiz_from_context`。
-    出題成功後更新 public.Rag_Quiz（quiz_name、quiz_*；並清空 answer_*）。
-    """
     supabase = get_supabase()
 
     def build_quiz_sel(with_course_filter: bool):
@@ -223,7 +310,7 @@ def rag_llm_generate_quiz(
         q = (
             supabase.table("Rag_Quiz")
             .select(cols)
-            .eq("rag_quiz_id", body.rag_quiz_id)
+            .eq("rag_quiz_id", rag_quiz_id)
             .eq("deleted", False)
         )
         if with_course_filter and course_id is not None:
@@ -232,9 +319,9 @@ def rag_llm_generate_quiz(
 
     q_sel = execute_with_course_id_fallback("Rag_Quiz", build_quiz_sel, course_id)
     if not q_sel.data:
-        raise HTTPException(status_code=404, detail=f"找不到 rag_quiz_id={body.rag_quiz_id} 的 Rag_Quiz")
+        raise HTTPException(status_code=404, detail=f"找不到 rag_quiz_id={rag_quiz_id} 的 Rag_Quiz")
     q_row = q_sel.data[0]
-    qup_body = (body.quiz_user_prompt_text or "").strip()
+    qup_body = (quiz_user_prompt_text or "").strip()
     qup_db = (q_row.get("quiz_user_prompt_text") or "").strip()
     qup_for_llm = qup_body or qup_db
     source_rag_unit_id = int(q_row.get("rag_unit_id") or 0)
@@ -335,13 +422,22 @@ def rag_llm_generate_quiz(
 
     path: Path | None = None
     try:
+        qa_dicts = _quiz_history_qa_dicts(quiz_history_qa or [])
         if unit_type_val in (2, 3, 4):
-            result = generate_quiz_transcription_only(
-                api_key=api_key,
-                transcription=transcription_text,
-                quiz_user_prompt_text=qup_for_llm,
-                quiz_history_list=body.quiz_history_list,
-            )
+            if followup:
+                result = generate_quiz_followup_transcription_only(
+                    api_key=api_key,
+                    transcription=transcription_text,
+                    quiz_user_prompt_text=qup_for_llm,
+                    quiz_history_list=qa_dicts,
+                )
+            else:
+                result = generate_quiz_transcription_only(
+                    api_key=api_key,
+                    transcription=transcription_text,
+                    quiz_user_prompt_text=qup_for_llm,
+                    quiz_history_list=quiz_history_stems or [],
+                )
         else:
             path = get_zip_path(rag_zip_tab_id)
             if not path or not path.exists():
@@ -349,12 +445,20 @@ def rag_llm_generate_quiz(
                     status_code=404,
                     detail=f"找不到 RAG ZIP，請確認 rag_id={rag_id}（rag_tab_id={rag_zip_tab_id}）",
                 )
-            result = generate_quiz(
-                path,
-                api_key=api_key,
-                quiz_user_prompt_text=qup_for_llm,
-                quiz_history_list=body.quiz_history_list,
-            )
+            if followup:
+                result = generate_quiz_followup(
+                    path,
+                    api_key=api_key,
+                    quiz_user_prompt_text=qup_for_llm,
+                    quiz_history_list=qa_dicts,
+                )
+            else:
+                result = generate_quiz(
+                    path,
+                    api_key=api_key,
+                    quiz_user_prompt_text=qup_for_llm,
+                    quiz_history_list=quiz_history_stems or [],
+                )
         result["transcription"] = "" if unit_type_val == 1 else transcription_text
         result["rag_output"] = {
             "rag_tab_id": stem,
@@ -367,28 +471,32 @@ def rag_llm_generate_quiz(
         result["quiz_content"] = qc
         result["quiz_hint"] = qh
         result["quiz_answer_reference"] = qref
-        result["rag_quiz_id"] = body.rag_quiz_id
+        result["rag_quiz_id"] = rag_quiz_id
         qup_stored = qup_body if qup_body else qup_db
         qts = now_taipei_iso()
-        body_quiz_name = body.quiz_name.strip()
-        quiz_name = body_quiz_name or ((stem or "").strip() or (unit_row.get("unit_name") or "").strip() or "")
-        result["quiz_name"] = quiz_name
+        body_quiz_name = quiz_name.strip()
+        resolved_quiz_name = body_quiz_name or (
+            (stem or "").strip() or (unit_row.get("unit_name") or "").strip() or ""
+        )
+        result["quiz_name"] = resolved_quiz_name
+        result["follow_up"] = followup
         quiz_update: dict[str, Any] = {
-            "quiz_name": quiz_name,
+            "quiz_name": resolved_quiz_name,
             "quiz_user_prompt_text": qup_stored,
             "quiz_content": qc,
             "quiz_hint": qh,
             "quiz_answer_reference": qref,
             "answer_user_prompt_text": "",
             "answer_content": "",
+            "follow_up": followup,
             "updated_at": qts,
         }
         try:
-            supabase.table("Rag_Quiz").update(quiz_update).eq("rag_quiz_id", body.rag_quiz_id).eq("deleted", False).execute()
+            supabase.table("Rag_Quiz").update(quiz_update).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
         except Exception as e:
             _logger.error(
                 "Rag_Quiz llm-generate 更新失敗 rag_quiz_id=%s: %s",
-                body.rag_quiz_id,
+                rag_quiz_id,
                 e,
                 exc_info=True,
             )
@@ -404,7 +512,7 @@ def rag_llm_generate_quiz(
         chk = (
             supabase.table("Rag_Quiz")
             .select("quiz_content, quiz_user_prompt_text")
-            .eq("rag_quiz_id", body.rag_quiz_id)
+            .eq("rag_quiz_id", rag_quiz_id)
             .eq("deleted", False)
             .limit(1)
             .execute()
@@ -418,7 +526,7 @@ def rag_llm_generate_quiz(
         if qc and row_out and (row_out.get("quiz_content") or "").strip() != qc:
             _logger.error(
                 "Rag_Quiz llm-generate 讀回驗證失敗 rag_quiz_id=%s（quiz_content 不一致）",
-                body.rag_quiz_id,
+                rag_quiz_id,
             )
             raise HTTPException(
                 status_code=500,
@@ -440,6 +548,65 @@ def rag_llm_generate_quiz(
                 path.unlink(missing_ok=True)
             except Exception:
                 pass
+
+
+@router.post("/tab/unit/quiz/llm-generate", summary="Rag LLM Generate Quiz", operation_id="rag_llm_generate_quiz")
+@router.post("/generate-quiz", include_in_schema=False)
+def rag_llm_generate_quiz(
+    body: openapi_body(GenerateQuizRequest, _RAG_LLM_GENERATE_OPENAPI_EXAMPLE),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+):
+    """
+    Body：rag_quiz_id、quiz_name、quiz_user_prompt_text（可空字串）、quiz_history_list（選填；順序同 public.Rag_Quiz）；
+    rag_tab_id／rag_unit_id 由後端依 rag_quiz_id 自資料庫帶入；quiz_user_prompt_text 空則自該列 Rag_Quiz 讀取。
+    選填 `quiz_history_list`（字串陣列）：已出過的題目題幹，由 `utils.quiz_generation` 併入 user「已出過題目」區塊，避免重複出題。
+    unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcription。
+    unit_type 2／3／4 時不載入 RAG ZIP，改以逐字稿為 context；與 unit_type=1 共用 `SYSTEM_PROMPT_QUIZ`、`USER_PROMPT_COURSE` 與 `_generate_quiz_from_context`。
+    出題成功後更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=false；並清空 answer_*）。
+    """
+    return _rag_llm_generate_quiz_impl(
+        rag_quiz_id=body.rag_quiz_id,
+        quiz_name=body.quiz_name,
+        quiz_user_prompt_text=body.quiz_user_prompt_text,
+        caller_person_id=caller_person_id,
+        course_id=course_id,
+        followup=False,
+        quiz_history_stems=body.quiz_history_list,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /rag/tab/unit/quiz/llm-generate-followup
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/tab/unit/quiz/llm-generate-followup",
+    summary="Rag LLM Generate Follow-up Quiz",
+    operation_id="rag_llm_generate_quiz_followup",
+)
+def rag_llm_generate_quiz_followup(
+    body: openapi_body(GenerateQuizFollowupRequest, _RAG_LLM_GENERATE_FOLLOWUP_OPENAPI_EXAMPLE),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+):
+    """
+    依先前問答接續出下一題：作答不佳則針對弱點追問；作答良好則改出新的不重複題目。
+    Body 與 `llm-generate` 類似，但 `quiz_history_list` 為物件陣列，
+    每項含 `quiz_content`、`answer_content`、`quiz_answer_reference`、`answer_critique`，一問一答一項。
+    使用 `SYSTEM_PROMPT_QUIZ_FOLLOWUP`／`USER_PROMPT_COURSE_FOLLOWUP`。
+    出題成功後同樣更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=true；並清空 answer_*）。
+    """
+    return _rag_llm_generate_quiz_impl(
+        rag_quiz_id=body.rag_quiz_id,
+        quiz_name=body.quiz_name,
+        quiz_user_prompt_text=body.quiz_user_prompt_text,
+        caller_person_id=caller_person_id,
+        course_id=course_id,
+        followup=True,
+        quiz_history_qa=body.quiz_history_list,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -464,15 +631,58 @@ def rag_llm_generate_quiz_db_prompt(
     與 `llm-generate` 相同，但請求不含 `quiz_user_prompt_text`，出題時一律使用
     Rag_Quiz 該列既有之 `quiz_user_prompt_text`（行為等同傳空字串至 `llm-generate`）。
     """
-    return rag_llm_generate_quiz(
-        GenerateQuizRequest(
-            rag_quiz_id=body.rag_quiz_id,
-            quiz_name=body.quiz_name,
-            quiz_user_prompt_text="",
-            quiz_history_list=body.quiz_history_list,
-        ),
-        caller_person_id,
-        course_id,
+    return _rag_llm_generate_quiz_impl(
+        rag_quiz_id=body.rag_quiz_id,
+        quiz_name=body.quiz_name,
+        quiz_user_prompt_text="",
+        caller_person_id=caller_person_id,
+        course_id=course_id,
+        followup=False,
+        quiz_history_stems=body.quiz_history_list,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /rag/tab/unit/quiz/llm-generate-followup-db
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/tab/unit/quiz/llm-generate-followup-db",
+    summary="Rag LLM Generate Follow-up Quiz (stored quiz_user_prompt_text)",
+    operation_id="rag_llm_generate_quiz_followup_db_prompt",
+)
+def rag_llm_generate_quiz_followup_db_prompt(
+    body: openapi_body(
+        GenerateQuizFollowupDbOnlyRequest,
+        {
+            "rag_quiz_id": 1,
+            "quiz_name": "",
+            "quiz_history_list": [
+                {
+                    "quiz_content": "先前題目題幹",
+                    "answer_content": "學生先前作答",
+                    "quiz_answer_reference": "參考答案全文",
+                    "answer_critique": "批改評語",
+                },
+            ],
+        },
+    ),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+):
+    """
+    與 `llm-generate-followup` 相同，但請求不含 `quiz_user_prompt_text`，出題時一律使用
+    Rag_Quiz 該列既有之 `quiz_user_prompt_text`。
+    """
+    return _rag_llm_generate_quiz_impl(
+        rag_quiz_id=body.rag_quiz_id,
+        quiz_name=body.quiz_name,
+        quiz_user_prompt_text="",
+        caller_person_id=caller_person_id,
+        course_id=course_id,
+        followup=True,
+        quiz_history_qa=body.quiz_history_list,
     )
 
 
@@ -812,6 +1022,7 @@ def mark_rag_quiz_for_exam(
             "quiz_answer": row.get("answer_content") or row.get("quiz_answer"),
             "answer_critique": row.get("answer_critique"),
             "for_exam": row.get("for_exam"),
+            "follow_up": row.get("follow_up"),
             "deleted": row.get("deleted"),
             "updated_at": row.get("updated_at"),
             "created_at": row.get("created_at"),

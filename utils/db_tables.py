@@ -44,7 +44,7 @@ RAG_UNIT_SELECT_COLUMNS = (
 )
 
 RAG_QUIZ_SELECT_COLUMNS = (
-    "rag_quiz_id, rag_tab_id, rag_unit_id, person_id, course_id, quiz_name, "
+    "rag_quiz_id, rag_tab_id, rag_unit_id, person_id, course_id, follow_up, quiz_name, "
     "quiz_user_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, "
     "answer_user_prompt_text, answer_content, answer_critique, for_exam, deleted, "
     "updated_at, created_at"

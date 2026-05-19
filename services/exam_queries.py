@@ -297,6 +297,7 @@ def rag_quiz_for_exam_response_row(row: dict[str, Any]) -> dict[str, Any]:
         "rag_tab_id": rag_tab_id,
         "rag_unit_id": rag_unit_id,
         "person_id": str(row.get("person_id") or ""),
+        "follow_up": bool(row.get("follow_up")),
         "quiz_name": str(row.get("quiz_name") or ""),
         "quiz_user_prompt_text": str(row.get("quiz_user_prompt_text") or ""),
         "quiz_content": str(row.get("quiz_content") or ""),

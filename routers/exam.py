@@ -107,7 +107,7 @@ class ListRagForExamsResponse(BaseModel):
     """GET /exam/rag-for-exams：單元為完整 Rag_Unit；quizzes 含 RAG 關聯鍵與出題／批改 prompt。"""
     units: list[dict] = Field(
         ...,
-        description="Rag_Unit 列；每筆 quizzes[] 鍵順序同 public.Rag_Quiz 至 answer_user_prompt_text：rag_quiz_id, rag_tab_id, rag_unit_id, person_id, quiz_name, quiz_user_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, answer_user_prompt_text",
+        description="Rag_Unit 列；每筆 quizzes[] 含 follow_up、rag_quiz_id、rag_tab_id、rag_unit_id、person_id、quiz_name、quiz_user_prompt_text、quiz_content、quiz_hint、quiz_answer_reference、answer_user_prompt_text",
     )
     count: int
 
@@ -344,7 +344,7 @@ def list_rag_for_exams(
         def build_exam_quizzes(with_course_filter: bool):
             cols = select_without_course_id_if_needed(
                 "Rag_Quiz",
-                "rag_quiz_id, rag_tab_id, rag_unit_id, person_id, course_id, quiz_name, quiz_user_prompt_text, "
+                "rag_quiz_id, rag_tab_id, rag_unit_id, person_id, course_id, follow_up, quiz_name, quiz_user_prompt_text, "
                 "quiz_content, quiz_hint, quiz_answer_reference, answer_user_prompt_text",
                 with_course_filter,
             )
