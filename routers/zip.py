@@ -56,7 +56,14 @@ from utils.zip_storage import (
 )
 from utils.datetime_utils import now_taipei_iso
 from utils.supabase_client import get_supabase
-from utils.db_tables import ACTIVE_DELETED_FILTER, RAG_COURSE_ID_DEFAULT, USER_COURSE_RELATION_TABLE
+from utils.db_tables import (
+    ACTIVE_DELETED_FILTER,
+    RAG_COURSE_ID_DEFAULT,
+    RAG_QUIZ_SELECT_COLUMNS,
+    RAG_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP,
+    USER_COURSE_RELATION_TABLE,
+    rag_quiz_list_row,
+)
 from utils.rag_course_utils import (
     execute_with_course_id_fallback,
     insert_rag_child_row,
@@ -329,37 +336,55 @@ def _quizzes_by_rag_unit_ids(
     *,
     course_id: int | None = None,
 ) -> dict[int, list[dict]]:
-    """依 rag_unit_id 查詢 Rag_Quiz 表，回傳 rag_unit_id -> list of quiz 列。僅回傳 deleted=False。course_id 若指定則僅回傳該課程。"""
+    """依 rag_unit_id 查詢 Rag_Quiz，回傳 rag_unit_id -> quizzes[]（含 follow_up）。僅 deleted=False。"""
     if not rag_unit_ids:
         return {}
     supabase = get_supabase()
 
-    def build_quiz_query(with_course_filter: bool):
+    def build_quiz_query(with_course_filter: bool, *, columns: str):
+        cols = select_without_course_id_if_needed("Rag_Quiz", columns, with_course_filter)
         q = (
             supabase.table("Rag_Quiz")
-            .select("*")
+            .select(cols)
             .in_("rag_unit_id", rag_unit_ids)
             .eq("deleted", False)
         )
         if with_course_filter and course_id is not None:
             q = q.eq("course_id", course_id)
-        return q
+        return q.order("created_at", desc=False)
 
-    resp = execute_with_course_id_fallback("Rag_Quiz", build_quiz_query, course_id)
+    try:
+        resp = execute_with_course_id_fallback(
+            "Rag_Quiz",
+            lambda with_course: build_quiz_query(with_course, columns=RAG_QUIZ_SELECT_COLUMNS),
+            course_id,
+        )
+    except APIError as e:
+        msg = (e.message or "").lower()
+        if e.code == "42703" and "follow_up" in msg:
+            resp = execute_with_course_id_fallback(
+                "Rag_Quiz",
+                lambda with_course: build_quiz_query(
+                    with_course, columns=RAG_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP
+                ),
+                course_id,
+            )
+        else:
+            raise
     rows = resp.data or []
     out: dict[int, list[dict]] = {uid: [] for uid in rag_unit_ids}
     for row in rows:
         uid = row.get("rag_unit_id")
         if uid is not None:
             try:
-                out.setdefault(int(uid), []).append(row)
+                out.setdefault(int(uid), []).append(rag_quiz_list_row(row))
             except (TypeError, ValueError):
                 pass
     return out
 
 
 class ListRagResponse(BaseModel):
-    """GET /rag/tabs 回應：每筆 Rag 含 units（Rag_Unit），每個 unit 含 quizzes（Rag_Quiz）；皆已依 query course_id 篩選。"""
+    """GET /rag/tabs 回應：每筆 Rag 含 units（Rag_Unit），每個 unit 含 quizzes（Rag_Quiz，含 follow_up）；皆已依 query course_id 篩選。"""
     rags: list[dict]
     count: int
 
@@ -837,7 +862,7 @@ def list_rag(
     列出 Rag 表內容（deleted=False），須傳 course_id，僅回傳該課程的 Rag／Rag_Unit／Rag_Quiz；
     且僅回傳與 query person_id 相符之列，Rag.local 須與 query local 相符（未傳 local 時依連線自動判定）。
     回傳列依 created_at 由舊到新排序。
-    每筆 Rag 含 units（Rag_Unit 列表），每個 unit 含 quizzes（Rag_Quiz 列表）。
+    每筆 Rag 含 units（Rag_Unit 列表），每個 unit 含 quizzes（Rag_Quiz 列表，含 follow_up）。
     音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /rag/tab/unit/mp3-file 查詢字串（`rag_tab_id`、`rag_unit_id`，不需 person_id），可接在後端 origin 後作為 `<audio src>`。
     YouTube 單元（unit_type=4）且 youtube_url 非空時，另含 youtube_url_api：相對於 API 根路徑的 GET /rag/tab/unit/youtube-url 查詢字串（同上，不需 person_id）。
     """
@@ -1433,7 +1458,7 @@ def list_rag_units(
     rag_tab_id: str = Query(..., description="要列出 Rag_Unit 的 rag_tab_id"),
 ):
     """
-    依 rag_tab_id 列出所有未刪除的 Rag_Unit，每個 unit 含關聯的 Rag_Quiz（quizzes）。
+    依 rag_tab_id 列出所有未刪除的 Rag_Unit，每個 unit 含關聯的 Rag_Quiz（quizzes，含 follow_up）。
     依 created_at 由舊到新排序。
     """
     try:
