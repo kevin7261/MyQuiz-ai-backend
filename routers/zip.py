@@ -54,7 +54,7 @@ from utils.zip_storage import (
     FOLDER_REPACK,
     FOLDER_RAG,
 )
-from utils.datetime_utils import now_taipei_iso
+from utils.datetime_utils import now_taipei_iso, to_taipei_iso
 from utils.supabase_client import get_supabase
 from utils.db_tables import (
     ACTIVE_DELETED_FILTER,
