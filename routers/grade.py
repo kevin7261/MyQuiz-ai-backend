@@ -197,7 +197,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId,
     Body：rag_quiz_id、quiz_name、quiz_user_prompt_text（後兩者可空字串）；
     rag_tab_id／rag_unit_id 由後端依 rag_quiz_id 自資料庫帶入；quiz_user_prompt_text 空則自該列 Rag_Quiz 讀取。
     unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcription。
-    unit_type 2／3／4 時不載入 RAG ZIP，改以固定 system（`SYSTEM_PROMPT_FAISS_QUIZ`）與含逐字稿 **課程內容** 之 user（`USER_PROMPT_TRANSCRIPTION_COURSE`）出題，與 RAG 路徑結構一致。
+    unit_type 2／3／4 時不載入 RAG ZIP，改以逐字稿為 context；與 unit_type=1 共用 `SYSTEM_PROMPT_QUIZ`、`USER_PROMPT_COURSE` 與 `_generate_quiz_from_context`。
     出題成功後更新 public.Rag_Quiz（quiz_name、quiz_*；並清空 answer_*）。
     """
     supabase = get_supabase()

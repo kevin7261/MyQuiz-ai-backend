@@ -5,12 +5,12 @@
 - system／user 訊息與使用者 **出題 user prompt** 皆為 **Markdown**（課程原文以 fenced code block 包覆）。
 
 重要（維持行為時請留意）：
-- unit_type=1：僅依向量檢索片段出題；2/3/4 依整份逐字稿（格式與 RAG 的 user 課程區塊對齊）。
+- unit_type=1：向量檢索得 context 後出題；2/3/4 以逐字稿為 context；兩者共用同一 system／user prompt 與 `_generate_quiz_from_context`。
 - 兩路徑皆 response_format=json_object；system 範本含「JSON」字樣，無需再補尾段。
 
 檔案結構（由上而下）：
 1. 模型／檢索常數（`QUIZ_LLM_MODEL`、embedding、k、檢索查詢句）
-2. **LLM Prompt 全文**（system／user、`{quiz_user_prompt_text}`／`{context_md}`）
+2. **LLM Prompt 全文**（system／user、`{quiz_user_prompt_text}`／`## 已出過題目`＋`{quiz_history_body}`／`{context_md}`）
 3. `_context_as_markdown_fenced`（`{context_md}`）、LLM 回傳正規化、`_invoke_quiz_json_llm`
 4. 公開函式（exam／grade 路由動態 import）
 """
@@ -46,11 +46,12 @@ DEFAULT_RETRIEVAL_QUERY = "課程重點概念"
 # LLM 出題 Prompt（system → user；user 以 .format(quiz_user_prompt_text=…, context_md=…) 填入）
 # -----------------------------------------------------------------------------
 # Chat messages：
-#   role=system … SYSTEM_PROMPT_FAISS_QUIZ
-#   role=user … USER_PROMPT_FAISS_COURSE 或 USER_PROMPT_TRANSCRIPTION_COURSE；
-#   其中 `{context_md}` 僅由向量檢索／逐字稿經 _context_as_markdown_fenced 產生，其餘不重組字串。
+#   role=system … SYSTEM_PROMPT_QUIZ
+#   role=user … USER_PROMPT_COURSE（FAISS 與逐字稿共用同一模板）；
+#   其中 `{context_md}` 僅由向量檢索／逐字稿經 _context_as_markdown_fenced 產生；
+#   `{quiz_history_body}` 由 _format_quiz_history_body 產生（列表或「未提供」說明）。
 
-SYSTEM_PROMPT_FAISS_QUIZ = textwrap.dedent("""
+SYSTEM_PROMPT_QUIZ = textwrap.dedent("""
     # 角色
 
     你是一位教授，請為學生設計測驗題目。
@@ -68,10 +69,13 @@ SYSTEM_PROMPT_FAISS_QUIZ = textwrap.dedent("""
     - 將 `---` 視為區段分隔。
     - **出題 user prompt** 區塊（`## 出題 user prompt`）以下若無實質文字（僅留白或空字串），請**完全忽略**該節，僅依 **課程內容** 出題。
     - 若出題 user prompt 有文字，則須**先滿足該節指令**，再於課程引用範圍內取材。
+    - 使用者訊息中 **`## 出題 user prompt`** 與 **`## 已出過題目（勿重複出題）`** 為**兩個獨立區塊**（中間以空行或 `---` 分隔）；勿將已出過列表當成教師出題指令的一部分。
+    - **`## 已出過題目（勿重複出題）`** 若列有題幹，表示這些題目**已出過**；你**不得重複出題**——新題不可與任一所列題幹相同、近乎相同，或僅改寫措辭／調整順序／替換同義詞；須改變考查點、情境或問法，使學生能辨識為**另一道新題**。該節與出題 user prompt 同屬高優先指令。
 
     ## 出題規範
 
     - `quiz_content`、`quiz_hint`、`quiz_answer_reference` 之字串值皆為 **Markdown**（段落、清單、`**強調**` 等）；用語與語種請依 **出題 user prompt**（有實質文字時）與課程內容。
+    - 有 **已出過題目** 列表時：`quiz_content` **不得**重複或實質重複列表中任一題；`quiz_hint` 與 `quiz_answer_reference` 亦須對應這道**新題**，勿沿用舊題答案結構敷衍。
 
     ## 回傳格式（JSON）
 
@@ -82,38 +86,25 @@ SYSTEM_PROMPT_FAISS_QUIZ = textwrap.dedent("""
     - `quiz_answer_reference`：參考答案（Markdown 字串）
     """).strip()
 
-USER_PROMPT_FAISS_COURSE = textwrap.dedent("""
+USER_PROMPT_COURSE = textwrap.dedent("""
     ## 必須遵守（最高優先）
 
     下節 **出題 user prompt** 之內文為本任務**最重要**之依據；與 **課程內容** 或 system 泛化規範牴觸時，**以該節為準**（仍須在課程引用範圍內取材，但**不得**為了貼合片段而違反該節指令）。
+    若另有獨立區塊 **已出過題目（勿重複出題）**（在「出題 user prompt」之後），所列題目**不可再出一次**；請另出與列表**皆不相同**的新題。
 
     ## 出題 user prompt
 
     {quiz_user_prompt_text}
 
-    ---
+    ## 已出過題目（勿重複出題）
 
-    ## 課程內容
-
-    下列為自課程向量庫檢索之片段（出題**僅能**依下列引用與上文條件為據）。
-
-    {context_md}
-    """).strip()
-
-USER_PROMPT_TRANSCRIPTION_COURSE = textwrap.dedent("""
-    ## 必須遵守（最高優先）
-
-    下節 **出題 user prompt** 之內文為本任務**最重要**之依據；與 **課程內容** 或 system 泛化規範牴觸時，**以該節為準**（仍須在課程引用範圍內取材，但**不得**為了貼合片段而違反該節指令）。
-
-    ## 出題 user prompt
-
-    {quiz_user_prompt_text}
+    {quiz_history_body}
 
     ---
 
     ## 課程內容
 
-    下列為課程逐字稿／全文（出題**僅能**依下列引用與上文條件為據）。
+    下列為課程內容（向量檢索片段或完整逐字稿；出題**僅能**依下列引用與上文條件為據）。
 
     {context_md}
     """).strip()
@@ -122,6 +113,48 @@ USER_PROMPT_TRANSCRIPTION_COURSE = textwrap.dedent("""
 # ---------------------------------------------------------------------------
 # LLM 回傳正規化與呼叫（非 prompt 文字）
 # ---------------------------------------------------------------------------
+
+def _normalize_quiz_history_list(quiz_history_list: list[str] | None) -> list[str]:
+    """去除空白項，供「已出過題目」區塊使用。"""
+    if not quiz_history_list:
+        return []
+    out: list[str] = []
+    for item in quiz_history_list:
+        s = (item or "").strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def _format_quiz_history_body(quiz_history_list: list[str] | None) -> str:
+    """產出 USER_PROMPT_* 占位 {quiz_history_body}（標題 `## 已出過題目` 在模板內）。"""
+    items = _normalize_quiz_history_list(quiz_history_list)
+    if not items:
+        return "（本次請求未提供已出過題目列表；請忽略本節之勿重複限制，依出題 user prompt 與課程內容出題。）"
+    lines = "\n".join(f"{i}. {q}" for i, q in enumerate(items, start=1))
+    return textwrap.dedent(f"""
+        **重要：下列題目已經出過，請勿重複出題。** 你本次產生的 `quiz_content` 不得與任一下列題幹相同、近乎相同，或僅做輕微改寫（換句話說、調整選項順序、替換同義詞等）。請改變考查重點、情境或問法，出**一道全新的題目**。
+
+        已出過題目列表：
+
+        {lines}
+        """).strip()
+
+
+def _format_quiz_user_message(
+    template: str,
+    *,
+    quiz_user_prompt_text: str,
+    context_md: str,
+    quiz_history_list: list[str] | None = None,
+) -> str:
+    """組 user 訊息：出題 user prompt（獨立區塊）→ 已出過題目（獨立區塊，可空）→ 課程內容。"""
+    return template.format(
+        quiz_user_prompt_text=(quiz_user_prompt_text or "").strip(),
+        quiz_history_body=_format_quiz_history_body(quiz_history_list),
+        context_md=context_md,
+    )
+
 
 def _context_as_markdown_fenced(context_text: str) -> str:
     """產出 USER_PROMPT_* 占位 {context_md}：Markdown fenced block（標記為 text）；圍欄長度避開內文反引號。"""
@@ -173,6 +206,35 @@ def _invoke_quiz_json_llm(client: OpenAI, messages: list) -> dict:
     return _normalize_quiz_llm_json(data)
 
 
+def _generate_quiz_from_context(
+    api_key: str,
+    context_text: str,
+    *,
+    quiz_user_prompt_text: str = "",
+    quiz_history_list: list[str] | None = None,
+) -> dict:
+    """FAISS 與逐字稿共用：組 USER_PROMPT_COURSE → 呼叫 LLM。"""
+    if not api_key or not api_key.strip():
+        raise ValueError("請傳入 llm_api_key")
+    if not (context_text or "").strip():
+        raise ValueError("請傳入課程內容（檢索片段或逐字稿，必填）")
+    context_md = _context_as_markdown_fenced(context_text)
+    user_prompt = _format_quiz_user_message(
+        USER_PROMPT_COURSE,
+        quiz_user_prompt_text=quiz_user_prompt_text,
+        context_md=context_md,
+        quiz_history_list=quiz_history_list,
+    )
+    client = OpenAI(api_key=api_key)
+    return _invoke_quiz_json_llm(
+        client,
+        [
+            {"role": "system", "content": SYSTEM_PROMPT_QUIZ},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+
+
 # ---------------------------------------------------------------------------
 # 公開 API（由 routers/exam.py、routers/grade.py 動態 import）
 # ---------------------------------------------------------------------------
@@ -181,6 +243,7 @@ def generate_quiz_transcription_only(
     api_key: str,
     transcription: str,
     quiz_user_prompt_text: str = "",
+    quiz_history_list: list[str] | None = None,
 ) -> dict:
     """
     無 FAISS：與 generate_quiz 相同訊息結構——system 為出題規範；逐字稿置於 user「課程內容」。
@@ -192,28 +255,16 @@ def generate_quiz_transcription_only(
         api_key: OpenAI API Key（與 embeddings 無關，本路徑不建向量）。
         transcription: 課程全文或逐字稿，填入 user 課程內容區塊；不可空。
         quiz_user_prompt_text: 填入 USER_PROMPT_* 之「出題 user prompt」占位；空字串時依 system 指示略過該節。
+        quiz_history_list: 已出過題目題幹；併入「已出過題目（quiz_history_list）」區塊，避免重複出題。
     """
-    if not api_key or not api_key.strip():
-        raise ValueError("請傳入 llm_api_key")
     raw_tc = transcription if transcription is not None else ""
     if not raw_tc.strip():
         raise ValueError("請傳入 transcription（課程內容區塊，必填）")
-    context_text = raw_tc
-    context_md = _context_as_markdown_fenced(context_text)
-    qup = (quiz_user_prompt_text or "").strip()
-
-    user_prompt = USER_PROMPT_TRANSCRIPTION_COURSE.format(
-        quiz_user_prompt_text=qup,
-        context_md=context_md,
-    )
-
-    client = OpenAI(api_key=api_key)
-    return _invoke_quiz_json_llm(
-        client,
-        [
-            {"role": "system", "content": SYSTEM_PROMPT_FAISS_QUIZ},
-            {"role": "user", "content": user_prompt},
-        ],
+    return _generate_quiz_from_context(
+        api_key,
+        raw_tc,
+        quiz_user_prompt_text=quiz_user_prompt_text,
+        quiz_history_list=quiz_history_list,
     )
 
 
@@ -221,17 +272,19 @@ def generate_quiz(
     zip_path: Path,
     api_key: str,
     quiz_user_prompt_text: str = "",
+    quiz_history_list: list[str] | None = None,
 ) -> dict:
     """
     有 FAISS RAG ZIP：解壓 → 載入向量庫 → 檢索 → 組 Markdown user → LLM。
 
-    zip_path 須為 POST /rag/tab/build-rag-zip 產物。`quiz_user_prompt_text` 見 USER_PROMPT_FAISS_COURSE。
+    zip_path 須為 POST /rag/tab/build-rag-zip 產物。prompt 與逐字稿路徑共用 USER_PROMPT_COURSE。
     回傳：quiz_content, quiz_hint, quiz_answer_reference。
 
     Args:
         zip_path: 本機路徑，指向已下載之 RAG ZIP（內含 index.faiss / index.pkl）。
         api_key: 同時用於 OpenAIEmbeddings 與 Chat Completions。
-        quiz_user_prompt_text: 填入 USER_PROMPT_FAISS_COURSE 之「出題 user prompt」占位；空字串時依 system 指示略過該節。
+        quiz_user_prompt_text: 填入 USER_PROMPT_COURSE 之「出題 user prompt」占位；空字串時依 system 指示略過該節。
+        quiz_history_list: 已出過題目題幹；併入「已出過題目（quiz_history_list）」區塊，避免重複出題。
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 llm_api_key")
@@ -269,21 +322,11 @@ def generate_quiz(
         docs = retriever.invoke(DEFAULT_RETRIEVAL_QUERY)
         # page_content：每段 chunk 純文字；多段之間空行分隔，便於模型閱讀邊界。
         context_text = "\n\n".join(d.page_content for d in docs)
-        context_md = _context_as_markdown_fenced(context_text)
-        qup = (quiz_user_prompt_text or "").strip()
-
-        user_prompt = USER_PROMPT_FAISS_COURSE.format(
-            quiz_user_prompt_text=qup,
-            context_md=context_md,
-        )
-
-        client = OpenAI(api_key=api_key)
-        return _invoke_quiz_json_llm(
-            client,
-            [
-                {"role": "system", "content": SYSTEM_PROMPT_FAISS_QUIZ},
-                {"role": "user", "content": user_prompt},
-            ],
+        return _generate_quiz_from_context(
+            api_key,
+            context_text,
+            quiz_user_prompt_text=quiz_user_prompt_text,
+            quiz_history_list=quiz_history_list,
         )
     finally:
         # 暫存目錄必清，避免磁碟堆積與路徑外洩。
