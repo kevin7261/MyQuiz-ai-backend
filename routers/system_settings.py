@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from dependencies.person_id import PersonId
 from utils.datetime_utils import now_taipei_iso
 from utils.db_tables import ACTIVE_DELETED_FILTER, USER_COURSE_RELATION_TABLE, USER_TABLE
+from utils.openapi_request_body import openapi_body
 from utils.supabase_client import get_supabase
 
 router = APIRouter(prefix="/system-settings", tags=["system-settings"])
@@ -154,7 +155,11 @@ def _upsert_setting_and_get_row(supabase, key: str, value: str):
 
 @router.put("/person_analysis_user_prompt_text", response_model=PersonAnalysisUserPromptTextResponse)
 def put_person_analysis_user_prompt_text_setting(
-    body: PutPersonAnalysisUserPromptTextRequest, person_id: PersonId
+    body: openapi_body(
+        PutPersonAnalysisUserPromptTextRequest,
+        {"person_analysis_user_prompt_text": "string"},
+    ),
+    person_id: PersonId,
 ):
     """寫入 person_analysis_user_prompt_text（System_Setting key=person_analysis_user_prompt_text）。"""
     _require_developer_or_manager_for_person_analysis_prompt_write(person_id)

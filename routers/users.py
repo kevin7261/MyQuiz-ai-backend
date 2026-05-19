@@ -9,9 +9,9 @@
 - PATCH /user/profile：更新個人資料（name、user_type、llm_api_key）
 """
 
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 
 from dependencies.person_id import PersonId
 from pydantic import BaseModel, Field
@@ -22,6 +22,7 @@ from utils.db_tables import (
     USER_COURSE_RELATION_TABLE,
     USER_TABLE,
 )
+from utils.openapi_request_body import openapi_body
 from utils.supabase_client import get_supabase
 
 router = APIRouter(prefix="/user", tags=["user"])
@@ -309,7 +310,10 @@ def _soft_delete_user(supabase, target_person_id: str) -> LoginResponse:
 
 
 @router.put("/users/delete", response_model=LoginResponse, summary="Soft delete user", operation_id="user_users_delete")
-def soft_delete_user(body: DeleteUserRequest, _person_id: PersonId):
+def soft_delete_user(
+    body: openapi_body(DeleteUserRequest, {"person_id": "string"}),
+    _person_id: PersonId,
+):
     """
     PUT /user/users/delete。軟刪除：將指定 person_id 之使用者 deleted 設為 true（需帶 query person_id）。
     """
@@ -327,7 +331,10 @@ def soft_delete_user(body: DeleteUserRequest, _person_id: PersonId):
 
 
 @router.post("/users", response_model=LoginResponse)
-def upload_user(body: UploadUserRequest, person_id: PersonId):
+def upload_user(
+    body: openapi_body(UploadUserRequest, {"person_id": "string", "name": "string", "user_type": 3}),
+    person_id: PersonId,
+):
     """
     新增單一使用者：body 傳入 person_id、name、user_type。
     query 的 person_id 須與 body.person_id 一致。
@@ -381,7 +388,13 @@ def _batch_upload_users(supabase, rows: list[BatchUserRow]) -> BatchCreateUsersR
 
 
 @router.post("/users/batch", response_model=BatchCreateUsersResponse)
-def batch_upload_users(body: list[BatchUserRow], _person_id: PersonId):
+def batch_upload_users(
+    body: Annotated[
+        list[BatchUserRow],
+        Body(openapi_examples={"default": {"summary": "Default", "value": [{"person_id": "string", "name": "string"}]}}),
+    ],
+    _person_id: PersonId,
+):
     """
     批次新增使用者：body 為陣列，每筆僅 person_id、name；user_type 固定為 3；
     密碼預設為 0000（與登入 API 相同之純文字儲存）。
@@ -399,7 +412,10 @@ def batch_upload_users(body: list[BatchUserRow], _person_id: PersonId):
 
 @router.patch("/profile", response_model=LoginResponse)
 def update_profile(
-    body: UpdateProfileRequest,
+    body: openapi_body(
+        UpdateProfileRequest,
+        {"person_id": None, "name": None, "user_type": None, "llm_api_key": None},
+    ),
     person_id: PersonId,
 ):
     """
@@ -465,7 +481,10 @@ def update_profile(
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(body: LoginRequest, person_id: PersonId):
+def login(
+    body: openapi_body(LoginRequest, {"person_id": "string", "password": "string"}),
+    person_id: PersonId,
+):
     """
     以 person_id 與 password 驗證登入；成功回傳該使用者資訊（不含 password）及 User_Course_Relation 課程列表。
     query 的 person_id 須與 body.person_id 一致。

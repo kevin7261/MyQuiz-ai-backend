@@ -1,6 +1,6 @@
 """
 RAG 評分與出題 API 模組。
-- POST /rag/tab/unit/quiz/llm-generate：依 rag_quiz_id 出題（LLM）；unit_type 1 僅 RAG ZIP 向量檢索；2/3/4 以 transcription 純生成；其餘載 RAG ZIP 向量檢索。
+- POST /rag/tab/unit/quiz/llm-generate：依 rag_quiz_id 出題（LLM）；選填 quiz_history_list 避免重複出題；unit_type 1 僅 RAG ZIP 向量檢索；2/3/4 以 transcription 純生成；其餘載 RAG ZIP 向量檢索。
 - POST /rag/tab/unit/quiz/llm-generate-db：同 llm-generate，唯 body 不包含 quiz_user_prompt_text，一律沿用 Rag_Quiz 列上既有值。
 - POST /rag/tab/unit/quiz/llm-grade：非同步 RAG+LLM 評分（body 以 rag_id 置頂；quiz_content 可空，自 Rag_Quiz 讀題幹）；answer_user_prompt_text 可空——空字串會寫入並覆蓋該列。回傳 202 + job_id，輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
 - POST /rag/tab/unit/quiz/llm-grade-db：同 llm-grade，唯 body 不包含 answer_user_prompt_text，評分與寫回一律沿用 Rag_Quiz.answer_user_prompt_text（不論請求）。
@@ -22,13 +22,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 from utils.quiz_generation import generate_quiz, generate_quiz_transcription_only
+from utils.openapi_request_body import openapi_body
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from postgrest.exceptions import APIError
 from dependencies.person_id import PersonId
 from dependencies.course_id import CourseId
 from fastapi.responses import JSONResponse, Response
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from services.grading import (
     cleanup_grade_workspace,
@@ -80,7 +81,7 @@ _grade_job_results: dict[str, dict[str, Any]] = {}
 # ---------------------------------------------------------------------------
 
 class GenerateQuizRequest(BaseModel):
-    """POST /rag/tab/unit/quiz/llm-generate；請求 body 僅含 rag_quiz_id、quiz_name、quiz_user_prompt_text。"""
+    """POST /rag/tab/unit/quiz/llm-generate；請求 body 欄位順序同 public.Rag_Quiz（rag_quiz_id, quiz_name, quiz_user_prompt_text），末欄 quiz_history_list 為 API 擴充。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
@@ -91,20 +92,24 @@ class GenerateQuizRequest(BaseModel):
         "",
         description="出題 user prompt（可空）；非空時優先並寫入 Rag_Quiz；空則自該列 Rag_Quiz.quiz_user_prompt_text 帶入 LLM",
     )
+    quiz_history_list: list[str] = Field(
+        default_factory=list,
+        description="已出過的題目題幹（字串陣列）；送入 LLM 出題 prompt，避免重複出題",
+    )
 
 
 class QuizGradeRequest(BaseModel):
     """
     POST /rag/tab/unit/quiz/llm-grade 請求 body。
-    rag_id 置頂：用於載入 RAG ZIP 與權限；quiz_content 可省略，沿用該 Rag_Quiz 資料列題幹。
+    欄位順序：Rag.rag_id → public.Rag_Quiz（rag_tab_id, rag_quiz_id, quiz_content, answer_user_prompt_text, answer_content／quiz_answer）。
     """
 
     rag_id: str = Field(
         "",
         description="必填；Rag 表 rag_id（字串）；載入講義／向量 ZIP 並驗證存取權",
     )
-    rag_quiz_id: str = Field("", description="必填（數字字串 >0）；Rag_Quiz 主鍵")
     rag_tab_id: str = Field("", description="選填；後端以 Rag.rag_tab_id 為準")
+    rag_quiz_id: str = Field("", description="必填（數字字串 >0）；Rag_Quiz 主鍵")
     quiz_content: str = Field(
         "",
         description="選填；非空時優先並可寫入 Rag_Quiz；空則自該 rag_quiz_id 之 Rag_Quiz.quiz_content 讀取（須於庫記憶中有題幹）",
@@ -121,27 +126,31 @@ class QuizGradeRequest(BaseModel):
 
 
 class GenerateQuizDbOnlyRequest(BaseModel):
-    """POST /rag/tab/unit/quiz/llm-generate-db；不含 quiz_user_prompt_text，沿用 Rag_Quiz 該列之 quiz_user_prompt_text。"""
+    """POST /rag/tab/unit/quiz/llm-generate-db；欄位順序同 Rag_Quiz（rag_quiz_id, quiz_name），末欄 quiz_history_list 為 API 擴充。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
         "",
         description="測驗名稱；空字串則由 repack stem／單元 unit_name 決定 Rag_Quiz.quiz_name",
     )
+    quiz_history_list: list[str] = Field(
+        default_factory=list,
+        description="已出過的題目題幹（字串陣列）；送入 LLM 出題 prompt，避免重複出題",
+    )
 
 
 class QuizGradeDbOnlyRequest(BaseModel):
     """
     POST /rag/tab/unit/quiz/llm-grade-db。
-    不含 answer_user_prompt_text：評分與寫入一律使用 Rag_Quiz 該列之 answer_user_prompt_text。
+    欄位順序：Rag.rag_id → Rag_Quiz（rag_tab_id, rag_quiz_id, quiz_content, answer_content／quiz_answer）；不含 answer_user_prompt_text。
     """
 
     rag_id: str = Field(
         "",
         description="必填；Rag 表 rag_id（字串）；載入講義／向量 ZIP 並驗證存取權",
     )
-    rag_quiz_id: str = Field("", description="必填（數字字串 >0）；Rag_Quiz 主鍵")
     rag_tab_id: str = Field("", description="選填；後端以 Rag.rag_tab_id 為準")
+    rag_quiz_id: str = Field("", description="必填（數字字串 >0）；Rag_Quiz 主鍵")
     quiz_content: str = Field(
         "",
         description="選填；非空時優先並可寫入 Rag_Quiz；空則自該 rag_quiz_id 之 Rag_Quiz.quiz_content 讀取（須於庫記憶中有題幹）",
@@ -155,18 +164,9 @@ class QuizGradeDbOnlyRequest(BaseModel):
 
 class RagQuizForExamRequest(BaseModel):
     """
-    POST /rag/tab/unit/quiz/for-exam：欄位順序對齊 Rag_Quiz（主鍵與關聯欄）。
+    POST /rag/tab/unit/quiz/for-exam：欄位順序同 public.Rag_Quiz（rag_quiz_id, rag_tab_id, rag_unit_id, for_exam）。
     以 rag_quiz_id 更新 Rag_Quiz.for_exam；若一併傳入 rag_tab_id／rag_unit_id（>0），須與該列一致。
     """
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "examples": [
-                {"rag_quiz_id": 1, "for_exam": True},
-                {"rag_quiz_id": 1, "for_exam": False},
-            ],
-        },
-    )
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     rag_tab_id: str = Field("", description="選填；與資料列 rag_tab_id 須一致")
@@ -190,12 +190,24 @@ class RagUnitYoutubeUrlFromZipResponse(BaseModel):
 # POST /rag/tab/unit/quiz/llm-generate
 # ---------------------------------------------------------------------------
 
+_RAG_LLM_GENERATE_OPENAPI_EXAMPLE = {
+    "rag_quiz_id": 1,
+    "quiz_name": "",
+    "quiz_user_prompt_text": "",
+    "quiz_history_list": ["先前已出過的題幹文字"],
+}
+
 @router.post("/tab/unit/quiz/llm-generate", summary="Rag LLM Generate Quiz", operation_id="rag_llm_generate_quiz")
 @router.post("/generate-quiz", include_in_schema=False)
-def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId, course_id: CourseId):
+def rag_llm_generate_quiz(
+    body: openapi_body(GenerateQuizRequest, _RAG_LLM_GENERATE_OPENAPI_EXAMPLE),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+):
     """
-    Body：rag_quiz_id、quiz_name、quiz_user_prompt_text（後兩者可空字串）；
+    Body：rag_quiz_id、quiz_name、quiz_user_prompt_text（可空字串）、quiz_history_list（選填；順序同 public.Rag_Quiz）；
     rag_tab_id／rag_unit_id 由後端依 rag_quiz_id 自資料庫帶入；quiz_user_prompt_text 空則自該列 Rag_Quiz 讀取。
+    選填 `quiz_history_list`（字串陣列）：已出過的題目題幹，由 `utils.quiz_generation` 併入 user「已出過題目」區塊，避免重複出題。
     unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcription。
     unit_type 2／3／4 時不載入 RAG ZIP，改以逐字稿為 context；與 unit_type=1 共用 `SYSTEM_PROMPT_QUIZ`、`USER_PROMPT_COURSE` 與 `_generate_quiz_from_context`。
     出題成功後更新 public.Rag_Quiz（quiz_name、quiz_*；並清空 answer_*）。
@@ -328,6 +340,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId,
                 api_key=api_key,
                 transcription=transcription_text,
                 quiz_user_prompt_text=qup_for_llm,
+                quiz_history_list=body.quiz_history_list,
             )
         else:
             path = get_zip_path(rag_zip_tab_id)
@@ -340,6 +353,7 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId,
                 path,
                 api_key=api_key,
                 quiz_user_prompt_text=qup_for_llm,
+                quiz_history_list=body.quiz_history_list,
             )
         result["transcription"] = "" if unit_type_val == 1 else transcription_text
         result["rag_output"] = {
@@ -438,7 +452,14 @@ def rag_llm_generate_quiz(body: GenerateQuizRequest, caller_person_id: PersonId,
     summary="Rag LLM Generate Quiz (stored quiz_user_prompt_text)",
     operation_id="rag_llm_generate_quiz_db_prompt",
 )
-def rag_llm_generate_quiz_db_prompt(body: GenerateQuizDbOnlyRequest, caller_person_id: PersonId, course_id: CourseId):
+def rag_llm_generate_quiz_db_prompt(
+    body: openapi_body(
+        GenerateQuizDbOnlyRequest,
+        {"rag_quiz_id": 1, "quiz_name": "", "quiz_history_list": ["先前已出過的題幹文字"]},
+    ),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+):
     """
     與 `llm-generate` 相同，但請求不含 `quiz_user_prompt_text`，出題時一律使用
     Rag_Quiz 該列既有之 `quiz_user_prompt_text`（行為等同傳空字串至 `llm-generate`）。
@@ -448,6 +469,7 @@ def rag_llm_generate_quiz_db_prompt(body: GenerateQuizDbOnlyRequest, caller_pers
             rag_quiz_id=body.rag_quiz_id,
             quiz_name=body.quiz_name,
             quiz_user_prompt_text="",
+            quiz_history_list=body.quiz_history_list,
         ),
         caller_person_id,
         course_id,
@@ -647,7 +669,17 @@ async def _enqueue_rag_llm_grade_job(
 @router.post("/tab/unit/quiz/llm-grade", summary="Rag Grade Quiz")
 async def grade_submission(
     background_tasks: BackgroundTasks,
-    body: QuizGradeRequest,
+    body: openapi_body(
+        QuizGradeRequest,
+        {
+            "rag_id": "1",
+            "rag_tab_id": "",
+            "rag_quiz_id": "1",
+            "quiz_content": "",
+            "answer_user_prompt_text": "",
+            "quiz_answer": "學生作答文字",
+        },
+    ),
     caller_person_id: PersonId,
     course_id: CourseId,
 ):
@@ -677,7 +709,16 @@ async def grade_submission(
 )
 async def grade_submission_stored_answer_prompt(
     background_tasks: BackgroundTasks,
-    body: QuizGradeDbOnlyRequest,
+    body: openapi_body(
+        QuizGradeDbOnlyRequest,
+        {
+            "rag_id": "1",
+            "rag_tab_id": "",
+            "rag_quiz_id": "1",
+            "quiz_content": "",
+            "quiz_answer": "學生作答文字",
+        },
+    ),
     caller_person_id: PersonId,
     course_id: CourseId,
 ):
@@ -702,7 +743,14 @@ async def grade_submission_stored_answer_prompt(
 # ---------------------------------------------------------------------------
 
 @router.post("/tab/unit/quiz/for-exam", summary="Set Rag Quiz for_exam flag")
-def mark_rag_quiz_for_exam(body: RagQuizForExamRequest, caller_person_id: PersonId, course_id: CourseId):
+def mark_rag_quiz_for_exam(
+    body: openapi_body(
+        RagQuizForExamRequest,
+        {"rag_quiz_id": 1, "rag_tab_id": "", "rag_unit_id": 0, "for_exam": True},
+    ),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+):
     """更新 Rag_Quiz.for_exam（true＝測驗用、false＝取消）。以 rag_quiz_id 定位；僅 deleted=false 且 person_id 一致者可更新。"""
     req_tab = (body.rag_tab_id or "").strip()
     req_unit = int(body.rag_unit_id or 0)

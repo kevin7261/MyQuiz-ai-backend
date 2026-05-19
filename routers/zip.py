@@ -37,7 +37,7 @@ from storage3.exceptions import StorageApiError
 from dependencies.person_id import PersonId
 from dependencies.course_id import CourseId
 
-from utils.datetime_utils import now_taipei_iso, to_taipei_iso
+from utils.openapi_request_body import openapi_body
 from utils.json_utils import to_json_safe
 from utils.zip_utils import (
     get_second_level_folders_from_zip_file,
@@ -371,10 +371,10 @@ class RagUnitYoutubeUrlResponse(BaseModel):
 
 
 class CreateRagRequest(BaseModel):
-    """POST /rag/tab/create：欄位順序同 public.Rag（rag_tab_id, tab_name, person_id, local）。"""
+    """POST /rag/tab/create：欄位順序同 public.Rag（rag_tab_id, person_id, tab_name, local；不含 rag_id／course_id／deleted／時間戳）。"""
     rag_tab_id: str = Field(..., description="Rag 的 tab 識別，對應 Rag 表 rag_tab_id 欄位")
-    tab_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 tab_name 欄位")
     person_id: str = Field(..., description="使用者/路徑識別")
+    tab_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 tab_name 欄位")
     local: bool = Field(False, description="是否為本機 RAG，寫入 Rag 表 local 欄位")
 
 
@@ -386,7 +386,7 @@ class UpdateRagUnitNameRequest(BaseModel):
 
 class PackRequest(BaseModel):
     """
-    rag_tab_id、person_id、unit_list。
+    rag_tab_id、person_id（同 public.Rag）→ unit_list → Rag_Unit 相關欄（unit_name、unit_type、transcription、rag_chunk_*）。
     rag_chunk_size／rag_chunk_overlap：全批預設（寫入 Rag_Unit、建 FAISS 時用）。
     rag_chunk_sizes／rag_chunk_overlaps：可選逗號字串或整數陣列（JSON），與 unit_list 解出之任務數同序；某段空白則該段用 rag_chunk_size／rag_chunk_overlap。
     unit_names：可選逗號字串或字串陣列（JSON），與任務同序；某段 strip 後非空則覆寫該單元 Rag_Unit.unit_name（顯示名），空白則與 folder_combination 相同（皆為檔名 stem）。
@@ -394,6 +394,15 @@ class PackRequest(BaseModel):
     rag_tab_id: str
     person_id: str
     unit_list: str  # 指定要打包的資料夾；例："220222+220301"（加號=同一 ZIP 多資料夾）；結果存入 Rag_Unit 表
+    unit_names: str | list[str] | None = Field(
+        default="",
+        description="可選；逗號字串或 JSON 字串陣列，與 packed 任務同序；該段 strip 後非空則覆寫 Rag_Unit.unit_name（顯示名），空段則與 folder_combination 相同（檔名 stem）",
+    )
+    unit_types: str = ""
+    transcriptions: list[str] | None = Field(
+        default=None,
+        description="可選；與 unit_list 逗號分段對齊；非空時覆寫逐字稿全文",
+    )
     rag_chunk_size: int = 1000
     rag_chunk_overlap: int = 200
     rag_chunk_sizes: str = Field(
@@ -423,21 +432,9 @@ class PackRequest(BaseModel):
             return v.strip()
         return str(v)
 
-    # 與 unit_list 逗號分段對齊；0=未選（後端推斷）、1=rag、2=文字、3=mp3、4=youtube
-    unit_types: str = ""
-    # None=依 User_Course_Relation.user_type==1 自動判斷；False=強制不建向量；True=強制建 FAISS（須 llm_api_key）
     build_faiss: bool | None = Field(
         default=None,
         description="省略時依 User_Course_Relation.user_type；False 時僅複製 repack 至 rag；True 時強制建向量 RAG ZIP",
-    )
-    # 與 unit_list 逗號分段同序；非空時覆寫 Rag_Unit.transcription（UTF-8 Markdown 原樣）
-    transcriptions: list[str] | None = Field(
-        default=None,
-        description="可選；與 unit_list 逗號分段對齊；非空時覆寫逐字稿全文",
-    )
-    unit_names: str | list[str] | None = Field(
-        default="",
-        description="可選；逗號字串或 JSON 字串陣列，與 packed 任務同序；該段 strip 後非空則覆寫 Rag_Unit.unit_name（顯示名），空段則與 folder_combination 相同（檔名 stem）",
     )
 
     @field_validator("unit_names", mode="before")
@@ -927,7 +924,14 @@ def list_rag(
 
 
 @router.post("/tab/create")
-def create_unit(body: CreateRagRequest, caller_person_id: PersonId, course_id: CourseId):
+def create_unit(
+    body: openapi_body(
+        CreateRagRequest,
+        {"rag_tab_id": "string", "person_id": "string", "tab_name": "string", "local": False},
+    ),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+):
     """
     只建立一筆 Rag 資料，接受 rag_tab_id、person_id、tab_name（必填）、local（選填，預設 false）。
     須傳 query course_id，寫入 Rag.course_id。
@@ -979,7 +983,11 @@ def create_unit(body: CreateRagRequest, caller_person_id: PersonId, course_id: C
 
 
 @router.put("/tab/tab-name")
-def update_unit_tab_name(body: UpdateRagUnitNameRequest, caller_person_id: PersonId, course_id: CourseId):
+def update_unit_tab_name(
+    body: openapi_body(UpdateRagUnitNameRequest, {"rag_id": 1, "tab_name": "新名稱"}),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+):
     """
     更新既有 Rag 的 tab_name。以 rag_id（Rag 主鍵）比對；僅更新 deleted=false 的列。
     回傳 rag_id、rag_tab_id、person_id、tab_name、updated_at。
@@ -1203,7 +1211,22 @@ async def upload_zip(
 @router.post("/tab/build-rag-zip-stream", include_in_schema=False)
 @router.post("/tab/build-rag-zip")
 def build_rag_zip(
-    body: PackRequest,
+    body: openapi_body(
+        PackRequest,
+        {
+            "rag_tab_id": "string",
+            "person_id": "string",
+            "unit_list": "folder1",
+            "unit_names": "",
+            "unit_types": "",
+            "transcriptions": None,
+            "rag_chunk_size": 1000,
+            "rag_chunk_overlap": 200,
+            "rag_chunk_sizes": "",
+            "rag_chunk_overlaps": "",
+            "build_faiss": None,
+        },
+    ),
     caller_person_id: PersonId,
     course_id: CourseId,
     repack_only: bool = Query(
@@ -1458,7 +1481,11 @@ def list_rag_units(
 
 
 @router.put("/tab/unit/unit-name")
-def update_rag_unit_name(body: UpdateRagUnitUnitNameRequest, caller_person_id: PersonId, course_id: CourseId):
+def update_rag_unit_name(
+    body: openapi_body(UpdateRagUnitUnitNameRequest, {"rag_unit_id": 1, "unit_name": "新名稱"}),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+):
     """
     更新既有 Rag_Unit 的 unit_name。以 rag_unit_id（主鍵）比對；僅更新 deleted=false 的列。
     回傳 rag_unit_id、rag_tab_id、person_id、unit_name、updated_at。
@@ -1744,7 +1771,11 @@ def rag_tab_unit_youtube_url(
 
 
 @router.post("/tab/unit/quiz/create", summary="Rag Create Quiz (no LLM)", operation_id="rag_create_quiz")
-def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonId, course_id: CourseId):
+def insert_rag_quiz_row(
+    body: openapi_body(InsertRagQuizRowRequest, {"rag_tab_id": "string", "rag_unit_id": 1}),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+):
     """
     依 `rag_tab_id`／`rag_unit_id` 解析 Rag_Unit 後新增一筆空白 `Rag_Quiz`，**不呼叫 LLM**。`rag_quiz_id` 由資料庫自動產生並於回傳中帶出。
     LLM 出題請用 `POST /rag/tab/unit/quiz/llm-generate`。
@@ -1864,7 +1895,11 @@ def insert_rag_quiz_row(body: InsertRagQuizRowRequest, caller_person_id: PersonI
 
 
 @router.put("/tab/unit/quiz/quiz-name", summary="Update Rag Quiz Name", operation_id="rag_tab_unit_quiz_quiz_name")
-def update_rag_quiz_name(body: UpdateRagQuizQuizNameRequest, caller_person_id: PersonId, course_id: CourseId):
+def update_rag_quiz_name(
+    body: openapi_body(UpdateRagQuizQuizNameRequest, {"rag_quiz_id": 1, "quiz_name": "新名稱"}),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+):
     """
     更新既有 Rag_Quiz 的 quiz_name。以 rag_quiz_id（主鍵）比對；僅更新 deleted=false 的列。
     回傳 rag_quiz_id、rag_tab_id、rag_unit_id、person_id、quiz_name、updated_at。
