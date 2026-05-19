@@ -11,10 +11,13 @@ from postgrest.exceptions import APIError
 from utils.datetime_utils import now_taipei_iso
 from utils.db_tables import (
     EXAM_COURSE_ID_DEFAULT,
+    EXAM_QUIZ_SELECT_COLUMNS,
+    EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP,
     RAG_SELECT_COLUMNS,
     RAG_SELECT_COLUMNS_LEGACY,
     RAG_SELECT_COLUMNS_LEGACY_NO_FILE_METADATA,
     RAG_SELECT_COLUMNS_NO_FILE_METADATA,
+    exam_quiz_list_row,
 )
 from utils.supabase_client import get_supabase
 
@@ -139,23 +142,47 @@ def exams_by_tab_ids(exam_tab_ids: list[str]) -> list[dict]:
 # Exam_Quiz 表查詢
 # ---------------------------------------------------------------------------
 
+def _select_exam_quiz_rows(
+    *,
+    columns: str,
+    exam_tab_ids: list[str] | None = None,
+    person_id: str | None = None,
+    course_id: int | None = None,
+) -> list[dict]:
+    """查 Exam_Quiz；回傳列經 exam_quiz_list_row 正規化（含 follow_up）。"""
+    supabase = get_supabase()
+    q = supabase.table("Exam_Quiz").select(columns)
+    if exam_tab_ids is not None:
+        q = q.in_("exam_tab_id", exam_tab_ids)
+    if person_id is not None:
+        q = q.eq("person_id", person_id.strip())
+    if course_id is not None:
+        q = q.eq("course_id", course_id)
+    rows = q.order("created_at", desc=False).execute().data or []
+    return [exam_quiz_list_row(r) for r in rows]
+
+
+def _select_exam_quiz_rows_with_follow_up_fallback(**kwargs: Any) -> list[dict]:
+    try:
+        return _select_exam_quiz_rows(columns=EXAM_QUIZ_SELECT_COLUMNS, **kwargs)
+    except APIError as e:
+        msg = (e.message or "").lower()
+        if e.code == "42703" and "follow_up" in msg:
+            return _select_exam_quiz_rows(columns=EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP, **kwargs)
+        raise
+
+
 def quizzes_by_exam_tab_ids(
     exam_tab_ids: list[str],
     *,
     course_id: int | None = None,
 ) -> dict[str, list[dict]]:
-    """依 exam_tab_id 查詢 Exam_Quiz，回傳 exam_tab_id -> list of quiz（依 created_at 升序）。course_id 若指定則僅回傳該課程。"""
+    """依 exam_tab_id 查詢 Exam_Quiz，回傳 exam_tab_id -> quizzes[]（含 follow_up）。"""
     if not exam_tab_ids:
         return {}
-    supabase = get_supabase()
-    q = (
-        supabase.table("Exam_Quiz")
-        .select("*")
-        .in_("exam_tab_id", exam_tab_ids)
+    rows = _select_exam_quiz_rows_with_follow_up_fallback(
+        exam_tab_ids=exam_tab_ids, course_id=course_id
     )
-    if course_id is not None:
-        q = q.eq("course_id", course_id)
-    rows = q.order("created_at", desc=False).execute().data or []
     out: dict[str, list[dict]] = {tid: [] for tid in exam_tab_ids}
     for row in rows:
         tid = row.get("exam_tab_id")
@@ -169,14 +196,12 @@ def quizzes_by_person_id(person_id: str) -> list[dict]:
     pid = (person_id or "").strip()
     if not pid:
         return []
-    supabase = get_supabase()
-    return supabase.table("Exam_Quiz").select("*").eq("person_id", pid).execute().data or []
+    return _select_exam_quiz_rows_with_follow_up_fallback(person_id=pid)
 
 
 def all_exam_quizzes() -> list[dict]:
     """查詢 Exam_Quiz 表全部筆數（供課程分析使用）。"""
-    supabase = get_supabase()
-    return supabase.table("Exam_Quiz").select("*").execute().data or []
+    return _select_exam_quiz_rows_with_follow_up_fallback()
 
 
 # ---------------------------------------------------------------------------

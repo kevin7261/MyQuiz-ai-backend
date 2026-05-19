@@ -95,10 +95,10 @@ _exam_grade_job_results: dict[str, dict[str, Any]] = {}
 # ---------------------------------------------------------------------------
 
 class ListExamResponse(BaseModel):
-    """GET /exam/tabs 回應：每筆 Exam 含 units（依 unit_name 分群），每個 unit 含 quizzes。"""
+    """GET /exam/tabs 回應：每筆 Exam 含 units（依 unit_name 分群），每個 unit 含 quizzes（含 follow_up）。"""
     exams: list[dict] = Field(
         ...,
-        description="每筆 Exam 的 units[] 為 { unit_name, rag_unit_id?, quizzes[] }；quizzes[] 為 Exam_Quiz（含答案欄位）",
+        description="每筆 Exam 的 units[] 為 { unit_name, rag_unit_id?, quizzes[] }；quizzes[] 為 Exam_Quiz（含 follow_up、答案欄位）",
     )
     count: int
 
@@ -266,7 +266,7 @@ def list_exams(
         description="僅回傳 Exam.local 與此值相同的列。未傳時：本機連線視為 true，否則 false",
     ),
 ):
-    """列出 Exam（deleted=false，person_id 篩選，local 篩選）。每筆 Exam 帶 units（依 unit_name 分群的 Exam_Quiz）。"""
+    """列出 Exam（deleted=false，person_id 篩選，local 篩選）。每筆 Exam 帶 units（依 unit_name 分群的 Exam_Quiz，含 follow_up）。"""
 
     def _list_exams_once() -> ListExamResponse:
         local_filter = local if local is not None else is_localhost_request(request)
@@ -597,6 +597,7 @@ def exam_insert_empty_quiz(
         "rag_quiz_id": None,
         "person_id": person_id,
         "course_id": course_id,
+        "follow_up": False,
         "unit_name": "",
         "quiz_name": "",
         "quiz_user_prompt_text": None,
