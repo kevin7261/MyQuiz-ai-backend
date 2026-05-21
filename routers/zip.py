@@ -4,9 +4,10 @@ ZIP 與 RAG 相關 API 模組。
 - GET /rag/tabs：列出 Rag 表（含 units→quizzes）；須傳 query course_id，僅回傳該課程資料；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；unit_type=mp3 且含 mp3_file_name 時另附 mp3_audio_url（GET /rag/tab/unit/mp3-file 之 query：`rag_tab_id`、`rag_unit_id` 即可，**不需** person_id，供前端 `<audio src>`）；unit_type=youtube 且含 youtube_url 時另附 youtube_url_api（同上，**不需** person_id）
 - GET /rag/units：依 rag_tab_id 列出 Rag_Unit（含 quizzes）
 - POST /rag/tab/create：建立一筆 Rag（可傳 local）
+- POST /rag/tab/create-upload-zip：建立 Rag 並上傳 ZIP（等同 tab/create 後 tab/upload-zip）
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
 - PUT /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除 Rag 及其 Rag_Unit，並刪除儲存（須傳 query person_id）
-- POST /rag/tab/upload-zip：上傳 ZIP
+- POST /rag/tab/upload-zip：上傳 ZIP（須先 tab/create；亦可改用 tab/create-upload-zip 一次完成）
 - POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名；`.md`/`.txt` 內容 UTF-8 原文寫入 Rag_Unit.transcription，含 Markdown）；可選 body.build_faiss 覆寫；**rag_chunk_size／rag_chunk_overlap** 為全批預設，**rag_chunk_sizes／rag_chunk_overlaps**（逗號字串或 JSON 整數陣列）可與任務同序逐段覆寫；**unit_names**（逗號字串或 JSON 字串陣列）同序非空段覆寫 Rag_Unit.unit_name（顯示名）；**folder_combination** 恒為 repack ZIP 檔名 stem 寫入 DB（多資料夾為 ``folder1/tfolder2``，非底線 ``_``）；**unit_type≠1** 時寫入／回傳之 rag_chunk_size／rag_chunk_overlap 為 0；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
 - PUT /rag/tab/quiz/delete/{rag_quiz_id}：依 rag_quiz_id 軟刪除 Rag_Quiz（deleted=true；須為該列 person_id）
 - PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
@@ -949,6 +950,139 @@ def list_rag(
         raise HTTPException(status_code=500, detail=f"列出 Rag 失敗: {e!s}")
 
 
+def _create_rag_record(
+    *,
+    rag_tab_id: str,
+    person_id: str,
+    tab_name: str,
+    course_id: int,
+    local: bool = False,
+) -> dict[str, Any]:
+    """建立一筆 Rag；回傳 create 回應欄位。"""
+    supabase = get_supabase()
+    r = (
+        supabase.table("Rag")
+        .insert(
+            _rag_default_row(
+                rag_tab_id,
+                tab_name=tab_name,
+                person_id=person_id,
+                course_id=course_id,
+                file_metadata=None,
+                local=local,
+            )
+        )
+        .execute()
+    )
+    if not r.data or len(r.data) == 0:
+        raise HTTPException(status_code=500, detail="新增 Rag 失敗")
+    row = r.data[0]
+    return {
+        "rag_id": row["rag_id"],
+        "rag_tab_id": row["rag_tab_id"],
+        "tab_name": row.get("tab_name"),
+        "person_id": row.get("person_id"),
+        "course_id": row.get("course_id"),
+        "local": row.get("local"),
+        "created_at": to_taipei_iso(row.get("created_at")),
+    }
+
+
+def _validate_rag_tab_create_fields(
+    *,
+    rag_tab_id: str,
+    person_id: str,
+    tab_name: str,
+    caller_person_id: str,
+) -> tuple[str, str, str]:
+    """驗證 tab/create 與 tab/create-upload-zip 共用欄位；回傳 strip 後 (rag_tab_id, person_id, tab_name)。"""
+    fid = (rag_tab_id or "").strip()
+    if not fid or "/" in fid or "\\" in fid:
+        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
+    pid = (person_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="請傳入 person_id")
+    if pid != caller_person_id:
+        raise HTTPException(status_code=400, detail="person_id 與 query 不一致")
+    name = (tab_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="請傳入 tab_name")
+    return fid, pid, name
+
+
+def _upload_rag_zip_contents(
+    *,
+    contents: bytes,
+    filename: str,
+    rag_tab_id: str,
+    person_id: str,
+    course_id: int,
+) -> dict[str, Any]:
+    """上傳 ZIP 並更新 Rag.file_metadata；回傳 file_metadata。"""
+    try:
+        with zipfile.ZipFile(io.BytesIO(contents), "r") as zip_ref:
+            folders = get_second_level_folders_from_zip_file(zip_ref)
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="無法讀取 ZIP 檔案")
+
+    supabase = get_supabase()
+    r = (
+        supabase.table("Rag")
+        .select("rag_id, created_at")
+        .eq("rag_tab_id", rag_tab_id)
+        .eq("person_id", person_id)
+        .eq("course_id", course_id)
+        .execute()
+    )
+    if not r.data or len(r.data) == 0:
+        raise HTTPException(
+            status_code=404,
+            detail="找不到該 rag_tab_id 的 Rag 資料，請先呼叫 POST /rag/tab/create 建立",
+        )
+    row = r.data[0]
+
+    try:
+        save_zip(
+            contents,
+            filename,
+            folder=FOLDER_UPLOAD,
+            person_id=person_id,
+            tab_id=rag_tab_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except StorageApiError as e:
+        if e.status == 413:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    "ZIP 超過 Supabase Storage 允許的單檔大小上限；請縮小檔案，"
+                    "或至 Supabase Dashboard → Project Settings → Storage 調高／確認方案限制。"
+                ),
+            ) from e
+        raise HTTPException(status_code=502, detail=f"儲存上傳失敗: {e.message}") from e
+
+    file_size_mb = _bytes_to_mb(len(contents))
+    file_metadata = {
+        "rag_id": row["rag_id"],
+        "rag_tab_id": rag_tab_id,
+        "created_at": to_taipei_iso(row["created_at"]),
+        "filename": filename,
+        "second_folders": folders,
+        "file_size": file_size_mb,
+    }
+    update_payload: dict[str, Any] = {
+        "file_metadata": file_metadata,
+        "file_size": file_size_mb,
+        "updated_at": now_taipei_iso(),
+    }
+    try:
+        supabase.table("Rag").update(update_payload).eq("rag_tab_id", rag_tab_id).eq("person_id", person_id).eq("course_id", course_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return file_metadata
+
+
 @router.post("/tab/create")
 def create_unit(
     body: openapi_body(
@@ -963,45 +1097,20 @@ def create_unit(
     須傳 query course_id，寫入 Rag.course_id。
     回傳新增的 rag_id、rag_tab_id、person_id、course_id、tab_name、local、created_at。
     """
-    fid = (body.rag_tab_id or "").strip()
-    if not fid or "/" in fid or "\\" in fid:
-        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
-    pid = (body.person_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="請傳入 person_id")
-    if pid != caller_person_id:
-        raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
-    tab_name = (body.tab_name or "").strip()
-    if not tab_name:
-        raise HTTPException(status_code=400, detail="請傳入 tab_name")
+    fid, pid, tab_name = _validate_rag_tab_create_fields(
+        rag_tab_id=body.rag_tab_id,
+        person_id=body.person_id,
+        tab_name=body.tab_name,
+        caller_person_id=caller_person_id,
+    )
     try:
-        supabase = get_supabase()
-        r = (
-            supabase.table("Rag")
-            .insert(
-                _rag_default_row(
-                    fid,
-                    tab_name=tab_name,
-                    person_id=pid,
-                    course_id=course_id,
-                    file_metadata=None,
-                    local=body.local,
-                )
-            )
-            .execute()
+        return _create_rag_record(
+            rag_tab_id=fid,
+            person_id=pid,
+            tab_name=tab_name,
+            course_id=course_id,
+            local=body.local,
         )
-        if not r.data or len(r.data) == 0:
-            raise HTTPException(status_code=500, detail="新增 Rag 失敗")
-        row = r.data[0]
-        return {
-            "rag_id": row["rag_id"],
-            "rag_tab_id": row["rag_tab_id"],
-            "tab_name": row.get("tab_name"),
-            "person_id": row.get("person_id"),
-            "course_id": row.get("course_id"),
-            "local": row.get("local"),
-            "created_at": to_taipei_iso(row.get("created_at")),
-        }
     except HTTPException:
         raise
     except Exception as e:
@@ -1137,6 +1246,59 @@ def delete_rag_file(
     }
 
 
+@router.post("/tab/create-upload-zip")
+async def create_upload_zip(
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    file: UploadFile = File(...),
+    rag_tab_id: str = Form(..., description="Rag 的 tab 識別，對應 Rag 表 rag_tab_id 欄位"),
+    person_id: str = Form(..., description="使用者/路徑識別，需與 query person_id 一致"),
+    tab_name: str = Form(..., description="Rag 顯示名稱，寫入 Rag 表 tab_name 欄位"),
+    local: bool = Form(False, description="是否為本機 RAG，寫入 Rag 表 local 欄位"),
+):
+    """
+    建立 Rag 並上傳 ZIP（先 tab/create，再 tab/upload-zip）。
+    multipart/form-data：file、rag_tab_id、person_id、tab_name、local（選填，預設 false）。
+    須傳 query course_id、person_id。
+    回傳 create 欄位與 file_metadata。
+    """
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="請上傳 .zip 檔案")
+
+    fid, pid, name = _validate_rag_tab_create_fields(
+        rag_tab_id=rag_tab_id,
+        person_id=person_id,
+        tab_name=tab_name,
+        caller_person_id=caller_person_id,
+    )
+
+    try:
+        contents = await file.read()
+    except Exception:
+        raise HTTPException(status_code=400, detail="無法讀取上傳檔案")
+
+    try:
+        create_result = _create_rag_record(
+            rag_tab_id=fid,
+            person_id=pid,
+            tab_name=name,
+            course_id=course_id,
+            local=local,
+        )
+        file_metadata = _upload_rag_zip_contents(
+            contents=contents,
+            filename=file.filename,
+            rag_tab_id=fid,
+            person_id=pid,
+            course_id=course_id,
+        )
+        return {**create_result, "file_metadata": file_metadata}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/tab/upload-zip")
 async def upload_zip(
     caller_person_id: PersonId,
@@ -1147,6 +1309,7 @@ async def upload_zip(
 ):
     """
     Upload Zip：只做上傳並寫入資料庫。需先以 tab/create 建立該 rag_tab_id 的 Rag 資料。
+    亦可改用 POST /rag/tab/create-upload-zip 一次完成建立與上傳。
     會更新該筆 Rag 的 file_metadata（filename、second_folders、file_size 等）與 file_size 欄位（皆為 MB）。
     回傳 file_metadata。
     """
@@ -1162,12 +1325,6 @@ async def upload_zip(
     except Exception:
         raise HTTPException(status_code=400, detail="無法讀取上傳檔案")
 
-    try:
-        with zipfile.ZipFile(io.BytesIO(contents), "r") as zip_ref:
-            folders = get_second_level_folders_from_zip_file(zip_ref)
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="無法讀取 ZIP 檔案")
-
     resolved_person_id = (person_id or "").strip()
     if not resolved_person_id:
         raise HTTPException(status_code=400, detail="請傳入 person_id")
@@ -1175,63 +1332,17 @@ async def upload_zip(
         raise HTTPException(status_code=400, detail="Form 的 person_id 與 query 不一致")
 
     try:
-        supabase = get_supabase()
-        r = (
-            supabase.table("Rag")
-            .select("rag_id, created_at")
-            .eq("rag_tab_id", fid)
-            .eq("person_id", resolved_person_id)
-            .eq("course_id", course_id)
-            .execute()
+        return _upload_rag_zip_contents(
+            contents=contents,
+            filename=file.filename,
+            rag_tab_id=fid,
+            person_id=resolved_person_id,
+            course_id=course_id,
         )
-        if not r.data or len(r.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 的 Rag 資料，請先呼叫 POST /rag/tab/create 建立")
-        row = r.data[0]
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-    try:
-        save_zip(
-            contents,
-            file.filename,
-            folder=FOLDER_UPLOAD,
-            person_id=resolved_person_id,
-            tab_id=fid,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except StorageApiError as e:
-        if e.status == 413:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    "ZIP 超過 Supabase Storage 允許的單檔大小上限；請縮小檔案，"
-                    "或至 Supabase Dashboard → Project Settings → Storage 調高／確認方案限制。"
-                ),
-            ) from e
-        raise HTTPException(status_code=502, detail=f"儲存上傳失敗: {e.message}") from e
-
-    file_size_mb = _bytes_to_mb(len(contents))
-    file_metadata = {
-        "rag_id": row["rag_id"],
-        "rag_tab_id": fid,
-        "created_at": to_taipei_iso(row["created_at"]),
-        "filename": file.filename,
-        "second_folders": folders,
-        "file_size": file_size_mb,
-    }
-    update_payload: dict[str, Any] = {
-        "file_metadata": file_metadata,
-        "file_size": file_size_mb,
-        "updated_at": now_taipei_iso(),
-    }
-    try:
-        supabase.table("Rag").update(update_payload).eq("rag_tab_id", fid).eq("person_id", resolved_person_id).eq("course_id", course_id).execute()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    return file_metadata
 
 
 @router.post("/tab/build-rag-zip-stream", include_in_schema=False)
