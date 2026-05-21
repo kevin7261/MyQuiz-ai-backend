@@ -363,12 +363,23 @@ def _rag_llm_generate_quiz_impl(
         (unit_row.get("folder_combination") or unit_row.get("unit_name") or "").strip() or None
     )
     unit_rag_tab_id = (unit_row.get("rag_tab_id") or "").strip()
-
     source_rag_tab_id = (q_row.get("rag_tab_id") or "").strip()
-    if source_rag_tab_id and unit_rag_tab_id and source_rag_tab_id != unit_rag_tab_id:
-        raise HTTPException(status_code=400, detail="Rag_Quiz 與 Rag_Unit 的 rag_tab_id 不一致")
-
-    rag_tab_id = source_rag_tab_id or unit_rag_tab_id
+    # rag_tab_id 以 Rag_Unit 為準（FK 綁 rag_unit_id）；Quiz 欄位為冗餘，過期時回寫
+    if unit_rag_tab_id:
+        rag_tab_id = unit_rag_tab_id
+        if source_rag_tab_id != unit_rag_tab_id:
+            try:
+                supabase.table("Rag_Quiz").update(
+                    {"rag_tab_id": unit_rag_tab_id, "updated_at": now_taipei_iso()}
+                ).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
+            except Exception as e:
+                _logger.warning(
+                    "Rag_Quiz rag_tab_id 與 Rag_Unit 不一致，回寫失敗 rag_quiz_id=%s: %s",
+                    rag_quiz_id,
+                    e,
+                )
+    else:
+        rag_tab_id = source_rag_tab_id
     if not rag_tab_id:
         raise HTTPException(status_code=400, detail="無法由 rag_quiz_id 解析 rag_tab_id")
 
@@ -481,6 +492,7 @@ def _rag_llm_generate_quiz_impl(
         result["quiz_name"] = resolved_quiz_name
         result["follow_up"] = followup
         quiz_update: dict[str, Any] = {
+            "rag_tab_id": rag_tab_id,
             "quiz_name": resolved_quiz_name,
             "quiz_user_prompt_text": qup_stored,
             "quiz_content": qc,
