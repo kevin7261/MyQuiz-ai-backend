@@ -107,7 +107,7 @@ SYSTEM_PROMPT_QUIZ = textwrap.dedent("""
 USER_PROMPT_COURSE = textwrap.dedent("""
     ## 必須遵守（最高優先）
 
-    下節 **出題 user prompt** 之內文為本任務**最重要**之依據；與 **課程內容** 或 system 泛化規範牴觸時，**以該節為準**（仍須在課程引用範圍內取材，但**不得**為了貼合片段而違反該節指令）。
+    下節 **出題 user prompt** 為教師直接指令，必須一定遵守。
     若另有獨立區塊 **已出過題目（勿重複出題）**（在「出題 user prompt」之後），所列題目**不可再出一次**；請另出與列表**皆不相同**的新題。
     **`quiz_content` 請直接寫題幹**（學生可立即作答的一句／一段發問），勿加「題目」標題、「根據課程…」前言或多問列點。
 
@@ -199,7 +199,7 @@ SYSTEM_PROMPT_QUIZ_FOLLOWUP = textwrap.dedent("""
 USER_PROMPT_COURSE_FOLLOWUP = textwrap.dedent("""
     ## 必須遵守（最高優先）
 
-    下節 **出題 user prompt** 為教師直接指令；有實質文字時須遵守（與本節牴觸時以該節為準，仍須在課程範圍內）。
+    下節 **出題 user prompt** 為教師直接指令，必須一定遵守。
 
     **`quiz_content` 請直接寫題幹**（與一般出題相同：一句／一段發問即可作答），勿加「題目」「中文題目：」「根據課程…請回答以下問題」或多問列點。
 
