@@ -282,6 +282,50 @@ def ensure_exam_quiz_rag_id_keys(quizzes_flat: list[dict]) -> None:
                 q[key] = None
 
 
+def nest_follow_up_quizzes(quizzes: list[dict]) -> None:
+    """就地為 follow_up=True 的 quiz 附加 follow_up_quiz（指向前一題 dict，遞迴串接）。
+    quizzes 須依 created_at 升序，確保處理到 C 時 B 已附加 follow_up_quiz=A。"""
+    by_id: dict[int, dict] = {}
+    for q in quizzes:
+        qid = q.get("exam_quiz_id")
+        if qid is not None:
+            try:
+                by_id[int(qid)] = q
+            except (TypeError, ValueError):
+                pass
+    for q in quizzes:
+        if not q.get("follow_up"):
+            continue
+        prev_id_raw = q.get("follow_up_exam_quiz_id")
+        if not prev_id_raw:
+            continue
+        try:
+            prev_id = int(prev_id_raw)
+        except (TypeError, ValueError):
+            continue
+        if prev_id <= 0:
+            continue
+        prev_q = by_id.get(prev_id)
+        if prev_q is not None:
+            q["follow_up_quiz"] = prev_q
+
+
+def filter_to_chain_heads(quizzes: list[dict]) -> list[dict]:
+    """只回傳 chain head：被其他 quiz 的 follow_up_exam_quiz_id 引用的 quiz 不出現頂層（已含於 follow_up_quiz 鏈中）。"""
+    referenced_ids: set[int] = set()
+    for q in quizzes:
+        prev_id_raw = q.get("follow_up_exam_quiz_id")
+        if not prev_id_raw:
+            continue
+        try:
+            prev_id = int(prev_id_raw)
+            if prev_id > 0:
+                referenced_ids.add(prev_id)
+        except (TypeError, ValueError):
+            pass
+    return [q for q in quizzes if int(q.get("exam_quiz_id") or 0) not in referenced_ids]
+
+
 def group_exam_quizzes_into_units(quizzes: list[dict]) -> list[dict]:
     """依 Exam_Quiz.unit_name 分群；units[] 每筆含 unit_name、rag_unit_id（取自首筆有效值）、quizzes[]。"""
     order: list[str] = []

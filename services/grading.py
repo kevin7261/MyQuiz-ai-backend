@@ -513,8 +513,8 @@ def run_grade_job_background(
             )
         else:
             err_detail = (
-                "更新 Rag_Quiz 評分欄位失敗。常見原因：未設定 SUPABASE_SERVICE_ROLE_KEY 而改用 anon 遭 RLS 擋、"
-                "rag_quiz_id 無對應列或已刪除、或欄位 quiz_content／answer_user_prompt_text／answer_content／answer_critique 與表不符。請見伺服器日誌。"
+                "批改 LLM 完成但寫入 DB 失敗。常見原因：未設定 SUPABASE_SERVICE_ROLE_KEY 而改用 anon 遭 RLS 擋、"
+                "quiz_id 無對應列或已刪除、或欄位 answer_content／answer_critique 與表不符。請見伺服器日誌。"
             )
             _logger.warning("批改 LLM 已完成但寫入答案表失敗 job_id=%s：%s", job_id, err_detail)
             results_store[job_id] = {"status": "error", "result": None, "error": err_detail}

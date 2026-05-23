@@ -50,7 +50,9 @@ from services.exam_queries import (
     exam_default_row,
     exams_by_tab_ids,
     exams_table_select,
+    filter_to_chain_heads,
     group_exam_quizzes_into_units,
+    nest_follow_up_quizzes,
     quizzes_by_exam_tab_ids,
     quizzes_by_person_id,
     rag_quiz_for_exam_response_row,
@@ -399,10 +401,12 @@ def list_exams(
         flat_qz = [qz for tid in tab_ids for qz in quizzes_by_tab.get(tid, [])]
         enrich_exam_quizzes_rag_tab_from_units(flat_qz)
         ensure_exam_quiz_rag_id_keys(flat_qz)
+        nest_follow_up_quizzes(flat_qz)
 
         for row in data:
             tab_id = str(row.get("exam_tab_id") or "")
-            row["units"] = group_exam_quizzes_into_units(quizzes_by_tab.get(tab_id, []))
+            tab_quizzes = quizzes_by_tab.get(tab_id, [])
+            row["units"] = group_exam_quizzes_into_units(filter_to_chain_heads(tab_quizzes))
 
         data = to_json_safe(data)
         return ListExamResponse(exams=data, count=len(data))
