@@ -8,8 +8,8 @@ from typing import Any
 
 from postgrest.exceptions import APIError
 
-from utils.datetime_utils import now_taipei_iso
-from utils.db_tables import (
+from utils.taipei_time import now_taipei_iso
+from utils.db_schema import (
     EXAM_COURSE_ID_DEFAULT,
     EXAM_QUIZ_SELECT_COLUMNS,
     EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP,
@@ -20,7 +20,7 @@ from utils.db_tables import (
     RAG_SELECT_COLUMNS_NO_FILE_METADATA,
     exam_quiz_list_row,
 )
-from utils.supabase_client import get_supabase
+from utils.supabase import get_supabase
 
 
 # ---------------------------------------------------------------------------

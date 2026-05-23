@@ -10,7 +10,7 @@
 
 檔案結構（由上而下）：
 1. 模型常數（`WEAKNESS_LLM_MODEL`，與出題 `QUIZ_LLM_MODEL`、批改 `GRADE_LLM_MODEL` 對齊為同一型號字串）
-2. **LLM 弱點報告 Prompt**（對齊 `utils/quiz_generation`、`services/grading`：`SYSTEM_PROMPT_WEAKNESS_REPORT`、`USER_PROMPT_WEAKNESS_REPORT`；user 以 `.format(person_analysis_user_prompt_text=…, material_md=…)` 填入）
+2. **LLM 弱點報告 Prompt**（對齊 `services/quiz_generation`、`services/grading`：`SYSTEM_PROMPT_WEAKNESS_REPORT`、`USER_PROMPT_WEAKNESS_REPORT`；user 以 `.format(person_analysis_user_prompt_text=…, material_md=…)` 填入）
 3. Pydantic → 弱點資料彙整私有函式 → 路由。
 """
 
@@ -32,9 +32,9 @@ from services.exam_queries import (
     quizzes_by_person_id,
 )
 from routers.system_settings import SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY
-from utils.json_utils import to_json_safe
-from utils.llm_api_key_utils import get_llm_api_key
-from utils.supabase_client import get_supabase
+from utils.serialization import to_json_safe
+from utils.llm_key import get_llm_api_key
+from utils.supabase import get_supabase
 
 router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
 
@@ -42,7 +42,7 @@ router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
 # -----------------------------------------------------------------------------
 # 模型常數
 # -----------------------------------------------------------------------------
-# 與 `utils.quiz_generation.QUIZ_LLM_MODEL`、`services.grading.GRADE_LLM_MODEL` 一致，便於維運對照。
+# 與 `services.quiz_generation.QUIZ_LLM_MODEL`、`services.grading.GRADE_LLM_MODEL` 一致，便於維運對照。
 
 WEAKNESS_LLM_MODEL = "gpt-4o"
 

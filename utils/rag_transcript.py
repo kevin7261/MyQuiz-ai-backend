@@ -10,7 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Iterator
 
-from utils.media_transcript import (
+from utils.media import (
     parse_youtube_video_id,
     transcribe_audio_bytes_deepgram,
     youtube_transcript_api_user_message,

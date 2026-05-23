@@ -8,7 +8,7 @@ JSON 序列化輔助工具。
 from datetime import date, datetime
 from typing import Any
 
-from utils.datetime_utils import to_taipei_iso
+from utils.taipei_time import to_taipei_iso
 
 
 def to_json_safe(obj: Any) -> Any:

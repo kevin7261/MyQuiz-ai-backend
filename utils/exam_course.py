@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from utils.supabase_client import get_supabase
+from utils.supabase import get_supabase
 
 
 def require_exam_row(

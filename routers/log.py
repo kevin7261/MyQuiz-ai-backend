@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
-from utils.supabase_client import get_supabase
+from utils.supabase import get_supabase
 
 router = APIRouter(prefix="/log", tags=["log"])
 

@@ -38,8 +38,8 @@ from storage3.exceptions import StorageApiError
 from dependencies.person_id import PersonId
 from dependencies.course_id import CourseId
 
-from utils.openapi_request_body import openapi_body
-from utils.json_utils import to_json_safe
+from utils.openapi import openapi_body
+from utils.serialization import to_json_safe
 from utils.zip_utils import (
     get_second_level_folders_from_zip_file,
     build_folder_map,
@@ -55,9 +55,9 @@ from utils.zip_storage import (
     FOLDER_REPACK,
     FOLDER_RAG,
 )
-from utils.datetime_utils import now_taipei_iso, to_taipei_iso
-from utils.supabase_client import get_supabase
-from utils.db_tables import (
+from utils.taipei_time import now_taipei_iso, to_taipei_iso
+from utils.supabase import get_supabase
+from utils.db_schema import (
     ACTIVE_DELETED_FILTER,
     RAG_COURSE_ID_DEFAULT,
     RAG_QUIZ_SELECT_COLUMNS,
@@ -65,7 +65,7 @@ from utils.db_tables import (
     USER_COURSE_RELATION_TABLE,
     rag_quiz_list_row,
 )
-from utils.rag_course_utils import (
+from utils.rag_course import (
     execute_with_course_id_fallback,
     insert_rag_child_row,
     require_rag_tab_owner,
@@ -73,8 +73,8 @@ from utils.rag_course_utils import (
     select_without_course_id_if_needed,
 )
 from utils.rag_exam_setting import is_localhost_request
-from utils.media_transcript import audio_media_type_for_suffix
-from utils.rag_transcript_from_upload_zip import (
+from utils.media import audio_media_type_for_suffix
+from utils.rag_transcript import (
     build_transcript_md_zip_bytes,
     extract_transcript_for_rag_build,
     infer_unit_type_when_unspecified,
@@ -698,7 +698,7 @@ def _build_one_rag_zip_output_item(
         }
         rag_bytes_out: bytes | None = None
         try:
-            from utils.rag_faiss_zip import make_rag_zip_from_zip_path
+            from utils.rag_faiss import make_rag_zip_from_zip_path
 
             tab_id = save_zip(
                 zip_bytes,

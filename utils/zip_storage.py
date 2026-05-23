@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from utils.datetime_utils import TAIPEI_TZ
+from utils.taipei_time import TAIPEI_TZ
 
 
 # 子目錄名稱常數：上傳、重新壓縮、RAG
@@ -65,7 +65,7 @@ def _get_bucket_name() -> str:
 
 def _get_storage():
     """取得 Supabase Storage bucket client。"""
-    from utils.supabase_client import get_supabase
+    from utils.supabase import get_supabase
     return get_supabase().storage.from_(_get_bucket_name())
 
 

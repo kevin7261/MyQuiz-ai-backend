@@ -104,8 +104,8 @@ def _resolve_course_id(query_params: dict[str, str], body_flat: dict[str, Any]) 
 def _insert_log_row(
     *, person_id: str, course_id: int, api: str, api_metadata: dict[str, Any]
 ) -> None:
-    from utils.datetime_utils import now_taipei_iso
-    from utils.supabase_client import get_supabase
+    from utils.taipei_time import now_taipei_iso
+    from utils.supabase import get_supabase
 
     ts = now_taipei_iso()
     supabase = get_supabase()

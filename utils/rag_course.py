@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import HTTPException
 from postgrest.exceptions import APIError
 
-from utils.supabase_client import get_supabase
+from utils.supabase import get_supabase
 
 # Rag_Unit / Rag_Quiz 是否已有 course_id 欄位（None=尚未探測）
 _course_id_column_cache: dict[str, bool | None] = {

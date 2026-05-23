@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import Request
 
-from utils.rag_course_utils import execute_with_course_id_fallback
+from utils.rag_course import execute_with_course_id_fallback
 
 RAG_EXAM_SETTING_KEY_LOCALHOST = "rag_localhost"
 RAG_EXAM_SETTING_KEY_DEPLOY = "rag_deploy"

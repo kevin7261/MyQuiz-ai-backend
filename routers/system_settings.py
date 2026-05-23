@@ -12,10 +12,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from dependencies.person_id import PersonId
-from utils.datetime_utils import now_taipei_iso
-from utils.db_tables import ACTIVE_DELETED_FILTER, USER_COURSE_RELATION_TABLE, USER_TABLE
-from utils.openapi_request_body import openapi_body
-from utils.supabase_client import get_supabase
+from utils.taipei_time import now_taipei_iso
+from utils.db_schema import ACTIVE_DELETED_FILTER, USER_COURSE_RELATION_TABLE, USER_TABLE
+from utils.openapi import openapi_body
+from utils.supabase import get_supabase
 
 router = APIRouter(prefix="/system-settings", tags=["system-settings"])
 

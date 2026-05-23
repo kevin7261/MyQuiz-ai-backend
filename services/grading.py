@@ -29,10 +29,10 @@ from openai import OpenAI
 
 from postgrest.exceptions import APIError
 
-from utils.datetime_utils import now_taipei_iso
-from utils.quiz_generation import _context_as_markdown_fenced
-from utils.rag_faiss_zip import process_zip_to_docs
-from utils.supabase_client import get_supabase
+from utils.taipei_time import now_taipei_iso
+from services.quiz_generation import _context_as_markdown_fenced
+from utils.rag_faiss import process_zip_to_docs
+from utils.supabase import get_supabase
 
 _logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ _logger = logging.getLogger(__name__)
 # -----------------------------------------------------------------------------
 # 模型與檢索（及講義臨時向量）常數
 # -----------------------------------------------------------------------------
-# 與出題 `utils.quiz_generation` 共用同一 embedding 模型，維持索引維度一致。
+# 與出題 `services.quiz_generation` 共用同一 embedding 模型，維持索引維度一致。
 # `GRADE_RETRIEVAL_K`：有 FAISS 或臨時向量時，以題幹為查詢之檢索段數。
 # chunk 參數僅於「ZIP 無 FAISS、改由講義建臨時向量庫」時使用。
 
@@ -52,7 +52,7 @@ GRADE_RAG_CHUNK_OVERLAP = 200
 
 
 # -----------------------------------------------------------------------------
-# LLM 批改 Prompt（與「出題」`utils/quiz_generation` 相同分段：`SYSTEM_PROMPT_*` → `USER_PROMPT_*_COURSE`、`---`、`## 課程內容`；user 僅 `.format(...)`）
+# LLM 批改 Prompt（與「出題」`services/quiz_generation` 相同分段：`SYSTEM_PROMPT_*` → `USER_PROMPT_*_COURSE`、`---`、`## 課程內容`；user 僅 `.format(...)`）
 # -----------------------------------------------------------------------------
 # Chat messages：
 #   role=system … SYSTEM_PROMPT_GRADE
@@ -305,7 +305,7 @@ def run_grade_job_transcription_only(
     id_block = ("## 關聯識別\n\n" + "\n".join(id_lines) + "\n\n") if id_lines else ""
 
     context_md = _context_as_markdown_fenced(ts)
-    # system／user 與 utils.quiz_generation 出題路徑一致：規範在 system；題目／欄位／課程內文在 user。
+    # system／user 與 services.quiz_generation 出題路徑一致：規範在 system；題目／欄位／課程內文在 user。
     user_msg = USER_PROMPT_GRADE_TRANSCRIPTION_COURSE.format(
         id_block=id_block,
         quiz_user_prompt_text=_grade_field_display(quiz_user_prompt_text),
@@ -399,7 +399,7 @@ def run_grade_job(
         split_docs = text_splitter.split_documents(all_documents)
         vectorstore = FAISS.from_documents(split_docs, embeddings)
 
-    # 以題幹當檢索查詢（與 utils.quiz_generation 固定查詢句不同，較貼近本題語意）。
+    # 以題幹當檢索查詢（與 services.quiz_generation 固定查詢句不同，較貼近本題語意）。
     retriever = vectorstore.as_retriever(search_kwargs={"k": GRADE_RETRIEVAL_K})
     docs = retriever.invoke(quiz_content)
     context_text = "\n\n".join([d.page_content for d in docs])

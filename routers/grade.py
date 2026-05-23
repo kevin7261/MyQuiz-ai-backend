@@ -23,13 +23,13 @@ import zipfile
 from pathlib import Path
 from typing import Any, Literal
 
-from utils.quiz_generation import (
+from services.quiz_generation import (
     generate_quiz,
     generate_quiz_followup,
     generate_quiz_followup_transcription_only,
     generate_quiz_transcription_only,
 )
-from utils.openapi_request_body import openapi_body
+from utils.openapi import openapi_body
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from postgrest.exceptions import APIError
@@ -43,30 +43,30 @@ from services.grading import (
     run_grade_job_background,
     update_rag_quiz_with_grade,
 )
-from utils.datetime_utils import now_taipei_iso
-from utils.json_utils import to_json_safe
-from utils.llm_api_key_utils import get_llm_api_key_for_person
-from utils.media_transcript import (
+from utils.taipei_time import now_taipei_iso
+from utils.serialization import to_json_safe
+from utils.llm_key import get_llm_api_key_for_person
+from utils.media import (
     audio_media_type_for_suffix,
     transcribe_audio_bytes_deepgram,
     youtube_transcript_api_user_message,
     youtube_transcript_plain_text,
 )
-from utils.rag_faiss_zip import process_zip_to_docs
-from utils.rag_stem_utils import get_rag_stem_from_rag_id, instruction_from_rag_row
-from utils.rag_transcript_from_upload_zip import (
+from utils.rag_faiss import process_zip_to_docs
+from utils.rag_stem import get_rag_stem_from_rag_id, instruction_from_rag_row
+from utils.rag_transcript import (
     pick_audio_from_upload_zip,
     read_single_transcript_text_from_upload_zip,
     read_upload_zip_bytes,
     read_youtube_video_id_from_upload_zip,
 )
-from utils.rag_course_utils import (
+from utils.rag_course import (
     assert_row_course_id,
     execute_with_course_id_fallback,
     require_rag_tab_owner,
     select_without_course_id_if_needed,
 )
-from utils.supabase_client import get_supabase
+from utils.supabase import get_supabase
 from utils.zip_storage import get_zip_path
 from youtube_transcript_api._errors import (
     InvalidVideoId,
@@ -574,7 +574,7 @@ def rag_llm_generate_quiz(
     """
     Body：rag_quiz_id、quiz_name、quiz_user_prompt_text（可空字串）、quiz_history_list（選填；順序同 public.Rag_Quiz）；
     rag_tab_id／rag_unit_id 由後端依 rag_quiz_id 自資料庫帶入；quiz_user_prompt_text 空則自該列 Rag_Quiz 讀取。
-    選填 `quiz_history_list`（字串陣列）：已出過的題目題幹，由 `utils.quiz_generation` 併入 user「已出過題目」區塊，避免重複出題。
+    選填 `quiz_history_list`（字串陣列）：已出過的題目題幹，由 `services.quiz_generation` 併入 user「已出過題目」區塊，避免重複出題。
     unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcription。
     unit_type 2／3／4 時不載入 RAG ZIP，改以逐字稿為 context；與 unit_type=1 共用 `SYSTEM_PROMPT_QUIZ`、`USER_PROMPT_COURSE` 與 `_generate_quiz_from_context`。
     出題成功後更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=false；保留 answer_user_prompt_text、answer_content、answer_critique）。

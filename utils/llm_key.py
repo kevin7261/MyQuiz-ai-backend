@@ -6,8 +6,8 @@ LLM API Key：僅從環境變數 LLM_API_KEY 或 OPENAI_API_KEY 讀取（main.py
 import os
 from typing import Optional
 
-from utils.db_tables import ACTIVE_DELETED_FILTER, USER_COURSE_RELATION_TABLE, USER_TABLE
-from utils.supabase_client import get_supabase
+from utils.db_schema import ACTIVE_DELETED_FILTER, USER_COURSE_RELATION_TABLE, USER_TABLE
+from utils.supabase import get_supabase
 
 
 def _llm_api_key_from_env() -> Optional[str]:

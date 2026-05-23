@@ -16,14 +16,14 @@ from fastapi import APIRouter, Body, HTTPException
 from dependencies.person_id import PersonId
 from pydantic import BaseModel, Field
 
-from utils.datetime_utils import now_taipei_iso, to_taipei_iso
-from utils.db_tables import (
+from utils.taipei_time import now_taipei_iso, to_taipei_iso
+from utils.db_schema import (
     ACTIVE_DELETED_FILTER,
     USER_COURSE_RELATION_TABLE,
     USER_TABLE,
 )
-from utils.openapi_request_body import openapi_body
-from utils.supabase_client import get_supabase
+from utils.openapi import openapi_body
+from utils.supabase import get_supabase
 
 router = APIRouter(prefix="/user", tags=["user"])
 

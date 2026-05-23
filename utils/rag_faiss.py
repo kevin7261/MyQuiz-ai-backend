@@ -127,7 +127,7 @@ def _collect_documents_after_extract(extract_dir: Path, unit_type: int) -> list[
 
     # unit_type 3（MP3）：取第一個音訊檔，以 Deepgram 轉逐字稿
     if ut == UNIT_TYPE_MP3:
-        from utils.media_transcript import transcribe_audio_bytes_deepgram
+        from utils.media import transcribe_audio_bytes_deepgram
 
         mp3_paths: list[Path] = []
         for path in extract_dir.rglob("*"):

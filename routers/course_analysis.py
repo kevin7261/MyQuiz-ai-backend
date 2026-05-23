@@ -20,7 +20,7 @@ from services.exam_queries import (
     ensure_exam_quiz_rag_id_keys,
     group_exam_quizzes_into_units,
 )
-from utils.json_utils import to_json_safe
+from utils.serialization import to_json_safe
 
 router = APIRouter(prefix="/course-analysis", tags=["course analysis"])
 
