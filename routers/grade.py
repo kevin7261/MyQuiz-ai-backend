@@ -298,6 +298,7 @@ def _rag_llm_generate_quiz_impl(
     followup: bool,
     quiz_history_stems: list[str] | None = None,
     quiz_history_qa: list[QuizHistoryPair] | None = None,
+    clear_answer_fields: bool = True,
 ):
     supabase = get_supabase()
 
@@ -498,11 +499,12 @@ def _rag_llm_generate_quiz_impl(
             "quiz_content": qc,
             "quiz_hint": qh,
             "quiz_answer_reference": qref,
-            "answer_user_prompt_text": "",
-            "answer_content": "",
             "follow_up": followup,
             "updated_at": qts,
         }
+        if clear_answer_fields:
+            quiz_update["answer_user_prompt_text"] = ""
+            quiz_update["answer_content"] = ""
         try:
             supabase.table("Rag_Quiz").update(quiz_update).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
         except Exception as e:
@@ -575,7 +577,7 @@ def rag_llm_generate_quiz(
     選填 `quiz_history_list`（字串陣列）：已出過的題目題幹，由 `utils.quiz_generation` 併入 user「已出過題目」區塊，避免重複出題。
     unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcription。
     unit_type 2／3／4 時不載入 RAG ZIP，改以逐字稿為 context；與 unit_type=1 共用 `SYSTEM_PROMPT_QUIZ`、`USER_PROMPT_COURSE` 與 `_generate_quiz_from_context`。
-    出題成功後更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=false；並清空 answer_*）。
+    出題成功後更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=false；保留 answer_user_prompt_text、answer_content、answer_critique）。
     """
     return _rag_llm_generate_quiz_impl(
         rag_quiz_id=body.rag_quiz_id,
@@ -585,6 +587,7 @@ def rag_llm_generate_quiz(
         course_id=course_id,
         followup=False,
         quiz_history_stems=body.quiz_history_list,
+        clear_answer_fields=False,
     )
 
 
@@ -642,6 +645,7 @@ def rag_llm_generate_quiz_db_prompt(
     """
     與 `llm-generate` 相同，但請求不含 `quiz_user_prompt_text`，出題時一律使用
     Rag_Quiz 該列既有之 `quiz_user_prompt_text`（行為等同傳空字串至 `llm-generate`）。
+    出題後保留 answer_user_prompt_text、answer_content、answer_critique。
     """
     return _rag_llm_generate_quiz_impl(
         rag_quiz_id=body.rag_quiz_id,
@@ -651,6 +655,7 @@ def rag_llm_generate_quiz_db_prompt(
         course_id=course_id,
         followup=False,
         quiz_history_stems=body.quiz_history_list,
+        clear_answer_fields=False,
     )
 
 
