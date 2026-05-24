@@ -9,11 +9,12 @@ RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/llm-grade-db：同 llm-grade，唯 body 不包含 answer_user_prompt_text，評分與寫回一律沿用 Rag_Quiz.answer_user_prompt_text（不論請求）。
 - POST /rag/tab/unit/quiz/for-exam：更新 Rag_Quiz.for_exam（body `for_exam` 預設 true；false 取消測驗用）。
 - GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
-- GET /rag/unit/text：依 rag_tab_id、rag_unit_id 回傳 unit_type=2 之 text_file_name 與 transcription（**不需** person_id）。
-- GET /rag/unit/mp3-file：自 upload ZIP 依單元資料夾回傳原始音訊 bytes（供 `<audio src>`）；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者。
-- GET /rag/unit/youtube-url：自 upload ZIP 依 folder_name 解析 YouTube 連結／video_id；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者；語意對齊存庫 transcript 規則，不依 rag_unit_id。
+- GET /rag/unit/text：依 rag_tab_id、folder_name 自 upload ZIP 回傳文字檔全文 transcription（需 person_id）；或依 rag_unit_id 自 DB 讀取（**不需** person_id），DB 為空時改讀 upload ZIP。
+- GET /rag/unit/mp3-file：自 upload ZIP 依 folder_name 回傳音訊（base64）與同資料夾內文字檔逐字稿；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者。
+- GET /rag/unit/youtube-url：自 upload ZIP 依 folder_name 解析 YouTube URL 與文字檔第二行起之逐字稿；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者。
 """
 
+import base64
 import json
 import logging
 import os
@@ -22,7 +23,7 @@ import tempfile
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from services.quiz_generation import (
     generate_quiz,
@@ -54,6 +55,9 @@ from utils.rag_faiss import process_zip_to_docs
 from utils.rag_stem import get_rag_stem_from_rag_id, instruction_from_rag_row
 from utils.rag_transcript import (
     pick_audio_from_upload_zip,
+    read_mp3_unit_transcript_from_upload_zip,
+    read_single_transcript_text_from_upload_zip,
+    read_supplementary_text_from_youtube_unit,
     read_upload_zip_bytes,
     read_youtube_video_id_from_upload_zip,
 )
@@ -250,16 +254,33 @@ class RagQuizFollowupRequest(BaseModel):
 class RagUnitTextResponse(BaseModel):
     """GET /rag/unit/text 回應。"""
 
-    rag_unit_id: int
     rag_tab_id: str
+    folder_name: str = ""
+    rag_unit_id: int = 0
+    text_file_name: str = ""
+    transcription: str = ""
+
+
+class RagUnitMp3FileFromZipResponse(BaseModel):
+    """GET /rag/unit/mp3-file：自 upload ZIP 擷取之音訊與同資料夾文字檔逐字稿。"""
+
+    rag_tab_id: str
+    folder_name: str
+    audio_base64: str
+    media_type: str
+    filename: str
     text_file_name: str = ""
     transcription: str = ""
 
 
 class RagUnitYoutubeUrlFromZipResponse(BaseModel):
-    """GET /rag/unit/youtube-url：自 upload ZIP 解析之標準 watch URL。"""
+    """GET /rag/unit/youtube-url：自 upload ZIP 解析 watch URL 與文字檔第二行起逐字稿。"""
 
+    rag_tab_id: str
+    folder_name: str
     youtube_url: str = Field(..., description="https://www.youtube.com/watch?v=…")
+    text_file_name: str = ""
+    transcription: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -1218,6 +1239,17 @@ async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseI
 # ---------------------------------------------------------------------------
 
 
+def _transcription_from_upload_zip_for_folder(
+    person_id: str,
+    rag_tab_id: str,
+    folder_name: str,
+) -> tuple[str, str]:
+    """自 upload ZIP 資料夾讀取 unit_type=2 文字檔全文；回傳 (transcription, text_file_name)。"""
+    zip_bytes = read_upload_zip_bytes(person_id, rag_tab_id)
+    text, inner_path = read_single_transcript_text_from_upload_zip(zip_bytes, folder_name)
+    return text, Path(inner_path).name
+
+
 @router.get(
     "/unit/text",
     summary="Rag Unit Text",
@@ -1227,27 +1259,75 @@ async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseI
 def rag_unit_text(
     course_id: CourseId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（parent tab）"),
-    rag_unit_id: int = Query(..., gt=0, description="Rag_Unit 主鍵"),
+    folder_name: str = Query(
+        "",
+        description="與 upload ZIP 內單元資料夾名相同；與 rag_unit_id 二擇一（有 folder_name 時須傳 person_id）",
+    ),
+    rag_unit_id: int = Query(
+        0,
+        ge=0,
+        description="Rag_Unit 主鍵；與 folder_name 二擇一",
+    ),
+    person_id: Annotated[
+        str | None,
+        Query(
+            alias="person_id",
+            description="使用 folder_name 時必填；僅 rag_unit_id 時可不傳",
+        ),
+    ] = None,
 ):
     """
-    依 rag_tab_id 與 rag_unit_id 回傳 **unit_type=2（文字單元）** 之 `text_file_name` 與 `transcription`（全文）。
-    **不需** query `person_id`；後端依 `rag_tab_id` 自 Rag 解析擁有者。
-    transcription 為建 RAG 時從文字檔讀入並寫入 `Rag_Unit.transcription` 之全文（含 Markdown）。
+    回傳 **unit_type=2（文字單元）** 之 `text_file_name` 與 `transcription`（全文，含 Markdown）。
+
+    - **folder_name**：自 upload ZIP 讀取（與 build-rag-zip unit_type=2 一致）；須傳 `person_id`。
+    - **rag_unit_id**：自 `Rag_Unit` 讀取，**不需** `person_id`；若 DB 無逐字稿則改讀 upload ZIP（以 `folder_combination` 或 `unit_name` 為資料夾名）。
     """
-    owner_pid = resolve_rag_tab_owner_person_id(rag_tab_id, course_id)
     tab = (rag_tab_id or "").strip()
+    folder = (folder_name or "").strip()
+    unit_id = int(rag_unit_id or 0)
+
+    if folder and unit_id > 0:
+        raise HTTPException(status_code=400, detail="folder_name 與 rag_unit_id 請二擇一")
+    if not folder and unit_id <= 0:
+        raise HTTPException(status_code=400, detail="請傳入 folder_name 或 rag_unit_id（二擇一）")
+
+    if folder:
+        pid = (person_id or "").strip()
+        if not pid:
+            raise HTTPException(status_code=400, detail="使用 folder_name 時須傳入 person_id")
+        require_rag_tab_owner(pid, rag_tab_id, course_id)
+        try:
+            transcription, text_file_name = _transcription_from_upload_zip_for_folder(pid, tab, folder)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            _logger.exception("GET /rag/unit/text 讀取 upload ZIP 失敗")
+            raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+        return RagUnitTextResponse(
+            rag_tab_id=tab,
+            folder_name=folder,
+            rag_unit_id=0,
+            text_file_name=text_file_name,
+            transcription=transcription,
+        )
+
+    owner_pid = resolve_rag_tab_owner_person_id(rag_tab_id, course_id)
     supabase = get_supabase()
 
-    def build_text_sel(with_course_filter: bool):
-        cols = select_without_course_id_if_needed(
-            "Rag_Unit",
-            "rag_unit_id, rag_tab_id, unit_type, text_file_name, transcription, deleted, course_id",
-            with_course_filter,
+    def build_text_sel(with_course_filter: bool, *, include_folder: bool):
+        cols = (
+            "rag_unit_id, rag_tab_id, unit_type, unit_name, folder_combination, "
+            "text_file_name, transcription, deleted, course_id"
+            if include_folder
+            else "rag_unit_id, rag_tab_id, unit_type, unit_name, text_file_name, transcription, deleted, course_id"
         )
+        cols = select_without_course_id_if_needed("Rag_Unit", cols, with_course_filter)
         q = (
             supabase.table("Rag_Unit")
             .select(cols)
-            .eq("rag_unit_id", rag_unit_id)
+            .eq("rag_unit_id", unit_id)
             .eq("person_id", owner_pid)
         )
         if with_course_filter and course_id is not None:
@@ -1255,7 +1335,26 @@ def rag_unit_text(
         return q.limit(1)
 
     try:
-        sel = execute_with_course_id_fallback("Rag_Unit", build_text_sel, course_id)
+        sel = execute_with_course_id_fallback(
+            "Rag_Unit",
+            lambda wc: build_text_sel(wc, include_folder=True),
+            course_id,
+        )
+    except APIError as e:
+        msg = (e.message or "").lower()
+        if e.code == "42703" and "folder_combination" in msg:
+            try:
+                sel = execute_with_course_id_fallback(
+                    "Rag_Unit",
+                    lambda wc: build_text_sel(wc, include_folder=False),
+                    course_id,
+                )
+            except Exception as e2:
+                _logger.exception("GET /rag/unit/text 查詢 Rag_Unit 失敗")
+                raise HTTPException(status_code=500, detail=f"查詢失敗: {e2!s}") from e2
+        else:
+            _logger.exception("GET /rag/unit/text 查詢 Rag_Unit 失敗")
+            raise HTTPException(status_code=500, detail=f"查詢失敗: {e!s}") from e
     except Exception as e:
         _logger.exception("GET /rag/unit/text 查詢 Rag_Unit 失敗")
         raise HTTPException(status_code=500, detail=f"查詢失敗: {e!s}") from e
@@ -1282,11 +1381,33 @@ def rag_unit_text(
             status_code=400,
             detail=f"僅 unit_type=2（文字單元）可使用此端點，目前 unit_type={ut}",
         )
+
+    text_file_name = (row.get("text_file_name") or "").strip()
+    transcription = row.get("transcription") or ""
+    if isinstance(transcription, str):
+        transcription = transcription.strip()
+    else:
+        transcription = str(transcription).strip()
+
+    zip_folder = (row.get("folder_combination") or row.get("unit_name") or "").strip()
+    if not transcription and zip_folder:
+        try:
+            transcription, zip_text_name = _transcription_from_upload_zip_for_folder(
+                owner_pid, tab, zip_folder
+            )
+            if not text_file_name:
+                text_file_name = zip_text_name
+        except (FileNotFoundError, ValueError) as e:
+            _logger.debug("GET /rag/unit/text ZIP 備援略過: %s", e)
+        except Exception:
+            _logger.exception("GET /rag/unit/text ZIP 備援失敗")
+
     return RagUnitTextResponse(
-        rag_unit_id=rag_unit_id,
         rag_tab_id=tab,
-        text_file_name=(row.get("text_file_name") or "").strip(),
-        transcription=(row.get("transcription") or "").strip(),
+        folder_name=zip_folder,
+        rag_unit_id=unit_id,
+        text_file_name=text_file_name,
+        transcription=transcription,
     )
 
 
@@ -1295,21 +1416,28 @@ def rag_unit_text(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/unit/mp3-file")
+@router.get(
+    "/unit/mp3-file",
+    summary="Rag Unit Audio File",
+    operation_id="rag_unit_mp3_file",
+    response_model=RagUnitMp3FileFromZipResponse,
+)
 def rag_unit_audio_file(
     caller_person_id: PersonId,
     course_id: CourseId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（upload ZIP 路徑）"),
     folder_name: str = Query(
         ...,
-        description="與 Rag_Unit.unit_name、upload ZIP 內單元資料夾名相同（與 GET /rag/transcript/audio 一致）",
+        description="與 Rag_Unit.unit_name、upload ZIP 內單元資料夾名相同",
     ),
 ):
     """
-    自 upload ZIP 內指定資料夾擷取第一個支援的音訊檔，直接回傳二進位內容。
+    自 upload ZIP 內指定資料夾擷取音訊（base64）與**至多一個**文字檔全文作為 `transcription`（與 build-rag-zip unit_type=3 一致）。
     query 須含 `person_id`，且須與該 `rag_tab_id` 之 Rag.person_id 一致。
     """
     require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
+    tab = (rag_tab_id or "").strip()
+    folder = (folder_name or "").strip()
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
     except FileNotFoundError as e:
@@ -1321,17 +1449,25 @@ def rag_unit_audio_file(
         raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
 
     try:
-        contents, suffix, inner_path = pick_audio_from_upload_zip(zip_bytes, folder_name)
+        contents, suffix, inner_path = pick_audio_from_upload_zip(zip_bytes, folder)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    try:
+        transcription, text_file_name = read_mp3_unit_transcript_from_upload_zip(zip_bytes, folder)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     media = audio_media_type_for_suffix(suffix)
     disp_name = Path(inner_path).name
-    safe_disp = "".join(c if 32 <= ord(c) < 127 and c not in '\\"' else "_" for c in disp_name) or "audio"
-    return Response(
-        content=contents,
+    return RagUnitMp3FileFromZipResponse(
+        rag_tab_id=tab,
+        folder_name=folder,
+        audio_base64=base64.b64encode(contents).decode(),
         media_type=media,
-        headers={"Content-Disposition": f'inline; filename="{safe_disp}"'},
+        filename=disp_name,
+        text_file_name=text_file_name,
+        transcription=transcription,
     )
 
 
@@ -1340,21 +1476,28 @@ def rag_unit_audio_file(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/unit/youtube-url", response_model=RagUnitYoutubeUrlFromZipResponse)
+@router.get(
+    "/unit/youtube-url",
+    summary="Rag Unit Youtube Url",
+    operation_id="rag_unit_youtube_url",
+    response_model=RagUnitYoutubeUrlFromZipResponse,
+)
 def rag_unit_youtube_url(
     caller_person_id: PersonId,
     course_id: CourseId,
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（upload ZIP 路徑）"),
     folder_name: str = Query(
         ...,
-        description="與 Rag_Unit.unit_name、upload ZIP 內單元資料夾名相同（與 GET /rag/transcript/youtube、GET /rag/unit/mp3-file 一致）",
+        description="與 Rag_Unit.unit_name、upload ZIP 內單元資料夾名相同",
     ),
 ):
     """
-    自 upload ZIP 內指定資料夾讀取**恰好一個**文字檔（.md／.txt／.doc／.docx），解析 YouTube 連結或 video_id，
-    回傳標準 `watch` URL（不擷取字幕）。query 須含 `person_id`，且須與該 rag_tab_id 之 Rag.person_id 一致。
+    自 upload ZIP 內指定資料夾讀取**恰好一個**文字檔：第一行為 YouTube URL，第二行起為 `transcription`（與 build-rag-zip unit_type=4 一致）。
+    query 須含 `person_id`，且須與該 rag_tab_id 之 Rag.person_id 一致。
     """
     require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
+    tab = (rag_tab_id or "").strip()
+    folder = (folder_name or "").strip()
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
     except FileNotFoundError as e:
@@ -1366,10 +1509,17 @@ def rag_unit_youtube_url(
         raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
 
     try:
-        vid, _inner_path = read_youtube_video_id_from_upload_zip(zip_bytes, folder_name)
+        vid, inner_path = read_youtube_video_id_from_upload_zip(zip_bytes, folder)
+        transcription, _ = read_supplementary_text_from_youtube_unit(zip_bytes, folder)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    return RagUnitYoutubeUrlFromZipResponse(youtube_url=f"https://www.youtube.com/watch?v={vid}")
+    return RagUnitYoutubeUrlFromZipResponse(
+        rag_tab_id=tab,
+        folder_name=folder,
+        youtube_url=f"https://www.youtube.com/watch?v={vid}",
+        text_file_name=Path(inner_path).name,
+        transcription=transcription,
+    )
 
 

@@ -325,6 +325,40 @@ def read_supplementary_text_from_youtube_unit(zip_bytes: bytes, folder_name: str
         return transcript, dec
 
 
+def read_mp3_unit_transcript_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[str, str]:
+    """
+    unit_type=3 資料夾：至多一個文字檔（與音訊並存）；若有則回傳全文作為逐字稿。
+    回傳 (transcript, text_file_name)；無文字檔時為 ("", "")。
+    """
+    fn = (folder_name or "").strip()
+    if not fn:
+        raise ValueError("請傳入 folder_name（ZIP 內單元資料夾名稱）")
+    if "/" in fn or "\\" in fn:
+        raise ValueError("folder_name 不可含路徑分隔字元")
+
+    with zipfile.ZipFile(BytesIO(zip_bytes), "r") as z:
+        text_files: list[tuple[str, str]] = []
+        for raw, dec in _zip_members(z):
+            if not path_has_folder_segment(dec, fn):
+                continue
+            if not _is_transcript_text_path(dec):
+                continue
+            text_files.append((raw, dec))
+        text_files.sort(key=lambda x: x[1])
+        if not text_files:
+            return "", ""
+        if len(text_files) > 1:
+            names = ", ".join(d for _, d in text_files[:5])
+            more = f" 等共 {len(text_files)} 個" if len(text_files) > 5 else ""
+            raise ValueError(
+                f"於資料夾「{fn}」下僅允許**一個**文字檔，目前有 {len(text_files)} 個：{names}{more}"
+            )
+        raw, dec = text_files[0]
+        raw_b = z.read(raw)
+        text = _decode_transcript_file_bytes(raw_b, Path(dec).suffix.lower()) or ""
+        return text, Path(dec).name
+
+
 def read_single_transcript_text_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[str, str]:
     """
     該資料夾下須**恰好一個**文字檔（.md .txt .doc .docx 等）；回傳 (正文, ZIP 內解碼路徑)。
