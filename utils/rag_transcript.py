@@ -12,7 +12,6 @@ from typing import Iterator
 
 from utils.media import (
     parse_youtube_video_id,
-    transcribe_audio_bytes_deepgram,
     youtube_transcript_api_user_message,
     youtube_transcript_plain_text,
 )
@@ -269,7 +268,7 @@ def _extract_youtube_video_id_url_only(text: str) -> str | None:
 
 def read_youtube_video_id_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[str, str]:
     """
-    該資料夾下須**恰好一個**文字檔（.md .txt .doc .docx 等）；自其內文解析 YouTube（通常檔內僅連結）。
+    該資料夾下文字檔（.md .txt .doc .docx 等，1 或 2 個）中找含 YouTube 連結或 video_id 的那個。
     回傳 (video_id, 該檔在 ZIP 內的解碼路徑)。
     """
     fn = (folder_name or "").strip()
@@ -289,22 +288,47 @@ def read_youtube_video_id_from_upload_zip(zip_bytes: bytes, folder_name: str) ->
         text_files.sort(key=lambda x: x[1])
         if not text_files:
             raise ValueError(
-                f"於資料夾「{fn}」下找不到文字檔（請放**一個** .md／.txt／.doc／.docx，內含 YouTube 連結或 video_id）"
+                f"於資料夾「{fn}」下找不到文字檔（請放 .md／.txt／.doc／.docx，內含 YouTube 連結或 video_id）"
             )
-        if len(text_files) > 1:
-            names = ", ".join(d for _, d in text_files[:5])
-            more = f" 等共 {len(text_files)} 個" if len(text_files) > 5 else ""
-            raise ValueError(
-                f"於資料夾「{fn}」下僅允許**一個**文字檔，目前有 {len(text_files)} 個：{names}{more}"
-            )
-        raw, dec = text_files[0]
-        raw_bytes = z.read(raw)
-        suf = Path(dec).suffix.lower()
-        text = _decode_transcript_file_bytes(raw_bytes, suf)
-        vid = extract_video_id_from_unit_md(text)
-        if not vid:
-            raise ValueError(f"於「{dec}」內找不到有效的 YouTube 連結或 video_id")
-        return vid, dec
+        for raw, dec in text_files:
+            raw_bytes = z.read(raw)
+            suf = Path(dec).suffix.lower()
+            text = _decode_transcript_file_bytes(raw_bytes, suf)
+            vid = extract_video_id_from_unit_md(text)
+            if vid:
+                return vid, dec
+        raise ValueError(f"於資料夾「{fn}」下的文字檔中找不到有效的 YouTube 連結或 video_id")
+
+
+def read_supplementary_text_from_youtube_unit(zip_bytes: bytes, folder_name: str) -> tuple[str, str]:
+    """
+    unit_type=4 資料夾中找出補充文字檔（非含 YouTube URL 的那個），回傳 (內容, ZIP 內解碼路徑)。
+    若資料夾下只有一個文字檔（即 YouTube URL 檔），拋 ValueError。
+    """
+    fn = (folder_name or "").strip()
+    if not fn:
+        raise ValueError("請傳入 folder_name（ZIP 內單元資料夾名稱）")
+    if "/" in fn or "\\" in fn:
+        raise ValueError("folder_name 不可含路徑分隔字元")
+
+    with zipfile.ZipFile(BytesIO(zip_bytes), "r") as z:
+        text_files: list[tuple[str, str]] = []
+        for raw, dec in _zip_members(z):
+            if not path_has_folder_segment(dec, fn):
+                continue
+            if not _is_transcript_text_path(dec):
+                continue
+            text_files.append((raw, dec))
+        text_files.sort(key=lambda x: x[1])
+        if not text_files:
+            raise ValueError(f"於資料夾「{fn}」下找不到文字檔")
+        for raw, dec in text_files:
+            raw_b = z.read(raw)
+            suf = Path(dec).suffix.lower()
+            text = _decode_transcript_file_bytes(raw_b, suf)
+            if _extract_youtube_video_id_url_only(text) is None:
+                return (text or "").strip(), dec
+        raise ValueError(f"於資料夾「{fn}」下找不到補充文字檔（所有文字檔均含 YouTube URL）")
 
 
 def read_single_transcript_text_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[str, str]:
@@ -435,7 +459,7 @@ def _extract_transcript_type2(z: zipfile.ZipFile, out: dict[str, str]) -> dict[s
 
 
 def _extract_transcript_type3(z: zipfile.ZipFile, out: dict[str, str]) -> dict[str, str]:
-    """unit_type=3（音訊）：至少一個音訊檔，可附一個文字檔（可選）；以 Deepgram 轉寫音訊。"""
+    """unit_type=3（音訊）：至少一個音訊檔，可附一個文字檔（可選）；逐字稿來自文字檔內容（若有）。"""
     aud = _audio_members_in_zip(z)
     if not aud:
         raise ValueError(
@@ -450,21 +474,13 @@ def _extract_transcript_type3(z: zipfile.ZipFile, out: dict[str, str]) -> dict[s
             f"{len(text_rows)} 個："
             + ", ".join(d for _, d in text_rows[:5])
         )
-    raw, dec, suf = aud[0]
-    data = z.read(raw)
-    if not data:
-        raise ValueError("音訊檔為空")
-    try:
-        transcript, _elapsed = transcribe_audio_bytes_deepgram(data, suffix=suf or ".mp3")
-    except (RuntimeError, ValueError) as e:
-        raise ValueError(str(e)) from e
-    transcript = (transcript or "").strip()
-    if not transcript:
-        raise ValueError("Deepgram 逐字稿為空（unit_type=3）")
-    out["transcript"] = transcript
+    _, dec, _ = aud[0]
     out["mp3_file_name"] = Path(dec).name
     if text_rows:
-        _, text_dec = text_rows[0]
+        raw, text_dec = text_rows[0]
+        raw_b = z.read(raw)
+        text = _decode_transcript_file_bytes(raw_b, Path(text_dec).suffix.lower()) or ""
+        out["transcript"] = text
         out["text_file_name"] = Path(text_dec).name
     return out
 

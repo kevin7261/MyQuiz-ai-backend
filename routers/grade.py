@@ -48,15 +48,13 @@ from utils.serialization import to_json_safe
 from utils.llm_key import get_llm_api_key_for_person
 from utils.media import (
     audio_media_type_for_suffix,
-    transcribe_audio_bytes_deepgram,
-    youtube_transcript_api_user_message,
-    youtube_transcript_plain_text,
 )
 from utils.rag_faiss import process_zip_to_docs
 from utils.rag_stem import get_rag_stem_from_rag_id, instruction_from_rag_row
 from utils.rag_transcript import (
     pick_audio_from_upload_zip,
     read_single_transcript_text_from_upload_zip,
+    read_supplementary_text_from_youtube_unit,
     read_upload_zip_bytes,
     read_youtube_video_id_from_upload_zip,
 )
@@ -68,13 +66,6 @@ from utils.rag_course import (
 )
 from utils.supabase import get_supabase
 from utils.zip_storage import get_zip_path
-from youtube_transcript_api._errors import (
-    InvalidVideoId,
-    NoTranscriptFound,
-    TranscriptsDisabled,
-    VideoUnavailable,
-    YouTubeTranscriptApiException,
-)
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -1161,7 +1152,7 @@ def rag_unit_audio_file(
     ),
 ):
     """
-    自 upload ZIP 內指定資料夾擷取第一個支援的音訊檔，**不**經 Deepgram，直接回傳二進位內容。
+    自 upload ZIP 內指定資料夾擷取第一個支援的音訊檔，直接回傳二進位內容。
     query 須含 `person_id`，且須與該 `rag_tab_id` 之 Rag.person_id 一致。
     """
     require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
@@ -1242,7 +1233,7 @@ def rag_transcript_audio(
         description="ZIP 內單元資料夾名；該資料夾下須有恰好一個文字檔（.md／.txt／.doc／.docx），回傳其內容",
     ),
 ):
-    """自 upload ZIP 內 folder_name 路徑找文字檔，直接回傳其內容（不經 Deepgram）。"""
+    """自 upload ZIP 內 folder_name 路徑找文字檔，直接回傳其內容。"""
     require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
@@ -1273,26 +1264,10 @@ def rag_transcript_youtube(
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id"),
     folder_name: str = Query(
         ...,
-        description="ZIP 內單元資料夾名；該資料夾下須恰好一個文字檔（.md .txt .doc .docx，內含 YouTube 連結或 video_id），擷取字幕為正文",
-    ),
-    languages: str | None = Query(
-        None,
-        description="字幕語言代碼優先序，逗號分隔（如 en,zh-Hant）；未填則 YOUTUBE_TRANSCRIPT_LANGUAGES 或預設 en→中文→日韓",
-    ),
-    with_timestamps: bool = Query(
-        True,
-        description="true（預設）：含時間標記；false：各段空白接成單段全文",
-    ),
-    timestamp_merge_seconds: float | None = Query(
-        None,
-        ge=0,
-        description=(
-            "時間標記合併間隔（秒）：未傳時預設約 10，或由環境變數 TRANSCRIPT_TIMESTAMP_MERGE_SECONDS；"
-            "0＝每一字幕片段一行；僅 with_timestamps=true 時生效"
-        ),
+        description="ZIP 內單元資料夾名；回傳該資料夾下補充文字檔（非含 YouTube URL 的那個）之內容",
     ),
 ):
-    """自 upload ZIP 內 folder_name 下唯一文字檔讀取連結，擷取字幕；預設為較稀疏的時間標記。"""
+    """自 upload ZIP 內 folder_name 下找補充文字檔（非 YouTube URL 檔），直接回傳其內容。"""
     require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
@@ -1305,29 +1280,8 @@ def rag_transcript_youtube(
         raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
 
     try:
-        vid, _text_path = read_youtube_video_id_from_upload_zip(zip_bytes, folder_name)
+        text, _path = read_supplementary_text_from_youtube_unit(zip_bytes, folder_name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    raw_langs = (languages or "").strip()
-    lang_list: list[str] | None = (
-        [x.strip() for x in raw_langs.split(",") if x.strip()] if raw_langs else None
-    )
-
-    try:
-        text, _elapsed = youtube_transcript_plain_text(
-            vid,
-            languages=lang_list,
-            with_timestamps=with_timestamps,
-            timestamp_merge_seconds=timestamp_merge_seconds,
-        )
-        return RagTranscriptMarkdownResponse(markdown=(text or "").strip())
-    except InvalidVideoId as e:
-        raise HTTPException(status_code=400, detail=youtube_transcript_api_user_message(e)) from e
-    except (VideoUnavailable, NoTranscriptFound, TranscriptsDisabled) as e:
-        raise HTTPException(status_code=404, detail=youtube_transcript_api_user_message(e)) from e
-    except YouTubeTranscriptApiException as e:
-        raise HTTPException(status_code=502, detail=youtube_transcript_api_user_message(e)) from e
-    except Exception as e:
-        _logger.exception("GET /rag/transcript/youtube 錯誤")
-        raise HTTPException(status_code=500, detail=f"擷取字幕失敗: {e!s}") from e
+    return RagTranscriptMarkdownResponse(markdown=text or "")

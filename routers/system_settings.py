@@ -3,7 +3,7 @@
 - GET /system-settings/person_analysis_user_prompt_text：取得 person_analysis_user_prompt_text（key=person_analysis_user_prompt_text）；須為有效登入使用者（不限 user_type）。
 - PUT /system-settings/person_analysis_user_prompt_text：寫入 person_analysis_user_prompt_text；僅 user_type 1／2。
 
-LLM／Deepgram API Key 請以環境變數設定（LLM_API_KEY 或 OPENAI_API_KEY、DEEPGRAM_API_KEY），不再經本表。
+LLM API Key 請以環境變數設定（LLM_API_KEY 或 OPENAI_API_KEY），不再經本表。
 """
 
 from typing import Optional

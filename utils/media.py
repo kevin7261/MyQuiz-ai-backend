@@ -1,4 +1,4 @@
-"""音訊 Deepgram 逐字稿、YouTube 字幕擷取（供 RAG transcript／評分模組使用）。"""
+"""YouTube 字幕擷取（供 RAG transcript／評分模組使用）。"""
 
 from __future__ import annotations
 
@@ -13,8 +13,6 @@ from urllib.parse import parse_qs, quote, urlparse
 import requests
 
 logger = logging.getLogger(__name__)
-
-_DEEPGRAM_LISTEN_URL = "https://api.deepgram.com/v1/listen"
 
 # 與 main.py 同層；存在且含可解析列時自動作為 YouTube 字幕代理清單（免設 YOUTUBE_TRANSCRIPT_PROXY_LIST_FILE）
 _YOUTUBE_TRANSCRIPT_DEFAULT_PROXY_LIST = "youtube_transcript_proxies.txt"
@@ -217,8 +215,8 @@ def audio_media_type_for_suffix(suffix: str) -> str:
     return _suffix_to_content_type(suffix)
 
 
-def _deepgram_start_seconds_to_tag(start: Any) -> str:
-    """將 Deepgram utterance/word 的 start（秒）格式化成 ``[MM:SS]`` 或 ``[H:MM:SS]``。"""
+def _seconds_to_timestamp_tag(start: Any) -> str:
+    """將秒數格式化成 ``[MM:SS]`` 或 ``[H:MM:SS]`` 時間標記。"""
     try:
         sec = float(start)
     except (TypeError, ValueError):
@@ -305,218 +303,8 @@ def merge_transcript_segments_by_interval(
 
 def format_timestamp_segments(segments: list[tuple[float, str]]) -> str:
     """將 ``(秒起點, 正文)`` 列格式化為多行 ``[MM:SS] text``。"""
-    lines = [f"{_deepgram_start_seconds_to_tag(s)} {t}" for s, t in segments]
+    lines = [f"{_seconds_to_timestamp_tag(s)} {t}" for s, t in segments]
     return "\n".join(lines).strip()
-
-
-def _deepgram_segments_from_utterances(payload: dict[str, Any]) -> list[tuple[float, str]] | None:
-    raw = payload.get("results")
-    if not isinstance(raw, dict):
-        return None
-    utterances = raw.get("utterances")
-    if not isinstance(utterances, list) or not utterances:
-        return None
-    out: list[tuple[float, str]] = []
-    for u in utterances:
-        if not isinstance(u, dict):
-            continue
-        chunk = (u.get("transcript") or "").strip()
-        if not chunk:
-            words = u.get("words")
-            if isinstance(words, list):
-                chunk = _join_deepgram_word_tokens(words).strip()
-        if not chunk:
-            continue
-        try:
-            st = float(u.get("start", 0) or 0)
-        except (TypeError, ValueError):
-            st = 0.0
-        out.append((st, chunk))
-    return out if out else None
-
-
-def _join_deepgram_word_tokens(words: list[Any]) -> str:
-    parts: list[str] = []
-    for w in words:
-        if not isinstance(w, dict):
-            continue
-        tok = (w.get("punctuated_word") or w.get("word") or "").strip()
-        if tok:
-            parts.append(tok)
-    return " ".join(parts)
-
-
-def _deepgram_segments_from_paragraph_sentences(ch0: dict[str, Any]) -> list[tuple[float, str]] | None:
-    """備援：paragraphs=true 時 alternatives 內段落／句子的 start／text。"""
-    paras = ch0.get("paragraphs")
-    if not isinstance(paras, dict):
-        return None
-    blocks = paras.get("paragraphs")
-    if not isinstance(blocks, list) or not blocks:
-        return None
-    out: list[tuple[float, str]] = []
-    for block in blocks:
-        if not isinstance(block, dict):
-            continue
-        sents = block.get("sentences")
-        if isinstance(sents, list):
-            for sent in sents:
-                if not isinstance(sent, dict):
-                    continue
-                t = (sent.get("text") or "").strip()
-                if not t:
-                    continue
-                try:
-                    st = float(sent.get("start", 0) or 0)
-                except (TypeError, ValueError):
-                    st = 0.0
-                out.append((st, t))
-        else:
-            t = (block.get("text") or "").strip()
-            if not t:
-                continue
-            try:
-                st = float(block.get("start", 0) or 0)
-            except (TypeError, ValueError):
-                st = 0.0
-            out.append((st, t))
-    return out if out else None
-
-
-def _deepgram_segments_from_words_by_pause(ch0: dict[str, Any], *, gap_sec: float = 0.85) -> list[tuple[float, str]] | None:
-    """備援：依字級時間與停頓切段（gap_sec 與 Deepgram utt_split 預設相近）。"""
-    words = ch0.get("words")
-    if not isinstance(words, list) or not words:
-        return None
-    segments: list[tuple[float, str]] = []
-    buf: list[str] = []
-    line_start: float | None = None
-    prev_end: float | None = None
-
-    def flush() -> None:
-        nonlocal buf, line_start
-        if not buf:
-            return
-        st = line_start if line_start is not None else 0.0
-        segments.append((st, " ".join(buf)))
-        buf = []
-        line_start = None
-
-    for w in words:
-        if not isinstance(w, dict):
-            continue
-        tok = (w.get("punctuated_word") or w.get("word") or "").strip()
-        if not tok:
-            continue
-        start_w = w.get("start")
-        try:
-            start_f = float(start_w) if start_w is not None else None
-        except (TypeError, ValueError):
-            start_f = None
-        end_w = w.get("end")
-        try:
-            end_f = float(end_w) if end_w is not None else start_f
-        except (TypeError, ValueError):
-            end_f = start_f
-
-        if line_start is None and start_f is not None:
-            line_start = start_f
-        if prev_end is not None and start_f is not None and (start_f - prev_end) >= gap_sec and buf:
-            flush()
-            line_start = start_f
-
-        buf.append(tok)
-        prev_end = end_f if end_f is not None else prev_end
-
-    flush()
-    return segments if segments else None
-
-
-def transcribe_audio_bytes_deepgram(
-    data: bytes,
-    *,
-    suffix: str,
-    model: str | None = None,
-    api_key: str | None = None,
-    with_timestamps: bool = False,
-    timestamp_merge_seconds: float | None = None,
-) -> tuple[str, float]:
-    """
-    以 Deepgram 預錄 API 轉錄音訊 bytes。
-    回傳 (全文逐字稿, 耗時秒數)。
-    ``with_timestamps=True`` 時會啟用 utterances／punctuate／paragraphs，並優先依 utterances 輸出
-    含時間之段落；再以 :func:`resolve_timestamp_merge_seconds` 依時間窗合併（預設約每 10 秒一標）。
-    ``timestamp_merge_seconds=0`` 表示不按時間窗合併（維持 utterance／句級粒度；即「一段一標」）。
-    無法分段時依段落句子、字級停頓備援；皆不可用時於全文前加上 ``[00:00]``。
-    API Key 優先序：參數 api_key → 環境變數 DEEPGRAM_API_KEY。
-    模型預設 nova-2，可覆寫 DEEPGRAM_MODEL。
-    """
-    k = (api_key or "").strip() or (os.environ.get("DEEPGRAM_API_KEY") or "").strip()
-    if not k:
-        raise RuntimeError(
-            "未設定 Deepgram API Key：請設定環境變數 DEEPGRAM_API_KEY（例如 .env 或部署平台 Environment）。"
-        )
-    m = (model or os.environ.get("DEEPGRAM_MODEL") or "nova-2").strip()
-    if not re.match(r"^[\w.-]+$", m):
-        raise ValueError(f"不支援的 Deepgram model 名稱: {m!r}")
-
-    ct = _suffix_to_content_type(suffix if suffix else ".mp3")
-    params: dict[str, str] = {"model": m}
-    if with_timestamps:
-        params["utterances"] = "true"
-        params["punctuate"] = "true"
-        params["paragraphs"] = "true"
-    t0 = time.perf_counter()
-    try:
-        resp = requests.post(
-            _DEEPGRAM_LISTEN_URL,
-            params=params,
-            headers={
-                "Authorization": f"Token {k}",
-                "Content-Type": ct,
-            },
-            data=data,
-            timeout=int(os.environ.get("DEEPGRAM_REQUEST_TIMEOUT_SECONDS", "900")),
-        )
-    except requests.RequestException as e:
-        raise RuntimeError(f"Deepgram 連線失敗: {e!s}") from e
-
-    elapsed = time.perf_counter() - t0
-    if resp.status_code >= 400:
-        body = (resp.text or "")[:1200]
-        raise RuntimeError(f"Deepgram API 回應 {resp.status_code}: {body}")
-
-    try:
-        payload: dict[str, Any] = resp.json()
-    except ValueError as e:
-        raise RuntimeError("Deepgram 回應非 JSON") from e
-
-    try:
-        ch0 = payload["results"]["channels"][0]["alternatives"][0]
-        text = (ch0.get("transcript") or "").strip()
-    except (KeyError, IndexError, TypeError):
-        logger.warning("Deepgram JSON 結構異常，略過 channels: keys=%s", list(payload.keys()))
-        text = ""
-        ch0 = {}
-
-    if with_timestamps and text:
-        merge_sec = resolve_timestamp_merge_seconds(timestamp_merge_seconds)
-        segments: list[tuple[float, str]] | None = None
-        segments = _deepgram_segments_from_utterances(payload)
-        if not segments and isinstance(ch0, dict):
-            segments = _deepgram_segments_from_paragraph_sentences(ch0)
-        if not segments and isinstance(ch0, dict):
-            segments = _deepgram_segments_from_words_by_pause(ch0)
-        if segments:
-            segments = merge_transcript_segments_by_interval(segments, merge_sec)
-            text = format_timestamp_segments(segments)
-        else:
-            text = f"{_deepgram_start_seconds_to_tag(0)} {text}"
-            logger.warning(
-                "Deepgram 已請求分段（utterances／paragraphs／words），仍無可用時間列；於全文前加上 [00:00]"
-            )
-
-    return text, elapsed
 
 
 def _youtube_transcript_api_from_env():
@@ -633,7 +421,7 @@ def youtube_transcript_api_user_message(exc: BaseException) -> str:
     if isinstance(exc, AgeRestricted):
         return (
             f"{label}為年齡限制內容，現版 youtube-transcript-api 無法在未登入下擷取字幕；"
-            "請改用手動逐字稿或上傳音檔（Deepgram，GET /rag/transcript/audio）。"
+            "請改用手動逐字稿。"
         )
     if isinstance(exc, IpBlocked):
         return (
@@ -663,7 +451,7 @@ def youtube_transcript_api_user_message(exc: BaseException) -> str:
             f"{label}無法取得字幕（常見原因：YouTube 阻擋出口 IP、字幕網址下載失敗、"
             "年齡限制或暫時性錯誤）。若已設 YOUTUBE_TRANSCRIPT_PROXY_LIST 仍失敗，"
             "請確認為**住宅型**代理、節點夠多並已輪換；或將 youtube-transcript-api 升級至最新版。"
-            "若影片僅缺字幕下載管道，可改上傳音檔使用 Deepgram（GET /rag/transcript/audio）。"
+            "若影片僅缺字幕下載管道，可改上傳手動逐字稿。"
         )
     if isinstance(exc, YouTubeTranscriptApiException):
         line = (str(exc) or "").strip().split("\n", 1)[0]

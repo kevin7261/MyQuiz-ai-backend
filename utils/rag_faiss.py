@@ -5,7 +5,7 @@ Embeddings 由呼叫端傳入 API key，不從環境變數讀取。
 unit_type（與 Rag_Unit.unit_type／POST /rag/tab/build-rag-zip 之 unit_types 對齊）：
   0／1：Office／PDF＋Markdown
   2／4：僅 Markdown（.md）
-  3：僅 MP3（逐字稿依 Deepgram，需設定 Deepgram API Key）
+  3：音訊＋文字檔（逐字稿來自文字檔內容）
 """
 
 import io
@@ -125,26 +125,30 @@ def _collect_documents_after_extract(extract_dir: Path, unit_type: int) -> list[
             out.extend(_documents_from_md(p))
         return out
 
-    # unit_type 3（MP3）：取第一個音訊檔，以 Deepgram 轉逐字稿
+    # unit_type 3（MP3）：讀文字檔（.md/.txt/.doc/.docx）內容作為逐字稿
     if ut == UNIT_TYPE_MP3:
-        from utils.media import transcribe_audio_bytes_deepgram
-
-        mp3_paths: list[Path] = []
+        _text_exts = frozenset({".md", ".txt", ".doc", ".docx"})
+        text_paths: list[Path] = []
         for path in extract_dir.rglob("*"):
             if not path.is_file() or _is_skipped_extract_path(path):
                 continue
-            if path.suffix.lower() == ".mp3":
-                mp3_paths.append(path)
-        mp3_paths.sort(key=lambda p: str(p))
-        if not mp3_paths:
+            if path.suffix.lower() in _text_exts:
+                text_paths.append(path)
+        text_paths.sort(key=lambda p: str(p))
+        if not text_paths:
             return []
-        p0 = mp3_paths[0]
-        data = p0.read_bytes()
-        text, _elapsed = transcribe_audio_bytes_deepgram(data, suffix=".mp3")
-        text = (text or "").strip()
-        if not text:
-            return []
-        return [Document(page_content=text, metadata={"source": str(p0)})]
+        out_docs: list[Document] = []
+        for p in text_paths:
+            if p.suffix.lower() == ".txt":
+                try:
+                    text = p.read_text(encoding="utf-8", errors="replace").strip()
+                    if text:
+                        out_docs.append(Document(page_content=text, metadata={"source": str(p)}))
+                except OSError:
+                    pass
+            else:
+                out_docs.extend(_load_docs_from_file(p))
+        return out_docs
 
     # unit_type 0／1：Office＋Markdown，全部支援格式皆嘗試載入
     all_docs: list[Document] = []
@@ -161,10 +165,7 @@ def _empty_docs_user_message(unit_type: int) -> str:
     if ut in (UNIT_TYPE_TEXT, UNIT_TYPE_YOUTUBE):
         return "ZIP 內無可讀 .md（文字／YouTube 單元僅使用 Markdown）"
     if ut == UNIT_TYPE_MP3:
-        return (
-            "ZIP 內無 .mp3，或 Deepgram 逐字稿為空。聽力單元須含音檔；並請設定 Deepgram API Key "
-            "（環境變數 DEEPGRAM_API_KEY）"
-        )
+        return "ZIP 內無文字檔（.md／.txt／.doc／.docx）；音訊單元須附逐字稿文字檔"
     return "ZIP 內無可讀文件（支援：.pdf .doc .docx .ppt .pptx .md）"
 
 
@@ -176,7 +177,7 @@ def process_zip_to_docs(
 
     - 0／1：.pdf, .doc, .docx, .ppt, .pptx, .md
     - 2／4：僅 .md
-    - 3：僅 .mp3（Deepgram 轉逐字稿後嵌入）
+    - 3：音訊＋文字檔（逐字稿來自文字檔內容）
 
     自動過濾 __MACOSX、.DS_Store，並修正 cp437/big5 編碼。
     """
