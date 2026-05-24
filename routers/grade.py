@@ -1239,22 +1239,10 @@ def rag_transcript_audio(
     rag_tab_id: str = Query(..., description="Rag.rag_tab_id（對應 Storage 路徑 {person_id}/{rag_tab_id}/upload/…）"),
     folder_name: str = Query(
         ...,
-        description="ZIP 內單元資料夾名；該資料夾下須有音訊檔。若僅有文字檔（內含 YouTube 連結）請改呼叫 GET /rag/transcript/youtube",
-    ),
-    with_timestamps: bool = Query(
-        True,
-        description="true（預設）：分段時間標記（utterances／段落／字級備援）；false：單段全文",
-    ),
-    timestamp_merge_seconds: float | None = Query(
-        None,
-        ge=0,
-        description=(
-            "時間標記合併間隔（秒）：未傳時預設約 10（約每 10 秒或累積一段再換標），或由環境變數 TRANSCRIPT_TIMESTAMP_MERGE_SECONDS；"
-            "0＝不按時間窗合併（一句／一 utterance／一字幕片段一行）；僅 with_timestamps=true 時生效"
-        ),
+        description="ZIP 內單元資料夾名；該資料夾下須有恰好一個文字檔（.md／.txt／.doc／.docx），回傳其內容",
     ),
 ):
-    """自 upload ZIP 內 folder_name 路徑找音訊檔，Deepgram 轉文字；預設 markdown 含較稀疏的句首時間標記。"""
+    """自 upload ZIP 內 folder_name 路徑找文字檔，直接回傳其內容（不經 Deepgram）。"""
     require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
     try:
         zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
@@ -1267,28 +1255,11 @@ def rag_transcript_audio(
         raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
 
     try:
-        contents, suffix, _inner_path = pick_audio_from_upload_zip(zip_bytes, folder_name)
+        text, _path = read_single_transcript_text_from_upload_zip(zip_bytes, folder_name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    dg_model = (os.environ.get("DEEPGRAM_MODEL") or "nova-2").strip()
-    try:
-        text, elapsed = transcribe_audio_bytes_deepgram(
-            contents,
-            suffix=suffix or ".mp3",
-            model=dg_model,
-            with_timestamps=with_timestamps,
-            timestamp_merge_seconds=timestamp_merge_seconds,
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        _logger.exception("GET /rag/transcript/audio Deepgram 錯誤")
-        raise HTTPException(status_code=500, detail=f"轉錄失敗: {e!s}") from e
-
-    return RagTranscriptMarkdownResponse(markdown=(text or "").strip())
+    return RagTranscriptMarkdownResponse(markdown=text or "")
 
 
 # ---------------------------------------------------------------------------

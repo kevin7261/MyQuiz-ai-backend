@@ -814,8 +814,10 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, course_id: int, res
                 text_fn = output.get("text_file_name") or ""
             if unit_type_val == RAG_UNIT_TYPE_MP3:
                 mp3_fn = output.get("mp3_file_name") or ""
+                text_fn = output.get("text_file_name") or ""
             if unit_type_val == RAG_UNIT_TYPE_YOUTUBE:
                 yt_url = output.get("youtube_url") or ""
+                text_fn = output.get("text_file_name") or ""
         try:
             cs_raw = output.get("rag_chunk_size", output.get("chunk_size", body.rag_chunk_size))
             co_raw = output.get("rag_chunk_overlap", output.get("chunk_overlap", body.rag_chunk_overlap))

@@ -249,6 +249,24 @@ def extract_video_id_from_unit_md(text: str) -> str | None:
     return None
 
 
+def _extract_youtube_video_id_url_only(text: str) -> str | None:
+    """自文字檔內容解析 YouTube video_id，只接受 URL 格式（拒絕裸 11 字元 video_id）。"""
+    t = (text or "").strip()
+    if not t:
+        return None
+    for line in [t, *[ln.strip() for ln in t.splitlines() if ln.strip()]]:
+        v = line.strip()
+        if not v or re.fullmatch(r"[\w-]{11}", v):
+            continue  # 跳過裸 video_id
+        vid = parse_youtube_video_id(v)
+        if vid:
+            return vid
+    m = _YT_URL_RE.search(t)
+    if m:
+        return parse_youtube_video_id(m.group(1))
+    return None
+
+
 def read_youtube_video_id_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[str, str]:
     """
     該資料夾下須**恰好一個**文字檔（.md .txt .doc .docx 等）；自其內文解析 YouTube（通常檔內僅連結）。
@@ -392,13 +410,117 @@ def infer_unit_type_when_unspecified(declared_unit_type: int, zip_bytes: bytes) 
     return 0
 
 
+def _extract_transcript_type2(z: zipfile.ZipFile, out: dict[str, str]) -> dict[str, str]:
+    """unit_type=2（文字）：恰好一個文字檔，內容以 UTF-8 原文寫入 transcript（Markdown 保留）。"""
+    text_rows = _transcript_text_members_in_zip(z)
+    if not text_rows:
+        raise ValueError(
+            "單元 ZIP 內找不到文字檔（unit_type=2 須恰好一個 .md／.txt／.doc／.docx）"
+        )
+    if len(text_rows) > 1:
+        raise ValueError(
+            "unit_type=2 須恰好一個文字檔，目前有 "
+            f"{len(text_rows)} 個："
+            + ", ".join(d for _, d in text_rows[:5])
+        )
+    raw, dec = text_rows[0]
+    raw_b = z.read(raw)
+    # 寫入 DB／Rag_Unit.transcription 時保留檔案原文（含首尾換行與 MD 語法），勿 .strip() 整份。
+    text = _decode_transcript_file_bytes(raw_b, Path(dec).suffix.lower()) or ""
+    if not text.strip():
+        raise ValueError(f"{Path(dec).name} 內容為空")
+    out["transcript"] = text
+    out["text_file_name"] = Path(dec).name
+    return out
+
+
+def _extract_transcript_type3(z: zipfile.ZipFile, out: dict[str, str]) -> dict[str, str]:
+    """unit_type=3（音訊）：至少一個音訊檔，可附一個文字檔（可選）；以 Deepgram 轉寫音訊。"""
+    aud = _audio_members_in_zip(z)
+    if not aud:
+        raise ValueError(
+            "單元 ZIP 內找不到音訊檔（unit_type=3；支援副檔名: "
+            + ", ".join(sorted(_AUDIO_EXTS))
+            + "）"
+        )
+    text_rows = _transcript_text_members_in_zip(z)
+    if len(text_rows) > 1:
+        raise ValueError(
+            "unit_type=3 僅允許一個文字檔，目前有 "
+            f"{len(text_rows)} 個："
+            + ", ".join(d for _, d in text_rows[:5])
+        )
+    raw, dec, suf = aud[0]
+    data = z.read(raw)
+    if not data:
+        raise ValueError("音訊檔為空")
+    try:
+        transcript, _elapsed = transcribe_audio_bytes_deepgram(data, suffix=suf or ".mp3")
+    except (RuntimeError, ValueError) as e:
+        raise ValueError(str(e)) from e
+    transcript = (transcript or "").strip()
+    if not transcript:
+        raise ValueError("Deepgram 逐字稿為空（unit_type=3）")
+    out["transcript"] = transcript
+    out["mp3_file_name"] = Path(dec).name
+    if text_rows:
+        _, text_dec = text_rows[0]
+        out["text_file_name"] = Path(text_dec).name
+    return out
+
+
+def _extract_transcript_type4(z: zipfile.ZipFile, out: dict[str, str]) -> dict[str, str]:
+    """unit_type=4（YouTube）：一個含 YouTube URL 的文字檔，可附一個補充文字檔（可選）；不可有音訊檔。"""
+    if _audio_members_in_zip(z):
+        raise ValueError("unit_type=4 不可包含音訊檔（僅允許文字檔）")
+    text_rows = _transcript_text_members_in_zip(z)
+    if not text_rows:
+        raise ValueError(
+            "單元 ZIP 內找不到文字檔（unit_type=4 須至少一個 .md／.txt／.doc／.docx，內含 YouTube URL）"
+        )
+    if len(text_rows) > 2:
+        raise ValueError(
+            "unit_type=4 最多兩個文字檔（一個內含 YouTube URL，一個補充），"
+            f"目前有 {len(text_rows)} 個："
+            + ", ".join(d for _, d in text_rows[:5])
+        )
+    # 找出含 YouTube URL 的文字檔（只接受 URL，不接受裸 video_id）
+    youtube_idx: int | None = None
+    youtube_vid: str | None = None
+    for i, (raw, dec) in enumerate(text_rows):
+        raw_b = z.read(raw)
+        vid = _extract_youtube_video_id_url_only(
+            _decode_transcript_file_bytes(raw_b, Path(dec).suffix.lower())
+        )
+        if vid is not None:
+            youtube_idx, youtube_vid = i, vid
+            break
+    if youtube_idx is None or youtube_vid is None:
+        raise ValueError(
+            "文字檔中找不到有效的 YouTube URL"
+            "（unit_type=4 不接受裸 video_id，請使用完整 YouTube URL，"
+            "例：https://www.youtube.com/watch?v=...）"
+        )
+    if len(text_rows) == 2:
+        _, extra_dec = text_rows[1 - youtube_idx]
+        out["text_file_name"] = Path(extra_dec).name
+    try:
+        cap, _elapsed = youtube_transcript_plain_text(youtube_vid, languages=None)
+    except Exception as e:
+        raise ValueError("擷取 YouTube 字幕失敗: " + youtube_transcript_api_user_message(e)) from e
+    cap = (cap or "").strip()
+    if not cap:
+        raise ValueError("YouTube 字幕為空（請確認影片有字幕，或調整 YOUTUBE_TRANSCRIPT_LANGUAGES）")
+    out["transcript"] = cap
+    out["youtube_url"] = f"https://www.youtube.com/watch?v={youtube_vid}"
+    return out
+
+
 def extract_transcript_for_rag_build(zip_bytes: bytes, unit_type: int) -> dict[str, str]:
     """
     自 build-rag-zip 產出之「單元小 ZIP」擷取逐字稿與 Rag_Unit 附帶欄位。
     回傳 transcript、text_file_name、mp3_file_name、youtube_url（非適用之欄位為空字串）。
-    unit_type：2=文字（**恰好一個** .md/.txt/.doc/.docx；**text_file_name** 為該檔 basename；
-    `.md`/`.txt` 內容以 UTF-8 **原文**寫入 `transcript`，含 Markdown 語法）、
-    3=音訊（第一個支援副檔名＋Deepgram）、4=YouTube（**恰好一個**上述文字檔含連結＋en 字幕）。
+    unit_type：2=文字、3=音訊（至少一個音訊＋一個文字檔）、4=YouTube（恰好兩個文字檔）。
     """
     out: dict[str, str] = {
         "transcript": "",
@@ -408,86 +530,9 @@ def extract_transcript_for_rag_build(zip_bytes: bytes, unit_type: int) -> dict[s
     }
     if unit_type not in (2, 3, 4):
         raise ValueError(f"extract_transcript_for_rag_build 僅支援 unit_type 2/3/4，收到 {unit_type}")
-
     with zipfile.ZipFile(BytesIO(zip_bytes), "r") as z:
         if unit_type == 2:
-            text_rows = _transcript_text_members_in_zip(z)
-            if not text_rows:
-                raise ValueError(
-                    "單元 ZIP 內找不到文字檔（unit_type=2 須恰好一個 .md／.txt／.doc／.docx）"
-                )
-            if len(text_rows) > 1:
-                raise ValueError(
-                    "unit_type=2 須恰好一個文字檔，目前有 "
-                    f"{len(text_rows)} 個："
-                    + ", ".join(d for _, d in text_rows[:5])
-                )
-            raw, dec = text_rows[0]
-            raw_b = z.read(raw)
-            suf = Path(dec).suffix.lower()
-            text = _decode_transcript_file_bytes(raw_b, suf) or ""
-            if not text.strip():
-                raise ValueError(f"{Path(dec).name} 內容為空")
-            # 寫入 DB／Rag_Unit.transcription 時保留檔案原文（含首尾換行與 MD 語法），勿 .strip() 整份。
-            out["transcript"] = text
-            out["text_file_name"] = Path(dec).name
-            return out
-
+            return _extract_transcript_type2(z, out)
         if unit_type == 3:
-            aud = _audio_members_in_zip(z)
-            if not aud:
-                raise ValueError(
-                    "單元 ZIP 內找不到音訊檔（unit_type=3；支援副檔名: "
-                    + ", ".join(sorted(_AUDIO_EXTS))
-                    + "）"
-                )
-            raw, dec, suf = aud[0]
-            data = z.read(raw)
-            if not data:
-                raise ValueError("音訊檔為空")
-            try:
-                transcript, _elapsed = transcribe_audio_bytes_deepgram(data, suffix=suf or ".mp3")
-            except RuntimeError as e:
-                raise ValueError(str(e)) from e
-            except ValueError as e:
-                raise ValueError(str(e)) from e
-            transcript = (transcript or "").strip()
-            if not transcript:
-                raise ValueError("Deepgram 逐字稿為空（unit_type=3）")
-            out["transcript"] = transcript
-            out["mp3_file_name"] = Path(dec).name
-            return out
-
-        # unit_type == 4
-        text_rows = _transcript_text_members_in_zip(z)
-        if not text_rows:
-            raise ValueError(
-                "單元 ZIP 內找不到文字檔（unit_type=4 須恰好一個 .md／.txt／.doc／.docx，內含 YouTube 連結）"
-            )
-        if len(text_rows) > 1:
-            raise ValueError(
-                "unit_type=4 須恰好一個文字檔，目前有 "
-                f"{len(text_rows)} 個："
-                + ", ".join(d for _, d in text_rows[:5])
-            )
-        raw, dec = text_rows[0]
-        raw_b = z.read(raw)
-        suf = Path(dec).suffix.lower()
-        raw_text = _decode_transcript_file_bytes(raw_b, suf)
-        vid = extract_video_id_from_unit_md(raw_text)
-        if not vid:
-            raise ValueError(f"{Path(dec).name} 內找不到有效的 YouTube 連結或 video_id")
-        try:
-            cap, _elapsed = youtube_transcript_plain_text(vid, languages=None)
-        except Exception as e:
-            raise ValueError(
-                "擷取 YouTube 字幕失敗: " + youtube_transcript_api_user_message(e)
-            ) from e
-        cap = (cap or "").strip()
-        if not cap:
-            raise ValueError(
-                "YouTube 字幕為空（請確認影片有字幕，或調整 YOUTUBE_TRANSCRIPT_LANGUAGES）"
-            )
-        out["transcript"] = cap
-        out["youtube_url"] = f"https://www.youtube.com/watch?v={vid}"
-        return out
+            return _extract_transcript_type3(z, out)
+        return _extract_transcript_type4(z, out)
