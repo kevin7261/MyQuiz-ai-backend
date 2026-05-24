@@ -1,5 +1,6 @@
 """
 RAG 評分與出題 API 模組。
+- POST /rag/tab/unit/quiz/followup：更新 Rag_Quiz.follow_up（body `followup` 預設 false；true 標記追問、false 取消）。
 - POST /rag/tab/unit/quiz/llm-generate：依 rag_quiz_id 出題（LLM）；選填 quiz_history_list 避免重複出題；unit_type 1 僅 RAG ZIP 向量檢索；2/3/4 以 transcription 純生成；其餘載 RAG ZIP 向量檢索。
 - POST /rag/tab/unit/quiz/llm-generate-db：同 llm-generate，唯 body 不包含 quiz_user_prompt_text，一律沿用 Rag_Quiz 列上既有值。
 - POST /rag/tab/unit/quiz/llm-generate-followup：接續出題；答不好追問弱點，答好則出新題；quiz_history_list 為先前問答（題幹＋作答）列表。
@@ -230,6 +231,22 @@ class RagQuizForExamRequest(BaseModel):
     for_exam: bool = Field(True, description="true：標記為測驗用；false：取消測驗用")
 
 
+class RagQuizFollowupRequest(BaseModel):
+    """
+    POST /rag/tab/unit/quiz/followup：欄位順序同 public.Rag_Quiz（rag_quiz_id, rag_tab_id, rag_unit_id, follow_up）。
+    以 rag_quiz_id 更新 Rag_Quiz.follow_up；若一併傳入 rag_tab_id／rag_unit_id（>0），須與該列一致。
+    """
+
+    rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
+    rag_tab_id: str = Field("", description="選填；與資料列 rag_tab_id 須一致")
+    rag_unit_id: int = Field(0, ge=0, description="選填；>0 時須與資料列 rag_unit_id 一致")
+    followup: bool = Field(
+        False,
+        description="true：標記為追問題；false：取消追問標記",
+        validation_alias=AliasChoices("followup", "follow_up", "followUp"),
+    )
+
+
 class RagUnitTextResponse(BaseModel):
     """GET /rag/unit/text 回應。"""
 
@@ -243,6 +260,96 @@ class RagUnitYoutubeUrlFromZipResponse(BaseModel):
     """GET /rag/unit/youtube-url：自 upload ZIP 解析之標準 watch URL。"""
 
     youtube_url: str = Field(..., description="https://www.youtube.com/watch?v=…")
+
+
+# ---------------------------------------------------------------------------
+# POST /rag/tab/unit/quiz/followup
+# ---------------------------------------------------------------------------
+
+
+@router.post("/tab/unit/quiz/followup", summary="Set Rag Quiz follow_up flag", operation_id="rag_quiz_followup")
+def mark_rag_quiz_followup(
+    body: openapi_body(
+        RagQuizFollowupRequest,
+        {"rag_quiz_id": 1, "rag_tab_id": "", "rag_unit_id": 0, "followup": False},
+    ),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+):
+    """更新 Rag_Quiz.follow_up（followup=true 標記追問、false 取消）。以 rag_quiz_id 定位；僅 deleted=false 且 person_id 一致者可更新。"""
+    req_tab = (body.rag_tab_id or "").strip()
+    req_unit = int(body.rag_unit_id or 0)
+    try:
+        supabase = get_supabase()
+
+        def build_followup_sel(with_course_filter: bool):
+            cols = select_without_course_id_if_needed(
+                "Rag_Quiz",
+                "rag_quiz_id, rag_tab_id, rag_unit_id, person_id, course_id",
+                with_course_filter,
+            )
+            q = (
+                supabase.table("Rag_Quiz")
+                .select(cols)
+                .eq("rag_quiz_id", body.rag_quiz_id)
+                .eq("deleted", False)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q.limit(1)
+
+        sel = execute_with_course_id_fallback("Rag_Quiz", build_followup_sel, course_id)
+        if not sel.data:
+            raise HTTPException(status_code=404, detail="找不到該 rag_quiz_id 的 Rag_Quiz，或已刪除")
+
+        row0 = sel.data[0]
+        pid = (row0.get("person_id") or "").strip()
+        if pid != caller_person_id:
+            raise HTTPException(status_code=403, detail="無權更新該 Rag_Quiz")
+        if req_tab and (row0.get("rag_tab_id") or "").strip() != req_tab:
+            raise HTTPException(status_code=400, detail="rag_tab_id 與 rag_quiz_id 對應資料不一致")
+        if req_unit > 0 and int(row0.get("rag_unit_id") or 0) != req_unit:
+            raise HTTPException(status_code=400, detail="rag_unit_id 與 rag_quiz_id 對應資料不一致")
+
+        ts = now_taipei_iso()
+        supabase.table("Rag_Quiz").update(
+            {"follow_up": body.followup, "updated_at": ts}
+        ).eq("rag_quiz_id", body.rag_quiz_id).eq("deleted", False).execute()
+
+        read = (
+            supabase.table("Rag_Quiz")
+            .select("*")
+            .eq("rag_quiz_id", body.rag_quiz_id)
+            .eq("deleted", False)
+            .limit(1)
+            .execute()
+        )
+        row = (read.data or [{}])[0]
+        return to_json_safe({
+            "rag_quiz_id": row.get("rag_quiz_id"),
+            "rag_tab_id": row.get("rag_tab_id"),
+            "rag_unit_id": row.get("rag_unit_id"),
+            "person_id": row.get("person_id"),
+            "quiz_name": row.get("quiz_name"),
+            "quiz_user_prompt_text": row.get("quiz_user_prompt_text"),
+            "quiz_content": row.get("quiz_content"),
+            "quiz_hint": row.get("quiz_hint"),
+            "quiz_answer_reference": row.get("quiz_answer_reference"),
+            "answer_user_prompt_text": row.get("answer_user_prompt_text"),
+            "answer_content": row.get("answer_content"),
+            "quiz_answer": row.get("answer_content") or row.get("quiz_answer"),
+            "answer_critique": row.get("answer_critique"),
+            "for_exam": row.get("for_exam"),
+            "follow_up": row.get("follow_up"),
+            "deleted": row.get("deleted"),
+            "updated_at": row.get("updated_at"),
+            "created_at": row.get("created_at"),
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger.exception("POST /rag/tab/unit/quiz/followup 錯誤")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
