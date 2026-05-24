@@ -2,7 +2,7 @@
 個人分析 API 模組。
 依 person_id 查詢 Exam_Quiz 資料。新 schema 答案欄位直接內嵌於 Exam_Quiz（answer_content, answer_critique），不再有獨立的 Exam_Answer 表。
 - GET /person-analysis/quizzes/{person_id}：依 person_id 取得已作答的 Exam_Quiz（answer_content 非空），
-  依 exam_tab_id 分群回傳 Exam；每筆 Exam 的題目結構與 GET /exam/tabs 相同（units[]，依 unit_name 分群之 Exam_Quiz，含 enrich／rag 鍵）。
+  依 exam_tab_id 分群回傳 Exam；每筆 Exam 的題目結構與 GET /exam/tabs 相同（quizzes[]，Exam_Quiz 含 follow_up 鏈，含 enrich／rag 鍵）。
   另帶 weakness_report：**預設不呼叫 LLM**，`weakness_report` 為 null；僅當 query **`generate_weakness_report=true`** 時才產生弱點報告（有 LLM API Key 且成功呼叫時為模型回覆原文，否則 null）。
 
 重要：弱點報告與出題／批改相同，系統與使用者訊息皆為 **Markdown**；本路由**不**使用 `response_format=json_object`。
@@ -28,7 +28,7 @@ from services.exam_queries import (
     exams_by_tab_ids,
     enrich_exam_quizzes_rag_tab_from_units,
     ensure_exam_quiz_rag_id_keys,
-    group_exam_quizzes_into_units,
+    exam_tab_quizzes_response,
     quizzes_by_person_id,
 )
 from routers.system_settings import SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY
@@ -103,7 +103,7 @@ USER_PROMPT_WEAKNESS_REPORT = textwrap.dedent("""
 # -----------------------------------------------------------------------------
 
 class ListQuizzesByPersonResponse(BaseModel):
-    """GET /person-analysis/quizzes/{person_id} 回應。exams[] 每筆與 GET /exam/tabs 相同含 units[]；weakness_report 僅於 generate_weakness_report=true 時才可能非 null。"""
+    """GET /person-analysis/quizzes/{person_id} 回應。exams[] 每筆與 GET /exam/tabs 相同含 quizzes[]；weakness_report 僅於 generate_weakness_report=true 時才可能非 null。"""
     exams: list[dict]
     count: int
     weakness_report: Optional[str] = Field(
@@ -322,7 +322,7 @@ def list_quizzes_by_person(
 ):
     """
     依 person_id 取得已作答的 Exam_Quiz（answer_content 非空），依 exam_tab_id 分群後對應 Exam；
-    每筆 Exam 的 units／quizzes 形狀與 GET /exam/tabs 一致（題目為完整 Exam_Quiz 列，含作答欄位）。
+    每筆 Exam 的 quizzes 形狀與 GET /exam/tabs 一致（題目為完整 Exam_Quiz 列，含作答欄位）。
     weakness_report：僅當 `generate_weakness_report=true` 時才可能產生；成功時為 LLM `message.content` 原文；
     否則為 null。無 API Key、無可分析題目、呼叫失敗或模型回 null 時亦為 null。
     弱點報告 user 訊息會併入 System_Setting `person_analysis_user_prompt_text`
@@ -353,7 +353,7 @@ def list_quizzes_by_person(
 
         for row in exam_rows:
             tid = str(row.get("exam_tab_id") or "")
-            row["units"] = group_exam_quizzes_into_units(quizzes_by_tab.get(tid, []))
+            row["quizzes"] = exam_tab_quizzes_response(quizzes_by_tab.get(tid, []))
 
         data = to_json_safe(exam_rows)
         weakness_report: Optional[str] = None

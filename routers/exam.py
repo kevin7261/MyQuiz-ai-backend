@@ -3,7 +3,7 @@ Exam API 模組。對應 public.Exam、public.Exam_Quiz。
 
 檔案結構（由上而下）：模型／檢索說明 → LLM Prompt → 型別與作業快取 → Pydantic → 輔助函式與路由。
 
-- GET /exam/tabs：列出 Exam（deleted=false，person_id 篩選，local 篩選，course_id 篩選），每筆帶 units（依 unit_name 分群之 Exam_Quiz）。
+- GET /exam/tabs：列出 Exam（deleted=false，person_id 篩選，local 篩選，course_id 篩選），每筆帶 quizzes[]（Exam_Quiz，含 follow_up 鏈）。
 - GET /exam/rag-for-exams：列出 for_exam 測驗用 RAG 資料（Rag_Unit.for_exam=true 或含 Rag_Quiz.for_exam=true）；須傳 course_id；僅含隸屬 Rag.local 與 query local 相符之分頁（未傳 local 時依連線是否本機判定）。
 - POST /exam/tab/create：建立一筆 Exam（寫入 course_id）。
 - PUT /exam/tab/tab-name：更新既有 Exam 的 tab_name。
@@ -11,7 +11,7 @@ Exam API 模組。對應 public.Exam、public.Exam_Quiz。
 - POST /exam/tab/quiz/create-llm-generate：新增 Exam_Quiz 並 LLM 出題（等同 create 後 llm-generate）。
 - POST /exam/tab/quiz/llm-generate：出題須含 `rag_tab_id`／`rag_unit_id`／`rag_quiz_id`；成功後更新 Exam_Quiz（含 `unit_name`、`quiz_user_prompt_text`、`answer_user_prompt_text`）；JSON 回傳含兩段 prompt 供前端顯示。
 - POST /exam/tab/quiz/create-llm-generate-followup：新增 Exam_Quiz 並接續 LLM 出題（等同 create 後 llm-generate-followup；第一題時自動一般出題）。
-- POST /exam/tab/quiz/llm-generate-followup：接續出題；須有同 rag_quiz_id（同題型）之先前題目與問答紀錄，否則視為第一題（回應不含 follow_up）；答不好追問弱點，答好則出新題。
+- POST /exam/tab/quiz/llm-generate-followup：接續出題；須請求提供 follow_up_exam_quiz_id（>0）與非空 quiz_history_list，否則視為第一題（回應不含 follow_up）；答不好追問弱點，答好則出新題。
 - POST /exam/tab/quiz/llm-grade：非同步 RAG+LLM 評分；回傳 202 + job_id，輪詢 GET /exam/tab/quiz/grade-result/{job_id}。
 - PUT /exam/tab/delete/{exam_tab_id}：軟刪除 Exam。
 - POST /exam/tab/quiz/rate：更新 Exam_Quiz.quiz_rate（僅 -1、0、1）。
@@ -30,7 +30,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path as PathParam, Query, Request
 from fastapi.responses import JSONResponse, Response
 from postgrest.exceptions import APIError
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from dependencies.person_id import PersonId
 from dependencies.course_id import CourseId
@@ -50,9 +50,7 @@ from services.exam_queries import (
     exam_default_row,
     exams_by_tab_ids,
     exams_table_select,
-    filter_to_chain_heads,
-    group_exam_quizzes_into_units,
-    nest_follow_up_quizzes,
+    exam_tab_quizzes_response,
     quizzes_by_exam_tab_ids,
     quizzes_by_person_id,
     rag_quiz_for_exam_response_row,
@@ -105,10 +103,10 @@ _exam_grade_job_results: dict[str, dict[str, Any]] = {}
 # ---------------------------------------------------------------------------
 
 class ListExamResponse(BaseModel):
-    """GET /exam/tabs 回應：每筆 Exam 含 units（依 unit_name 分群），每個 unit 含 quizzes（含 follow_up）。"""
+    """GET /exam/tabs 回應：每筆 Exam 含 quizzes[]（Exam_Quiz，含 follow_up 鏈）。"""
     exams: list[dict] = Field(
         ...,
-        description="每筆 Exam 的 units[] 為 { unit_name, rag_unit_id?, quizzes[] }；quizzes[] 為 Exam_Quiz（含 follow_up、答案欄位）",
+        description="每筆 Exam 的 quizzes[] 為 Exam_Quiz（含 follow_up、follow_up_quiz 鏈、答案欄位）",
     )
     count: int
 
@@ -219,6 +217,8 @@ class ExamQuizHistoryPair(BaseModel):
 class ExamCreateLlmGenerateQuizFollowupRequest(BaseModel):
     """POST /exam/tab/quiz/create-llm-generate-followup；先 create 再 llm-generate-followup，不需傳 exam_quiz_id。"""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     exam_tab_id: str = Field("", description="目標 Exam 的 exam_tab_id")
     rag_tab_id: str = Field(
         ...,
@@ -238,11 +238,13 @@ class ExamCreateLlmGenerateQuizFollowupRequest(BaseModel):
     follow_up_exam_quiz_id: int = Field(
         0,
         ge=0,
-        description="前一筆 Exam_Quiz 主鍵（同 rag_quiz_id 之先前題）；無先前同題型題目時可省略或傳 0，視為第一題",
+        description="前一筆 Exam_Quiz 主鍵；>0 時寫入本列 follow_up=true 與此 id。傳 0 視為第一題（一般出題）",
+        validation_alias=AliasChoices("follow_up_exam_quiz_id", "followUpExamQuizId"),
     )
     quiz_history_list: list[ExamQuizHistoryPair] = Field(
         default_factory=list,
-        description="先前問答列表；每項含 quiz_content、answer_content、quiz_answer_reference、answer_critique",
+        description="先前問答；非空時才用追問 LLM prompt。每項含 quiz_content、answer_content、quiz_answer_reference、answer_critique",
+        validation_alias=AliasChoices("quiz_history_list", "quizHistoryList"),
     )
 
 
@@ -268,11 +270,13 @@ class ExamLlmGenerateQuizFollowupRequest(BaseModel):
     follow_up_exam_quiz_id: int = Field(
         0,
         ge=0,
-        description="前一筆 Exam_Quiz 主鍵（同 rag_quiz_id 之先前題）；無先前同題型題目時可省略或傳 0，視為第一題",
+        description="前一筆 Exam_Quiz 主鍵；>0 時寫入本列 follow_up=true 與此 id。傳 0 視為第一題（一般出題）",
+        validation_alias=AliasChoices("follow_up_exam_quiz_id", "followUpExamQuizId"),
     )
     quiz_history_list: list[ExamQuizHistoryPair] = Field(
         default_factory=list,
-        description="先前問答列表；每項含 quiz_content、answer_content、quiz_answer_reference、answer_critique",
+        description="先前問答；非空時才用追問 LLM prompt。每項含 quiz_content、answer_content、quiz_answer_reference、answer_critique",
+        validation_alias=AliasChoices("quiz_history_list", "quizHistoryList"),
     )
 
 
@@ -386,7 +390,7 @@ def list_exams(
         description="僅回傳 Exam.local 與此值相同的列。未傳時：本機連線視為 true，否則 false",
     ),
 ):
-    """列出 Exam（deleted=false，person_id 篩選，local 篩選）。每筆 Exam 帶 units（依 unit_name 分群的 Exam_Quiz，含 follow_up）。"""
+    """列出 Exam（deleted=false，person_id 篩選，local 篩選）。每筆 Exam 帶 quizzes[]（Exam_Quiz，含 follow_up 鏈）。"""
 
     def _list_exams_once() -> ListExamResponse:
         local_filter = local if local is not None else is_localhost_request(request)
@@ -401,12 +405,10 @@ def list_exams(
         flat_qz = [qz for tid in tab_ids for qz in quizzes_by_tab.get(tid, [])]
         enrich_exam_quizzes_rag_tab_from_units(flat_qz)
         ensure_exam_quiz_rag_id_keys(flat_qz)
-        nest_follow_up_quizzes(flat_qz)
 
         for row in data:
             tab_id = str(row.get("exam_tab_id") or "")
-            tab_quizzes = quizzes_by_tab.get(tab_id, [])
-            row["units"] = group_exam_quizzes_into_units(filter_to_chain_heads(tab_quizzes))
+            row["quizzes"] = exam_tab_quizzes_response(quizzes_by_tab.get(tab_id, []))
 
         data = to_json_safe(data)
         return ListExamResponse(exams=data, count=len(data))
@@ -844,71 +846,38 @@ def _exam_quiz_history_qa_dicts(pairs: list[ExamQuizHistoryPair]) -> list[dict[s
 
 
 def _resolve_exam_followup_mode(
-    supabase: Any,
     *,
     followup_requested: bool,
     follow_up_exam_quiz_id: int,
-    rag_quiz_id: int,
-    rag_unit_id: int,
     exam_quiz_id: int,
-    exam_tab_id: str,
-    caller_person_id: str,
-    course_id: int,
     quiz_history_qa: list[ExamQuizHistoryPair] | None,
-) -> tuple[bool, int, list[str], list[dict[str, str]]]:
+) -> tuple[bool, bool, int, list[str], list[dict[str, str]]]:
     """
-    追問須有同 rag_quiz_id（同題型）之先前題目與問答紀錄；否則視為第一題（一般出題）。
-    回傳 (effective_followup, resolved_follow_up_exam_quiz_id, history_stems, qa_dicts)。
+    follow_up_exam_quiz_id 以請求傳入為準。
+    回傳 (use_followup_llm, mark_follow_up, follow_up_exam_quiz_id, history_stems, qa_dicts)。
+
+    mark_follow_up：followup 端點且 follow_up_exam_quiz_id>0 → 寫入 follow_up=true。
+    use_followup_llm：mark_follow_up 且 quiz_history_list 非空 → 使用追問 LLM prompt。
     """
-    qa_dicts = _exam_quiz_history_qa_dicts(quiz_history_qa or [])
-    history_stems = [
-        (d.get("quiz_content") or "").strip()
-        for d in qa_dicts
-        if (d.get("quiz_content") or "").strip()
-    ]
+    request_qa = _exam_quiz_history_qa_dicts(quiz_history_qa or [])
+
+    def _history_stems(qa: list[dict[str, str]]) -> list[str]:
+        return [
+            (d.get("quiz_content") or "").strip()
+            for d in qa
+            if (d.get("quiz_content") or "").strip()
+        ]
+
     if not followup_requested:
-        return False, 0, history_stems, qa_dicts
-    if follow_up_exam_quiz_id <= 0 or not qa_dicts:
-        return False, 0, history_stems, qa_dicts
-    if follow_up_exam_quiz_id == exam_quiz_id:
-        return False, 0, history_stems, qa_dicts
+        return False, False, 0, _history_stems(request_qa), request_qa
 
-    prev_sel = (
-        supabase.table("Exam_Quiz")
-        .select("exam_quiz_id, exam_tab_id, person_id, course_id, rag_quiz_id, rag_unit_id")
-        .eq("exam_quiz_id", follow_up_exam_quiz_id)
-        .eq("course_id", course_id)
-        .limit(1)
-        .execute()
-    )
-    if not prev_sel.data:
-        return False, 0, history_stems, qa_dicts
+    resolved_id = int(follow_up_exam_quiz_id or 0)
+    if resolved_id <= 0 or resolved_id == exam_quiz_id:
+        return False, False, 0, _history_stems(request_qa), request_qa
 
-    prev_row = prev_sel.data[0]
-    prev_person = (prev_row.get("person_id") or "").strip()
-    if prev_person != caller_person_id:
-        raise HTTPException(status_code=403, detail="無權引用該 follow_up_exam_quiz_id")
-
-    cur_tab = (exam_tab_id or "").strip()
-    prev_tab = (prev_row.get("exam_tab_id") or "").strip()
-    if cur_tab and prev_tab and cur_tab != prev_tab:
-        return False, 0, history_stems, qa_dicts
-
-    try:
-        prev_rqid = int(prev_row.get("rag_quiz_id") or 0)
-    except (TypeError, ValueError):
-        prev_rqid = 0
-    if prev_rqid != int(rag_quiz_id):
-        return False, 0, history_stems, qa_dicts
-
-    try:
-        prev_ruid = int(prev_row.get("rag_unit_id") or 0)
-    except (TypeError, ValueError):
-        prev_ruid = 0
-    if prev_ruid > 0 and prev_ruid != int(rag_unit_id):
-        return False, 0, history_stems, qa_dicts
-
-    return True, follow_up_exam_quiz_id, history_stems, qa_dicts
+    mark_follow_up = True
+    use_followup_llm = bool(request_qa)
+    return use_followup_llm, mark_follow_up, resolved_id, _history_stems(request_qa), request_qa
 
 
 def _exam_llm_generate_quiz_impl(
@@ -923,12 +892,14 @@ def _exam_llm_generate_quiz_impl(
     quiz_history_stems: list[str] | None = None,
     quiz_history_qa: list[ExamQuizHistoryPair] | None = None,
     follow_up_exam_quiz_id: int = 0,
+    always_mark_follow_up: bool = False,
 ):
     supabase = get_supabase()
     qsel = (
         supabase.table("Exam_Quiz")
         .select(
-            "exam_quiz_id, exam_tab_id, rag_tab_id, rag_unit_id, rag_quiz_id, person_id, course_id, unit_name, quiz_name"
+            "exam_quiz_id, exam_tab_id, rag_tab_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
+            "unit_name, quiz_name, created_at"
         )
         .eq("exam_quiz_id", exam_quiz_id)
         .eq("course_id", course_id)
@@ -942,18 +913,20 @@ def _exam_llm_generate_quiz_impl(
     if person_id != caller_person_id:
         raise HTTPException(status_code=403, detail="無權對該 Exam_Quiz 出題")
 
-    effective_followup, resolved_follow_up_id, history_stems, qa_dicts = _resolve_exam_followup_mode(
-        supabase,
-        followup_requested=followup,
-        follow_up_exam_quiz_id=follow_up_exam_quiz_id,
-        rag_quiz_id=rag_quiz_id,
-        rag_unit_id=rag_unit_id,
-        exam_quiz_id=exam_quiz_id,
-        exam_tab_id=(qrow.get("exam_tab_id") or "").strip(),
-        caller_person_id=caller_person_id,
-        course_id=course_id,
-        quiz_history_qa=quiz_history_qa,
+    use_followup_llm, mark_follow_up, resolved_follow_up_id, history_stems, qa_dicts = (
+        _resolve_exam_followup_mode(
+            followup_requested=followup,
+            follow_up_exam_quiz_id=follow_up_exam_quiz_id,
+            exam_quiz_id=exam_quiz_id,
+            quiz_history_qa=quiz_history_qa,
+        )
     )
+    if always_mark_follow_up:
+        mark_follow_up = True
+        resolved_follow_up_id = int(follow_up_exam_quiz_id or 0)
+        if resolved_follow_up_id == exam_quiz_id:
+            resolved_follow_up_id = 0
+        use_followup_llm = bool(qa_dicts)
 
     row_ruid = 0
     rag_unit_val = qrow.get("rag_unit_id")
@@ -1232,7 +1205,7 @@ def _exam_llm_generate_quiz_impl(
     stems_for_generate = history_stems if followup else (quiz_history_stems or [])
     try:
         if unit_type_val in (2, 3, 4):
-            if effective_followup:
+            if use_followup_llm:
                 result = generate_quiz_followup_transcription_only(
                     api_key=api_key,
                     transcription=transcription_text,
@@ -1250,7 +1223,7 @@ def _exam_llm_generate_quiz_impl(
             path = get_zip_path(rag_zip_tab_id)
             if not path or not path.exists():
                 raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP，請確認 rag_id={rag_id}（tab_id={rag_zip_tab_id}）")
-            if effective_followup:
+            if use_followup_llm:
                 result = generate_quiz_followup(
                     path,
                     api_key=api_key,
@@ -1304,17 +1277,20 @@ def _exam_llm_generate_quiz_impl(
             "answer_critique": None,
             "updated_at": qts,
         }
-        if effective_followup:
+        if mark_follow_up:
             quiz_update["follow_up"] = True
             quiz_update["follow_up_exam_quiz_id"] = resolved_follow_up_id
             result["follow_up"] = True
             result["follow_up_exam_quiz_id"] = resolved_follow_up_id
+            if qa_dicts:
+                result["quiz_history_list"] = qa_dicts
+        result["created_at"] = to_taipei_iso(qrow.get("created_at"))
         result["rag_tab_id"] = tab_strip
         result["rag_unit_id"] = int(rag_unit_id)
         result["rag_quiz_id"] = int(rag_quiz_id)
         log_path = (
             "/exam/tab/quiz/llm-generate-followup"
-            if effective_followup
+            if use_followup_llm
             else "/exam/tab/quiz/llm-generate"
         )
         try:
@@ -1373,9 +1349,10 @@ def exam_llm_generate_quiz(
 
 _EXAM_LLM_GEN_FOLLOWUP_DESCRIPTION = """\
 Body：`exam_quiz_id`、`rag_tab_id`、`rag_unit_id`、`rag_quiz_id` 必填。
-**追問出題**須同時具備：`follow_up_exam_quiz_id`（前一筆 Exam_Quiz，且 `rag_quiz_id` 與本次相同）、非空 `quiz_history_list`（先前問答）。
-若無同題型先前題目（第一題），自動改為一般出題，**回應不含** `follow_up`／`follow_up_exam_quiz_id`。
-具備追問條件時，出題成功後寫入本列 `follow_up_exam_quiz_id` 並設 `follow_up=true`。
+**追問鏈結**：請求 `follow_up_exam_quiz_id`（>0）時，出題成功後寫入本列 `follow_up=true` 與該 id（原樣）。
+`quiz_history_list` 非空時才使用追問 LLM prompt；否則仍寫入 follow_up 但出題邏輯同一般 `llm-generate`。
+`follow_up_exam_quiz_id` 為 0 或未傳則視為第一題，**回應不含** `follow_up`／`follow_up_exam_quiz_id`。
+回應可含 `quiz_history_list` 與 `created_at`。
 其餘 RAG 綁定、unit_type 出題邏輯同 `POST /exam/tab/quiz/llm-generate`。
 `quiz_history_list` 為物件陣列，每項含 `quiz_content`、`answer_content`、`quiz_answer_reference`、`answer_critique`（一問一答一項）；
 使用 `SYSTEM_PROMPT_QUIZ_FOLLOWUP`／`USER_PROMPT_COURSE_FOLLOWUP`：作答不佳則針對弱點追問，作答良好則改出新的不重複題目。
@@ -1467,7 +1444,8 @@ def exam_create_llm_generate_quiz(
 _EXAM_CREATE_LLM_GENERATE_FOLLOWUP_DESCRIPTION = """\
 等同先 POST /exam/tab/quiz/create 再 POST /exam/tab/quiz/llm-generate-followup。
 Body 不需 `exam_quiz_id`（由 create 產生）。
-追問須有同 rag_quiz_id 之先前題目與問答紀錄；第一題時自動一般出題，回應不含 follow_up 欄位。
+出題成功後**一律**寫入本列 `follow_up=true`；`follow_up_exam_quiz_id` 以請求傳入為準（可為 0）。
+`quiz_history_list` 非空時使用追問 LLM prompt，否則出題邏輯同一般 llm-generate。
 """
 
 
@@ -1513,6 +1491,7 @@ def exam_create_llm_generate_quiz_followup(
         followup=True,
         quiz_history_qa=body.quiz_history_list,
         follow_up_exam_quiz_id=body.follow_up_exam_quiz_id,
+        always_mark_follow_up=True,
     )
 
 

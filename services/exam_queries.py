@@ -159,7 +159,7 @@ def _select_exam_quiz_rows(
         q = q.eq("person_id", person_id.strip())
     if course_id is not None:
         q = q.eq("course_id", course_id)
-    rows = q.order("created_at", desc=False).execute().data or []
+    rows = q.order("exam_quiz_id", desc=False).execute().data or []
     return [exam_quiz_list_row(r) for r in rows]
 
 
@@ -283,8 +283,8 @@ def ensure_exam_quiz_rag_id_keys(quizzes_flat: list[dict]) -> None:
 
 
 def nest_follow_up_quizzes(quizzes: list[dict]) -> None:
-    """就地為 follow_up=True 的 quiz 附加 follow_up_quiz（指向前一題 dict，遞迴串接）。
-    quizzes 須依 created_at 升序，確保處理到 C 時 B 已附加 follow_up_quiz=A。"""
+    """就地為追問鏈附加 follow_up_quiz（由舊題指向新題，exam_quiz_id 遞增）。
+    例：Q1.follow_up_quiz → Q2 → Q3（Q1 最舊，在鏈外層／頂層）。"""
     by_id: dict[int, dict] = {}
     for q in quizzes:
         qid = q.get("exam_quiz_id")
@@ -307,23 +307,78 @@ def nest_follow_up_quizzes(quizzes: list[dict]) -> None:
             continue
         prev_q = by_id.get(prev_id)
         if prev_q is not None:
-            q["follow_up_quiz"] = prev_q
+            prev_q["follow_up_quiz"] = q
 
 
-def filter_to_chain_heads(quizzes: list[dict]) -> list[dict]:
-    """只回傳 chain head：被其他 quiz 的 follow_up_exam_quiz_id 引用的 quiz 不出現頂層（已含於 follow_up_quiz 鏈中）。"""
-    referenced_ids: set[int] = set()
-    for q in quizzes:
-        prev_id_raw = q.get("follow_up_exam_quiz_id")
-        if not prev_id_raw:
+def load_exam_quiz_followup_history_qa(
+    supabase: Any,
+    *,
+    exam_tab_id: str,
+    rag_quiz_id: int,
+    person_id: str,
+    course_id: int,
+    exclude_exam_quiz_id: int,
+) -> list[dict[str, str]]:
+    """同 exam_tab_id／rag_quiz_id／person_id 之先前 Exam_Quiz 問答；依 exam_quiz_id 升序（舊→新）。"""
+    cur_tab = (exam_tab_id or "").strip()
+    q = (
+        supabase.table("Exam_Quiz")
+        .select("quiz_content, quiz_answer_reference, answer_content, answer_critique, exam_quiz_id")
+        .eq("rag_quiz_id", rag_quiz_id)
+        .eq("course_id", course_id)
+        .eq("person_id", person_id.strip())
+        .neq("exam_quiz_id", exclude_exam_quiz_id)
+    )
+    if cur_tab:
+        q = q.eq("exam_tab_id", cur_tab)
+    rows = q.order("exam_quiz_id", desc=False).execute().data or []
+    out: list[dict[str, str]] = []
+    for row in rows:
+        qc = (row.get("quiz_content") or "").strip()
+        if not qc:
             continue
+        out.append(
+            {
+                "quiz_content": qc,
+                "answer_content": (row.get("answer_content") or "").strip(),
+                "quiz_answer_reference": (row.get("quiz_answer_reference") or "").strip(),
+                "answer_critique": (row.get("answer_critique") or "").strip(),
+            }
+        )
+    return out
+
+
+def filter_to_chain_roots(quizzes: list[dict]) -> list[dict]:
+    """只回傳 chain root 為頂層：follow_up_exam_quiz_id 為 0／空者（含 follow_up=true 但無前一題）。
+    其餘 follow_up_exam_quiz_id>0 者嵌於前一題的 follow_up_quiz。"""
+    out: list[dict] = []
+    for q in quizzes:
         try:
-            prev_id = int(prev_id_raw)
-            if prev_id > 0:
-                referenced_ids.add(prev_id)
+            prev_id = int(q.get("follow_up_exam_quiz_id") or 0)
         except (TypeError, ValueError):
-            pass
-    return [q for q in quizzes if int(q.get("exam_quiz_id") or 0) not in referenced_ids]
+            prev_id = 0
+        if prev_id > 0:
+            continue
+        out.append(q)
+    return out
+
+
+def chain_root_exam_quiz_id(root: dict) -> int:
+    """追問鏈 root（頂層最舊題）的 exam_quiz_id，供排序用。"""
+    try:
+        return int(root.get("exam_quiz_id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def exam_tab_quizzes_response(quizzes: list[dict]) -> list[dict]:
+    """GET /exam/tabs 等每筆 Exam 的 quizzes[]：追問 nest、只留 root、exam_quiz_id 升序。"""
+    if not quizzes:
+        return []
+    nest_follow_up_quizzes(quizzes)
+    roots = filter_to_chain_roots(quizzes)
+    roots.sort(key=chain_root_exam_quiz_id)
+    return roots
 
 
 def group_exam_quizzes_into_units(quizzes: list[dict]) -> list[dict]:
