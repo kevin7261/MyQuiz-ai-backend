@@ -10,11 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Iterator
 
-from utils.media import (
-    parse_youtube_video_id,
-    youtube_transcript_api_user_message,
-    youtube_transcript_plain_text,
-)
+from utils.media import parse_youtube_video_id
 from utils.zip_storage import UPLOAD_DEFAULT_PERSON, get_zip_path, get_zip_path_by_person
 from utils.zip_utils import fix_encoding
 
@@ -268,8 +264,7 @@ def _extract_youtube_video_id_url_only(text: str) -> str | None:
 
 def read_youtube_video_id_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[str, str]:
     """
-    該資料夾下文字檔（.md .txt .doc .docx 等，1 或 2 個）中找含 YouTube 連結或 video_id 的那個。
-    回傳 (video_id, 該檔在 ZIP 內的解碼路徑)。
+    unit_type=4 資料夾下的文字檔第一行為 YouTube URL；解析並回傳 (video_id, ZIP 內解碼路徑)。
     """
     fn = (folder_name or "").strip()
     if not fn:
@@ -288,22 +283,22 @@ def read_youtube_video_id_from_upload_zip(zip_bytes: bytes, folder_name: str) ->
         text_files.sort(key=lambda x: x[1])
         if not text_files:
             raise ValueError(
-                f"於資料夾「{fn}」下找不到文字檔（請放 .md／.txt／.doc／.docx，內含 YouTube 連結或 video_id）"
+                f"於資料夾「{fn}」下找不到文字檔（請放一個 .md／.txt／.doc／.docx，第一行為 YouTube URL）"
             )
-        for raw, dec in text_files:
-            raw_bytes = z.read(raw)
-            suf = Path(dec).suffix.lower()
-            text = _decode_transcript_file_bytes(raw_bytes, suf)
-            vid = extract_video_id_from_unit_md(text)
-            if vid:
-                return vid, dec
-        raise ValueError(f"於資料夾「{fn}」下的文字檔中找不到有效的 YouTube 連結或 video_id")
+        raw, dec = text_files[0]
+        raw_bytes = z.read(raw)
+        content = _decode_transcript_file_bytes(raw_bytes, Path(dec).suffix.lower()) or ""
+        first_line = (content.splitlines() or [""])[0].strip()
+        vid = _extract_youtube_video_id_url_only(first_line)
+        if not vid:
+            raise ValueError(f"於「{dec}」第一行找不到有效的 YouTube URL")
+        return vid, dec
 
 
 def read_supplementary_text_from_youtube_unit(zip_bytes: bytes, folder_name: str) -> tuple[str, str]:
     """
-    unit_type=4 資料夾中找出補充文字檔（非含 YouTube URL 的那個），回傳 (內容, ZIP 內解碼路徑)。
-    若資料夾下只有一個文字檔（即 YouTube URL 檔），拋 ValueError。
+    unit_type=4 資料夾中的文字檔，回傳第二行起的逐字稿內容（第一行為 YouTube URL）。
+    回傳 (逐字稿內容, ZIP 內解碼路徑)。
     """
     fn = (folder_name or "").strip()
     if not fn:
@@ -322,13 +317,12 @@ def read_supplementary_text_from_youtube_unit(zip_bytes: bytes, folder_name: str
         text_files.sort(key=lambda x: x[1])
         if not text_files:
             raise ValueError(f"於資料夾「{fn}」下找不到文字檔")
-        for raw, dec in text_files:
-            raw_b = z.read(raw)
-            suf = Path(dec).suffix.lower()
-            text = _decode_transcript_file_bytes(raw_b, suf)
-            if _extract_youtube_video_id_url_only(text) is None:
-                return (text or "").strip(), dec
-        raise ValueError(f"於資料夾「{fn}」下找不到補充文字檔（所有文字檔均含 YouTube URL）")
+        raw, dec = text_files[0]
+        raw_b = z.read(raw)
+        content = _decode_transcript_file_bytes(raw_b, Path(dec).suffix.lower()) or ""
+        lines = content.splitlines()
+        transcript = "\n".join(lines[1:]).strip()
+        return transcript, dec
 
 
 def read_single_transcript_text_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[str, str]:
@@ -486,49 +480,34 @@ def _extract_transcript_type3(z: zipfile.ZipFile, out: dict[str, str]) -> dict[s
 
 
 def _extract_transcript_type4(z: zipfile.ZipFile, out: dict[str, str]) -> dict[str, str]:
-    """unit_type=4（YouTube）：一個含 YouTube URL 的文字檔，可附一個補充文字檔（可選）；不可有音訊檔。"""
+    """unit_type=4（YouTube）：恰好一個文字檔；第一行為 YouTube URL，第二行起為逐字稿內容。不可有音訊檔。"""
     if _audio_members_in_zip(z):
         raise ValueError("unit_type=4 不可包含音訊檔（僅允許文字檔）")
     text_rows = _transcript_text_members_in_zip(z)
     if not text_rows:
         raise ValueError(
-            "單元 ZIP 內找不到文字檔（unit_type=4 須至少一個 .md／.txt／.doc／.docx，內含 YouTube URL）"
+            "單元 ZIP 內找不到文字檔（unit_type=4 須恰好一個 .md／.txt／.doc／.docx）"
         )
-    if len(text_rows) > 2:
+    if len(text_rows) != 1:
         raise ValueError(
-            "unit_type=4 最多兩個文字檔（一個內含 YouTube URL，一個補充），"
-            f"目前有 {len(text_rows)} 個："
+            f"unit_type=4 須恰好一個文字檔，目前有 {len(text_rows)} 個："
             + ", ".join(d for _, d in text_rows[:5])
         )
-    # 找出含 YouTube URL 的文字檔（只接受 URL，不接受裸 video_id）
-    youtube_idx: int | None = None
-    youtube_vid: str | None = None
-    for i, (raw, dec) in enumerate(text_rows):
-        raw_b = z.read(raw)
-        vid = _extract_youtube_video_id_url_only(
-            _decode_transcript_file_bytes(raw_b, Path(dec).suffix.lower())
-        )
-        if vid is not None:
-            youtube_idx, youtube_vid = i, vid
-            break
-    if youtube_idx is None or youtube_vid is None:
+    raw, dec = text_rows[0]
+    raw_b = z.read(raw)
+    content = _decode_transcript_file_bytes(raw_b, Path(dec).suffix.lower()) or ""
+    lines = content.splitlines()
+    if not lines:
+        raise ValueError(f"{Path(dec).name} 內容為空")
+    youtube_vid = _extract_youtube_video_id_url_only(lines[0].strip())
+    if not youtube_vid:
         raise ValueError(
-            "文字檔中找不到有效的 YouTube URL"
-            "（unit_type=4 不接受裸 video_id，請使用完整 YouTube URL，"
-            "例：https://www.youtube.com/watch?v=...）"
+            f"{Path(dec).name} 第一行須為有效的 YouTube URL（不接受裸 video_id），"
+            "例：https://www.youtube.com/watch?v=..."
         )
-    if len(text_rows) == 2:
-        _, extra_dec = text_rows[1 - youtube_idx]
-        out["text_file_name"] = Path(extra_dec).name
-    try:
-        cap, _elapsed = youtube_transcript_plain_text(youtube_vid, languages=None)
-    except Exception as e:
-        raise ValueError("擷取 YouTube 字幕失敗: " + youtube_transcript_api_user_message(e)) from e
-    cap = (cap or "").strip()
-    if not cap:
-        raise ValueError("YouTube 字幕為空（請確認影片有字幕，或調整 YOUTUBE_TRANSCRIPT_LANGUAGES）")
-    out["transcript"] = cap
     out["youtube_url"] = f"https://www.youtube.com/watch?v={youtube_vid}"
+    out["transcript"] = "\n".join(lines[1:]).strip()
+    out["text_file_name"] = Path(dec).name
     return out
 
 
@@ -536,7 +515,7 @@ def extract_transcript_for_rag_build(zip_bytes: bytes, unit_type: int) -> dict[s
     """
     自 build-rag-zip 產出之「單元小 ZIP」擷取逐字稿與 Rag_Unit 附帶欄位。
     回傳 transcript、text_file_name、mp3_file_name、youtube_url（非適用之欄位為空字串）。
-    unit_type：2=文字、3=音訊（至少一個音訊＋一個文字檔）、4=YouTube（恰好兩個文字檔）。
+    unit_type：2=文字、3=音訊（至少一個音訊＋一個文字檔）、4=YouTube（恰好一個文字檔，第一行 YouTube URL，第二行起逐字稿）。
     """
     out: dict[str, str] = {
         "transcript": "",

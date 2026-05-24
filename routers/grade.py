@@ -8,7 +8,7 @@ RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/llm-grade-db：同 llm-grade，唯 body 不包含 answer_user_prompt_text，評分與寫回一律沿用 Rag_Quiz.answer_user_prompt_text（不論請求）。
 - POST /rag/tab/unit/quiz/for-exam：更新 Rag_Quiz.for_exam（body `for_exam` 預設 true；false 取消測驗用）。
 - GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
-- GET /rag/transcript/text、audio／youtube：`with_timestamps` 預設 true；``timestamp_merge_seconds`` 控制標記稀疏度（預設約每 10 秒一標；``0``＝每一段／字幕一行，最密）。
+- GET /rag/unit/text：依 rag_tab_id、rag_unit_id 回傳 unit_type=2 之 text_file_name 與 transcription（**不需** person_id）。
 - GET /rag/unit/mp3-file：自 upload ZIP 依單元資料夾回傳原始音訊 bytes（供 `<audio src>`）；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者。
 - GET /rag/unit/youtube-url：自 upload ZIP 依 folder_name 解析 YouTube 連結／video_id；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者；語意對齊存庫 transcript 規則，不依 rag_unit_id。
 """
@@ -53,8 +53,6 @@ from utils.rag_faiss import process_zip_to_docs
 from utils.rag_stem import get_rag_stem_from_rag_id, instruction_from_rag_row
 from utils.rag_transcript import (
     pick_audio_from_upload_zip,
-    read_single_transcript_text_from_upload_zip,
-    read_supplementary_text_from_youtube_unit,
     read_upload_zip_bytes,
     read_youtube_video_id_from_upload_zip,
 )
@@ -62,6 +60,7 @@ from utils.rag_course import (
     assert_row_course_id,
     execute_with_course_id_fallback,
     require_rag_tab_owner,
+    resolve_rag_tab_owner_person_id,
     select_without_course_id_if_needed,
 )
 from utils.supabase import get_supabase
@@ -72,6 +71,8 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 _logger = logging.getLogger(__name__)
 
 _grade_job_results: dict[str, dict[str, Any]] = {}
+
+RAG_UNIT_TYPE_TEXT = 2
 
 
 # ---------------------------------------------------------------------------
@@ -229,10 +230,13 @@ class RagQuizForExamRequest(BaseModel):
     for_exam: bool = Field(True, description="true：標記為測驗用；false：取消測驗用")
 
 
-class RagTranscriptMarkdownResponse(BaseModel):
-    """GET /rag/transcript/text、audio、youtube 共用回傳：markdown 僅為正文，無額外標題或 meta 區塊。"""
+class RagUnitTextResponse(BaseModel):
+    """GET /rag/unit/text 回應。"""
 
-    markdown: str = Field(..., description="正文純文字或原檔內容（無 # Transcript 包裝）")
+    rag_unit_id: int
+    rag_tab_id: str
+    text_file_name: str = ""
+    transcription: str = ""
 
 
 class RagUnitYoutubeUrlFromZipResponse(BaseModel):
@@ -1103,37 +1107,80 @@ async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseI
 
 
 # ---------------------------------------------------------------------------
-# GET /rag/transcript/text
+# GET /rag/unit/text
 # ---------------------------------------------------------------------------
 
-@router.get("/transcript/text", response_model=RagTranscriptMarkdownResponse)
-def rag_transcript_text(
-    caller_person_id: PersonId,
+
+@router.get(
+    "/unit/text",
+    summary="Rag Unit Text",
+    operation_id="rag_unit_text",
+    response_model=RagUnitTextResponse,
+)
+def rag_unit_text(
     course_id: CourseId,
-    rag_tab_id: str = Query(..., description="Rag.rag_tab_id"),
-    folder_name: str = Query(
-        ...,
-        description="ZIP 內單元資料夾名；該資料夾下須恰好一個文字檔（.md .txt .doc .docx），回傳正文為 markdown",
-    ),
+    rag_tab_id: str = Query(..., description="Rag.rag_tab_id（parent tab）"),
+    rag_unit_id: int = Query(..., gt=0, description="Rag_Unit 主鍵"),
 ):
-    """自 upload ZIP 之 folder_name 路徑下讀取唯一一個文字檔的全文；markdown 僅為檔案內容，不寫回資料庫。"""
-    require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
+    """
+    依 rag_tab_id 與 rag_unit_id 回傳 **unit_type=2（文字單元）** 之 `text_file_name` 與 `transcription`（全文）。
+    **不需** query `person_id`；後端依 `rag_tab_id` 自 Rag 解析擁有者。
+    transcription 為建 RAG 時從文字檔讀入並寫入 `Rag_Unit.transcription` 之全文（含 Markdown）。
+    """
+    owner_pid = resolve_rag_tab_owner_person_id(rag_tab_id, course_id)
+    tab = (rag_tab_id or "").strip()
+    supabase = get_supabase()
+
+    def build_text_sel(with_course_filter: bool):
+        cols = select_without_course_id_if_needed(
+            "Rag_Unit",
+            "rag_unit_id, rag_tab_id, unit_type, text_file_name, transcription, deleted, course_id",
+            with_course_filter,
+        )
+        q = (
+            supabase.table("Rag_Unit")
+            .select(cols)
+            .eq("rag_unit_id", rag_unit_id)
+            .eq("person_id", owner_pid)
+        )
+        if with_course_filter and course_id is not None:
+            q = q.eq("course_id", course_id)
+        return q.limit(1)
+
     try:
-        zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        sel = execute_with_course_id_fallback("Rag_Unit", build_text_sel, course_id)
     except Exception as e:
-        _logger.exception("讀取 upload ZIP 失敗")
-        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+        _logger.exception("GET /rag/unit/text 查詢 Rag_Unit 失敗")
+        raise HTTPException(status_code=500, detail=f"查詢失敗: {e!s}") from e
 
+    if not sel.data:
+        raise HTTPException(
+            status_code=404,
+            detail="找不到該 rag_unit_id，或與此 rag_tab_id／擁有者不一致",
+        )
+    row = sel.data[0]
+    if row.get("deleted"):
+        raise HTTPException(status_code=404, detail="該單元已刪除")
+    if (row.get("rag_tab_id") or "").strip() != tab:
+        raise HTTPException(
+            status_code=400,
+            detail="rag_tab_id 與該 rag_unit_id 所屬之 Rag_Unit.rag_tab_id 不一致",
+        )
     try:
-        body, _path = read_single_transcript_text_from_upload_zip(zip_bytes, folder_name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    return RagTranscriptMarkdownResponse(markdown=body if body else "")
+        ut = int(row.get("unit_type") or 0)
+    except (TypeError, ValueError):
+        ut = 0
+    if ut != RAG_UNIT_TYPE_TEXT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"僅 unit_type=2（文字單元）可使用此端點，目前 unit_type={ut}",
+        )
+    return RagUnitTextResponse(
+        rag_unit_id=rag_unit_id,
+        rag_tab_id=tab,
+        text_file_name=(row.get("text_file_name") or "").strip(),
+        transcription=(row.get("transcription") or "").strip(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1219,69 +1266,3 @@ def rag_unit_youtube_url(
     return RagUnitYoutubeUrlFromZipResponse(youtube_url=f"https://www.youtube.com/watch?v={vid}")
 
 
-# ---------------------------------------------------------------------------
-# GET /rag/transcript/audio
-# ---------------------------------------------------------------------------
-
-@router.get("/transcript/audio", response_model=RagTranscriptMarkdownResponse)
-def rag_transcript_audio(
-    caller_person_id: PersonId,
-    course_id: CourseId,
-    rag_tab_id: str = Query(..., description="Rag.rag_tab_id（對應 Storage 路徑 {person_id}/{rag_tab_id}/upload/…）"),
-    folder_name: str = Query(
-        ...,
-        description="ZIP 內單元資料夾名；該資料夾下須有恰好一個文字檔（.md／.txt／.doc／.docx），回傳其內容",
-    ),
-):
-    """自 upload ZIP 內 folder_name 路徑找文字檔，直接回傳其內容。"""
-    require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
-    try:
-        zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        _logger.exception("讀取 upload ZIP 失敗")
-        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
-
-    try:
-        text, _path = read_single_transcript_text_from_upload_zip(zip_bytes, folder_name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    return RagTranscriptMarkdownResponse(markdown=text or "")
-
-
-# ---------------------------------------------------------------------------
-# GET /rag/transcript/youtube
-# ---------------------------------------------------------------------------
-
-@router.get("/transcript/youtube", response_model=RagTranscriptMarkdownResponse)
-def rag_transcript_youtube(
-    caller_person_id: PersonId,
-    course_id: CourseId,
-    rag_tab_id: str = Query(..., description="Rag.rag_tab_id"),
-    folder_name: str = Query(
-        ...,
-        description="ZIP 內單元資料夾名；回傳該資料夾下補充文字檔（非含 YouTube URL 的那個）之內容",
-    ),
-):
-    """自 upload ZIP 內 folder_name 下找補充文字檔（非 YouTube URL 檔），直接回傳其內容。"""
-    require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
-    try:
-        zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        _logger.exception("讀取 upload ZIP 失敗")
-        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
-
-    try:
-        text, _path = read_supplementary_text_from_youtube_unit(zip_bytes, folder_name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    return RagTranscriptMarkdownResponse(markdown=text or "")

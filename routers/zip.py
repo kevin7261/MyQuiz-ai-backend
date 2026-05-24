@@ -17,6 +17,7 @@ ZIP 與 RAG 相關 API 模組。
 - PUT /rag/tab/unit/quiz/quiz-name：更新 Rag_Quiz 的 quiz_name（body：rag_quiz_id、quiz_name）
 """
 
+import base64
 import io
 import json
 import logging
@@ -390,11 +391,22 @@ class ListRagResponse(BaseModel):
     count: int
 
 
+class RagUnitMp3FileResponse(BaseModel):
+    """GET /rag/tab/unit/mp3-file 回應。"""
+    rag_unit_id: int
+    rag_tab_id: str
+    audio_base64: str
+    media_type: str
+    filename: str
+    transcription: str = ""
+
+
 class RagUnitYoutubeUrlResponse(BaseModel):
     """GET /rag/tab/unit/youtube-url 回應。"""
     rag_unit_id: int
     rag_tab_id: str
     youtube_url: str
+    transcription: str = ""
 
 
 class CreateRagRequest(BaseModel):
@@ -1679,6 +1691,7 @@ def update_rag_unit_name(
     "/tab/unit/mp3-file",
     summary="Rag Tab Unit Mp3 File",
     operation_id="rag_tab_unit_mp3_file",
+    response_model=RagUnitMp3FileResponse,
 )
 def rag_tab_unit_mp3_file(
     course_id: CourseId,
@@ -1700,9 +1713,9 @@ def rag_tab_unit_mp3_file(
     def fetch_mp3_unit_row(*, include_folder_combination: bool):
         def build(with_course_filter: bool):
             base_cols = (
-                "rag_tab_id, unit_name, folder_combination, unit_type, deleted, repack_file_name, course_id"
+                "rag_unit_id, rag_tab_id, unit_name, folder_combination, unit_type, deleted, repack_file_name, transcription, course_id"
                 if include_folder_combination
-                else "rag_tab_id, unit_name, unit_type, deleted, repack_file_name, course_id"
+                else "rag_unit_id, rag_tab_id, unit_name, unit_type, deleted, repack_file_name, transcription, course_id"
             )
             cols = select_without_course_id_if_needed("Rag_Unit", base_cols, with_course_filter)
             q = (
@@ -1822,11 +1835,15 @@ def rag_tab_unit_mp3_file(
 
     media = audio_media_type_for_suffix(suffix)
     disp_name = Path(inner_path).name
-    safe_disp = "".join(c if 32 <= ord(c) < 127 and c not in '\\"' else "_" for c in disp_name) or "audio"
-    return Response(
-        content=contents,
+    audio_b64 = base64.b64encode(contents).decode()
+    unit_transcription = (row.get("transcription") or "").strip()
+    return RagUnitMp3FileResponse(
+        rag_unit_id=rag_unit_id,
+        rag_tab_id=tab,
+        audio_base64=audio_b64,
         media_type=media,
-        headers={"Content-Disposition": f'inline; filename="{safe_disp}"'},
+        filename=disp_name,
+        transcription=unit_transcription,
     )
 
 
@@ -1858,7 +1875,7 @@ def rag_tab_unit_youtube_url(
     def build_youtube_sel(with_course_filter: bool):
         cols = select_without_course_id_if_needed(
             "Rag_Unit",
-            "rag_unit_id, rag_tab_id, unit_type, youtube_url, deleted, course_id",
+            "rag_unit_id, rag_tab_id, unit_type, youtube_url, transcription, deleted, course_id",
             with_course_filter,
         )
         q = (
@@ -1902,10 +1919,12 @@ def rag_tab_unit_youtube_url(
     yt_url = (row.get("youtube_url") or "").strip()
     if not yt_url:
         raise HTTPException(status_code=404, detail="該 YouTube 單元未記錄 youtube_url，請重新建置 RAG")
+    unit_transcription = (row.get("transcription") or "").strip()
     return RagUnitYoutubeUrlResponse(
         rag_unit_id=int(row["rag_unit_id"]),
         rag_tab_id=tab,
         youtube_url=yt_url,
+        transcription=unit_transcription,
     )
 
 
