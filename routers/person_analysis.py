@@ -3,7 +3,7 @@
 依 person_id 查詢 Exam_Quiz 資料。新 schema 答案欄位直接內嵌於 Exam_Quiz（answer_content, answer_critique），不再有獨立的 Exam_Answer 表。
 - GET /person-analysis/quizzes/{person_id}：依 person_id 取得已作答的 Exam_Quiz（answer_content 非空），
   依 exam_tab_id 分群回傳 Exam；每筆 Exam 的題目結構與 GET /exam/tabs 相同（quizzes[]，Exam_Quiz 含 follow_up 鏈，含 enrich／rag 鍵）。
-  另帶 weakness_report：**預設不呼叫 LLM**，`weakness_report` 為 null；僅當 query **`generate_weakness_report=true`** 時才產生弱點報告（有 LLM API Key 且成功呼叫時為模型回覆原文，否則 null）。
+  另帶 weakness_report：每次請求皆呼叫 LLM 產生弱點報告（有 LLM API Key 且成功呼叫時為模型回覆原文，否則 null）。
 
 重要：弱點報告與出題／批改相同，系統與使用者訊息皆為 **Markdown**；本路由**不**使用 `response_format=json_object`。
 **個人分析 user prompt** 取自 `System_Setting.key=person_analysis_user_prompt_text`（與 GET/PUT `/system-settings/person_analysis_user_prompt_text` 同源），嵌入 user 訊息之 **`## 個人分析 user prompt`**，優先級對齊出題之 **`## 出題 user prompt`**、批改之出題／作答 user prompt 區塊。
@@ -18,7 +18,7 @@ import json
 import textwrap
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Path as PathParam, Query
+from fastapi import APIRouter, HTTPException, Path as PathParam
 
 from dependencies.person_id import PersonId
 from openai import OpenAI
@@ -103,12 +103,12 @@ USER_PROMPT_WEAKNESS_REPORT = textwrap.dedent("""
 # -----------------------------------------------------------------------------
 
 class ListQuizzesByPersonResponse(BaseModel):
-    """GET /person-analysis/quizzes/{person_id} 回應。exams[] 每筆與 GET /exam/tabs 相同含 quizzes[]；weakness_report 僅於 generate_weakness_report=true 時才可能非 null。"""
+    """GET /person-analysis/quizzes/{person_id} 回應。exams[] 每筆與 GET /exam/tabs 相同含 quizzes[]；weakness_report 為 LLM 弱點報告（失敗時為 null）。"""
     exams: list[dict]
     count: int
     weakness_report: Optional[str] = Field(
         default=None,
-        description="弱點報告：僅於 query generate_weakness_report=true 時才可能產生；為 LLM `message.content` 原文；未請求產生、未設定 API Key、呼叫失敗或無內容時為 null",
+        description="弱點報告：LLM `message.content` 原文 Markdown；未設定 API Key、呼叫失敗或無內容時為 null",
     )
 
 
@@ -315,16 +315,12 @@ def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> Optional[
 def list_quizzes_by_person(
     caller_person_id: PersonId,
     person_id: str = PathParam(..., description="要查詢的 person_id"),
-    generate_weakness_report: bool = Query(
-        False,
-        description="為 true 時才呼叫 LLM 產生 weakness_report；預設 false（僅載入試卷資料，與「儲存 prompt」分離）",
-    ),
 ):
     """
     依 person_id 取得已作答的 Exam_Quiz（answer_content 非空），依 exam_tab_id 分群後對應 Exam；
     每筆 Exam 的 quizzes 形狀與 GET /exam/tabs 一致（題目為完整 Exam_Quiz 列，含作答欄位）。
-    weakness_report：僅當 `generate_weakness_report=true` 時才可能產生；成功時為 LLM `message.content` 原文；
-    否則為 null。無 API Key、無可分析題目、呼叫失敗或模型回 null 時亦為 null。
+    weakness_report：每次請求皆嘗試呼叫 LLM 產生；成功時為 `message.content` 原文，否則為 null。
+    無 API Key、無可分析題目、呼叫失敗或模型回 null 時亦為 null。
     弱點報告 user 訊息會併入 System_Setting `person_analysis_user_prompt_text`
     （與 `/system-settings/person_analysis_user_prompt_text` 同源）。
     query 的 person_id 須與路徑 {person_id} 一致。
@@ -357,10 +353,9 @@ def list_quizzes_by_person(
 
         data = to_json_safe(exam_rows)
         weakness_report: Optional[str] = None
-        if generate_weakness_report:
-            api_key = get_llm_api_key()
-            if api_key:
-                weakness_report = _generate_weakness_report_md(to_json_safe(quizzes_with_answers), api_key)
+        api_key = get_llm_api_key()
+        if api_key:
+            weakness_report = _generate_weakness_report_md(to_json_safe(quizzes_with_answers), api_key)
         return ListQuizzesByPersonResponse(exams=data, count=len(data), weakness_report=weakness_report)
     except HTTPException:
         raise

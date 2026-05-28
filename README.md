@@ -1193,7 +1193,7 @@ LLM 出題後更新 Exam_Quiz 並回傳出題結果。
 
 #### `GET /person-analysis/quizzes/{person_id}`
 
-依 person_id 取得已作答 Exam_Quiz，可選擇性產生弱點報告。
+依 person_id 取得已作答 Exam_Quiz，並產生弱點報告。
 
 ```json
 {
@@ -1207,11 +1207,11 @@ LLM 出題後更新 Exam_Quiz 並回傳出題結果。
     }
   ],
   "count": 1,
-  "weakness_report": "Markdown 弱點報告全文（僅 query generate_weakness_report=true 且 LLM 成功時非 null）"
+  "weakness_report": "Markdown 弱點報告全文（LLM 成功時非 null）"
 }
 ```
 
-> `weakness_report` 為 LLM `message.content` 原文 Markdown；未請求、無 API Key、無可分析題目或失敗時為 null。
+> `weakness_report` 為 LLM `message.content` 原文 Markdown；無 API Key、無可分析題目或失敗時為 null。
 
 ---
 
