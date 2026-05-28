@@ -19,6 +19,7 @@ from services.quiz_generation import (
     USER_PROMPT_COURSE,
     USER_PROMPT_COURSE_FOLLOWUP,
 )
+from services.prompt_placeholders import prompt_placeholder_descriptions
 from services.rag_prompts import rag_build_defaults, rag_retrieval_config
 from services.weakness_report import (
     analysis_prompt_templates,
@@ -86,6 +87,10 @@ class AnalysisPrompts(PromptPair):
 class AllPromptTemplatesResponse(BaseModel):
     """GET /prompt/templates 回應。"""
 
+    placeholders: dict[str, dict[str, str]] = Field(
+        ...,
+        description="各區塊模板內 `{占位符}` 之填入來源與意義",
+    )
     rag: RagPrompts
     llm_generate: LlmGeneratePrompts
     llm_grade: LlmGradePrompts
@@ -97,13 +102,14 @@ class AllPromptTemplatesResponse(BaseModel):
 def get_all_prompt_templates(_person_id: PersonId):
     """
     回傳各 LLM 功能之 prompt 模板全文。
-    占位符（如 `{context_md}`、`{quiz_user_prompt_text}`）保留原樣，供前端或文件對照。
+    模板內 `{占位符}` 保留原樣；`placeholders` 說明各占位符填入內容。
     `rag` 區塊為向量檢索查詢句與 k 值（非 Chat LLM prompt）。
     """
     person_tpl = analysis_prompt_templates(PERSON_ANALYSIS_LABEL)
     course_tpl = analysis_prompt_templates(COURSE_ANALYSIS_LABEL)
     rag_cfg = rag_retrieval_config()
     return AllPromptTemplatesResponse(
+        placeholders=prompt_placeholder_descriptions(),
         rag=RagPrompts(
             llm_generate=RagRetrieval(**rag_cfg["llm_generate"]),
             llm_grade=RagRetrieval(**rag_cfg["llm_grade"]),
