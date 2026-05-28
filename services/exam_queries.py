@@ -198,16 +198,21 @@ def quizzes_by_exam_tab_ids(
     return out
 
 
-def quizzes_by_person_id(person_id: str) -> list[dict]:
-    """依 person_id 查詢 Exam_Quiz 全部筆數（供分析使用）。"""
+def quizzes_by_person_id(person_id: str, *, course_id: int) -> list[dict]:
+    """依 person_id、course_id 查詢 Exam_Quiz（供個人分析使用）。"""
     pid = (person_id or "").strip()
     if not pid:
         return []
-    return _select_exam_quiz_rows_with_follow_up_fallback(person_id=pid)
+    return _select_exam_quiz_rows_with_follow_up_fallback(person_id=pid, course_id=course_id)
+
+
+def quizzes_by_course_id(course_id: int) -> list[dict]:
+    """依 course_id 查詢 Exam_Quiz 全部筆數（供課程分析使用）。"""
+    return _select_exam_quiz_rows_with_follow_up_fallback(course_id=course_id)
 
 
 def all_exam_quizzes() -> list[dict]:
-    """查詢 Exam_Quiz 表全部筆數（供課程分析使用）。"""
+    """查詢 Exam_Quiz 表全部筆數（不限 course_id；新程式請優先 quizzes_by_course_id）。"""
     return _select_exam_quiz_rows_with_follow_up_fallback()
 
 

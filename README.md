@@ -107,7 +107,7 @@ HTTP 4xx / 5xx 時統一回傳：
 | GET | [`/exam/tab/quiz/grade-result/{job_id}`](#get-examtabquizgrade-resultjob_id) | 輪詢評分結果 |
 | POST | [`/exam/tab/quiz/rate`](#post-examtabquizrate) | 更新 quiz_rate |
 | **課程分析** | | |
-| GET | [`/course-analysis/quizzes`](#get-course-analysisquizzes) | 列出全部 Exam_Quiz |
+| GET | [`/course-analysis/quizzes`](#get-course-analysisquizzes) | 課程作答分析（含弱點報告） |
 | **個人分析** | | |
 | GET | [`/person-analysis/quizzes/{person_id}`](#get-person-analysisquizzesperson_id) | 個人作答分析（含弱點報告） |
 | **Log** | | |
@@ -115,6 +115,8 @@ HTTP 4xx / 5xx 時統一回傳：
 | **系統設定** | | |
 | GET | [`/system-settings/person_analysis_user_prompt_text`](#get-system-settingsperson_analysis_user_prompt_text) | 取得個人分析 prompt |
 | PUT | [`/system-settings/person_analysis_user_prompt_text`](#put-system-settingsperson_analysis_user_prompt_text) | 寫入個人分析 prompt |
+| GET | [`/system-settings/course_analysis_user_prompt_text`](#get-system-settingscourse_analysis_user_prompt_text) | 取得課程分析 prompt |
+| PUT | [`/system-settings/course_analysis_user_prompt_text`](#put-system-settingscourse_analysis_user_prompt_text) | 寫入課程分析 prompt |
 
 ---
 
@@ -1169,7 +1171,7 @@ LLM 出題後更新 Exam_Quiz 並回傳出題結果。
 
 #### `GET /course-analysis/quizzes`
 
-回傳全部 Exam_Quiz（依 exam_tab_id 分群），`weakness_report` 固定為 null。
+依 course_id 取得已作答 Exam_Quiz，並產生弱點報告。必填 query `course_id`（弱點報告會讀取該課程之 `course_analysis_user_prompt_text` 設定）。
 
 ```json
 {
@@ -1179,13 +1181,15 @@ LLM 出題後更新 Exam_Quiz 並回傳出題結果。
       "exam_tab_id": "string",
       "tab_name": "string",
       "person_id": "string",
-      "quizzes": [ /* Exam_Quiz[]，結構同 GET /exam/tabs */ ]
+      "quizzes": [ /* Exam_Quiz[]（含 answer_content 非空者），結構同 GET /exam/tabs */ ]
     }
   ],
   "count": 1,
-  "weakness_report": null
+  "weakness_report": "Markdown 弱點報告全文（LLM 成功時非 null）"
 }
 ```
+
+> `weakness_report` 為 LLM `message.content` 原文 Markdown；無 API Key、無可分析題目或失敗時為 null。
 
 ---
 
@@ -1193,7 +1197,7 @@ LLM 出題後更新 Exam_Quiz 並回傳出題結果。
 
 #### `GET /person-analysis/quizzes/{person_id}`
 
-依 person_id 取得已作答 Exam_Quiz，並產生弱點報告。必填 query `course_id`（弱點報告會讀取該課程之 `person_analysis_user_prompt_text` 設定）。
+依 person_id、course_id 取得已作答 Exam_Quiz，並產生弱點報告。必填 query `course_id`（題目與弱點報告皆限該課程；弱點報告會讀取 `person_analysis_user_prompt_text` 設定）。
 
 ```json
 {
@@ -1265,5 +1269,33 @@ LLM 出題後更新 Exam_Quiz 並回傳出題結果。
   "system_setting_id": 1,
   "course_id": 1,
   "person_analysis_user_prompt_text": "string"
+}
+```
+
+---
+
+#### `GET /system-settings/course_analysis_user_prompt_text`
+
+取得課程分析 user prompt（所有有效使用者皆可讀取）。必填 query `course_id`。
+
+```json
+{
+  "system_setting_id": 1,
+  "course_id": 1,
+  "course_analysis_user_prompt_text": "string（無設定時為 null）"
+}
+```
+
+---
+
+#### `PUT /system-settings/course_analysis_user_prompt_text`
+
+寫入課程分析 user prompt（僅該課程 user_type 1／2 可操作）。必填 query `course_id`。
+
+```json
+{
+  "system_setting_id": 1,
+  "course_id": 1,
+  "course_analysis_user_prompt_text": "string"
 }
 ```
