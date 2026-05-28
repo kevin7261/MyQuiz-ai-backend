@@ -19,7 +19,7 @@ from services.quiz_generation import (
     USER_PROMPT_COURSE,
     USER_PROMPT_COURSE_FOLLOWUP,
 )
-from services.rag_prompts import rag_build_defaults, rag_prompt_templates
+from services.rag_prompts import rag_build_defaults, rag_retrieval_config
 from services.weakness_report import (
     analysis_prompt_templates,
     COURSE_ANALYSIS_LABEL,
@@ -34,20 +34,21 @@ class PromptPair(BaseModel):
     user: str
 
 
-class RagPrompts(BaseModel):
-    """unit_type=1 自 FAISS 抓 RAG 片段之向量檢索查詢（非 Chat LLM 模板；system 固定空字串）。"""
+class RagRetrieval(BaseModel):
+    """unit_type=1 向量檢索設定（非 Chat LLM prompt）。"""
 
-    llm_generate: PromptPair = Field(
-        ...,
-        description="llm-generate 檢索句：user 為固定查詢「課程重點概念」",
-    )
-    llm_grade: PromptPair = Field(
-        ...,
-        description="llm-grade 檢索句：user 占位 {quiz_content}，實際以題幹代入",
-    )
+    retrieval_query: str = Field(..., description="送進 retriever 的查詢句")
+    retrieval_k: int = Field(..., description="檢索回傳 chunk 數")
+
+
+class RagPrompts(BaseModel):
+    """unit_type=1 自 FAISS 抓 RAG 片段之設定（非 Chat LLM system／user 模板）。"""
+
+    llm_generate: RagRetrieval
+    llm_grade: RagRetrieval
     build_defaults: dict[str, int | str] = Field(
         ...,
-        description="build-rag-zip 建 FAISS 預設 embedding／chunk／retrieval_k",
+        description="build-rag-zip 建 FAISS 預設 embedding／chunk",
     )
 
 
@@ -97,15 +98,15 @@ def get_all_prompt_templates(_person_id: PersonId):
     """
     回傳各 LLM 功能之 prompt 模板全文。
     占位符（如 `{context_md}`、`{quiz_user_prompt_text}`）保留原樣，供前端或文件對照。
-    `rag` 區塊為向量檢索抓 RAG 片段之查詢句（非 Chat LLM system 模板）。
+    `rag` 區塊為向量檢索查詢句與 k 值（非 Chat LLM prompt）。
     """
     person_tpl = analysis_prompt_templates(PERSON_ANALYSIS_LABEL)
     course_tpl = analysis_prompt_templates(COURSE_ANALYSIS_LABEL)
-    rag_tpl = rag_prompt_templates()
+    rag_cfg = rag_retrieval_config()
     return AllPromptTemplatesResponse(
         rag=RagPrompts(
-            llm_generate=PromptPair(**rag_tpl["llm_generate"]),
-            llm_grade=PromptPair(**rag_tpl["llm_grade"]),
+            llm_generate=RagRetrieval(**rag_cfg["llm_generate"]),
+            llm_grade=RagRetrieval(**rag_cfg["llm_grade"]),
             build_defaults=rag_build_defaults(),
         ),
         llm_generate=LlmGeneratePrompts(
