@@ -12,6 +12,8 @@ from typing import Any, Optional
 from openai import OpenAI
 
 WEAKNESS_LLM_MODEL = "gpt-4o"
+PERSON_ANALYSIS_LABEL = "個人分析"
+COURSE_ANALYSIS_LABEL = "課程分析"
 
 
 def _system_prompt_weakness_report(analysis_label: str) -> str:
@@ -70,6 +72,14 @@ def quiz_has_answer(quiz: dict) -> bool:
 def analysis_user_prompt_display(raw: Optional[str]) -> str:
     """填入弱點報告 user 模板；空則與批改 `_grade_field_display` 一致為「（未提供）」。"""
     return (raw or "").strip() or "（未提供）"
+
+
+def analysis_prompt_templates(analysis_label: str) -> dict[str, str]:
+    """回傳弱點分析之 system／user prompt 模板（占位符保留）。"""
+    return {
+        "system": _system_prompt_weakness_report(analysis_label),
+        "user": _user_prompt_weakness_report(analysis_label),
+    }
 
 
 def _synthetic_answer_from_quiz(quiz: dict) -> dict:
