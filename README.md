@@ -1193,7 +1193,7 @@ LLM 出題後更新 Exam_Quiz 並回傳出題結果。
 
 #### `GET /person-analysis/quizzes/{person_id}`
 
-依 person_id 取得已作答 Exam_Quiz，並產生弱點報告。
+依 person_id 取得已作答 Exam_Quiz，並產生弱點報告。必填 query `course_id`（弱點報告會讀取該課程之 `person_analysis_user_prompt_text` 設定）。
 
 ```json
 {
@@ -1244,11 +1244,12 @@ LLM 出題後更新 Exam_Quiz 並回傳出題結果。
 
 #### `GET /system-settings/person_analysis_user_prompt_text`
 
-取得個人分析 user prompt（所有有效使用者皆可讀取）。
+取得個人分析 user prompt（所有有效使用者皆可讀取）。必填 query `course_id`。
 
 ```json
 {
   "system_setting_id": 1,
+  "course_id": 1,
   "person_analysis_user_prompt_text": "string（無設定時為 null）"
 }
 ```
@@ -1257,11 +1258,12 @@ LLM 出題後更新 Exam_Quiz 並回傳出題結果。
 
 #### `PUT /system-settings/person_analysis_user_prompt_text`
 
-寫入個人分析 user prompt（僅 user_type 1／2 可操作）。
+寫入個人分析 user prompt（僅該課程 user_type 1／2 可操作）。必填 query `course_id`。
 
 ```json
 {
   "system_setting_id": 1,
+  "course_id": 1,
   "person_analysis_user_prompt_text": "string"
 }
 ```

@@ -1,7 +1,7 @@
 """
 系統設定相關 API 模組。
-- GET /system-settings/person_analysis_user_prompt_text：取得 person_analysis_user_prompt_text（key=person_analysis_user_prompt_text）；須為有效登入使用者（不限 user_type）。
-- PUT /system-settings/person_analysis_user_prompt_text：寫入 person_analysis_user_prompt_text；僅 user_type 1／2。
+- GET /system-settings/person_analysis_user_prompt_text：取得 person_analysis_user_prompt_text（key=person_analysis_user_prompt_text）；須為有效登入使用者（不限 user_type）；必填 query `course_id`。
+- PUT /system-settings/person_analysis_user_prompt_text：寫入 person_analysis_user_prompt_text；僅 user_type 1／2；必填 query `course_id`。
 
 LLM API Key 請以環境變數設定（LLM_API_KEY 或 OPENAI_API_KEY），不再經本表。
 """
@@ -11,6 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
 from utils.taipei_time import now_taipei_iso
 from utils.db_schema import ACTIVE_DELETED_FILTER, USER_COURSE_RELATION_TABLE, USER_TABLE
@@ -20,11 +21,11 @@ from utils.supabase import get_supabase
 router = APIRouter(prefix="/system-settings", tags=["system-settings"])
 
 SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY = "person_analysis_user_prompt_text"
-SYSTEM_SETTING_COLUMNS = "system_setting_id, key, value"
+SYSTEM_SETTING_COLUMNS = "system_setting_id, course_id, key, value"
 
 
-def _user_type_for_active_person(person_id: str) -> Optional[int]:
-    """依 person_id 查 User_Course_Relation.user_type（先決之一列）；無列或非有效帳號時回傳 None。"""
+def _user_type_for_active_person(person_id: str, course_id: int) -> Optional[int]:
+    """依 person_id、course_id 查 User_Course_Relation.user_type；無列或非有效帳號時回傳 None。"""
     pid = (person_id or "").strip()
     if not pid:
         return None
@@ -34,6 +35,7 @@ def _user_type_for_active_person(person_id: str) -> Optional[int]:
             supabase.table(USER_COURSE_RELATION_TABLE)
             .select("user_type")
             .eq("person_id", pid)
+            .eq("course_id", course_id)
             .or_(ACTIVE_DELETED_FILTER)
             .order("course_user_id")
             .limit(1)
@@ -72,9 +74,11 @@ def _require_active_person(person_id: str) -> None:
         raise HTTPException(status_code=404, detail="找不到該使用者")
 
 
-def _require_developer_or_manager_for_person_analysis_prompt_write(person_id: str) -> None:
+def _require_developer_or_manager_for_person_analysis_prompt_write(
+    person_id: str, course_id: int
+) -> None:
     """變更作答弱點分析報告規則：僅開發者（1）或管理者（2）。"""
-    ut = _user_type_for_active_person(person_id)
+    ut = _user_type_for_active_person(person_id, course_id)
     if ut is None:
         raise HTTPException(status_code=404, detail="找不到該使用者")
     if ut not in (1, 2):
@@ -84,6 +88,7 @@ def _require_developer_or_manager_for_person_analysis_prompt_write(person_id: st
 class PersonAnalysisUserPromptTextResponse(BaseModel):
     """GET/PUT /system-settings/person_analysis_user_prompt_text 回應。"""
     system_setting_id: Optional[int] = None
+    course_id: Optional[int] = None
     person_analysis_user_prompt_text: Optional[str] = None
 
 
@@ -93,7 +98,7 @@ class PutPersonAnalysisUserPromptTextRequest(BaseModel):
 
 
 @router.get("/person_analysis_user_prompt_text", response_model=PersonAnalysisUserPromptTextResponse)
-def get_person_analysis_user_prompt_text_setting(person_id: PersonId):
+def get_person_analysis_user_prompt_text_setting(person_id: PersonId, course_id: CourseId):
     """取得 person_analysis_user_prompt_text（System_Setting key=person_analysis_user_prompt_text）。"""
     _require_active_person(person_id)
     try:
@@ -102,14 +107,16 @@ def get_person_analysis_user_prompt_text_setting(person_id: PersonId):
             supabase.table("System_Setting")
             .select(SYSTEM_SETTING_COLUMNS)
             .eq("key", SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY)
+            .eq("course_id", course_id)
             .limit(1)
             .execute()
         )
         if not resp.data or len(resp.data) == 0:
-            return PersonAnalysisUserPromptTextResponse()
+            return PersonAnalysisUserPromptTextResponse(course_id=course_id)
         row = resp.data[0]
         return PersonAnalysisUserPromptTextResponse(
             system_setting_id=row.get("system_setting_id"),
+            course_id=row.get("course_id"),
             person_analysis_user_prompt_text=row.get("value"),
         )
     except HTTPException:
@@ -118,13 +125,14 @@ def get_person_analysis_user_prompt_text_setting(person_id: PersonId):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _upsert_setting_and_get_row(supabase, key: str, value: str):
-    """依 key 新增或更新一筆 System_Setting，回傳該筆 row（dict）。"""
+def _upsert_setting_and_get_row(supabase, key: str, value: str, course_id: int):
+    """依 course_id + key 新增或更新一筆 System_Setting，回傳該筆 row（dict）。"""
     now = now_taipei_iso()
     resp = (
         supabase.table("System_Setting")
         .select("system_setting_id")
         .eq("key", key)
+        .eq("course_id", course_id)
         .limit(1)
         .execute()
     )
@@ -136,6 +144,7 @@ def _upsert_setting_and_get_row(supabase, key: str, value: str):
         }).eq("system_setting_id", row_id).execute()
     else:
         supabase.table("System_Setting").insert({
+            "course_id": course_id,
             "key": key,
             "value": value,
             "updated_at": now,
@@ -145,6 +154,7 @@ def _upsert_setting_and_get_row(supabase, key: str, value: str):
         supabase.table("System_Setting")
         .select(SYSTEM_SETTING_COLUMNS)
         .eq("key", key)
+        .eq("course_id", course_id)
         .limit(1)
         .execute()
     )
@@ -160,21 +170,27 @@ def put_person_analysis_user_prompt_text_setting(
         {"person_analysis_user_prompt_text": "string"},
     ),
     person_id: PersonId,
+    course_id: CourseId,
 ):
     """寫入 person_analysis_user_prompt_text（System_Setting key=person_analysis_user_prompt_text）。"""
-    _require_developer_or_manager_for_person_analysis_prompt_write(person_id)
+    _require_developer_or_manager_for_person_analysis_prompt_write(person_id, course_id)
     value_to_save = (body.person_analysis_user_prompt_text or "").strip()
     try:
         supabase = get_supabase()
         row = _upsert_setting_and_get_row(
-            supabase, SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY, value_to_save
+            supabase,
+            SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY,
+            value_to_save,
+            course_id,
         )
         if not row:
             return PersonAnalysisUserPromptTextResponse(
-                person_analysis_user_prompt_text=value_to_save or None
+                course_id=course_id,
+                person_analysis_user_prompt_text=value_to_save or None,
             )
         return PersonAnalysisUserPromptTextResponse(
             system_setting_id=row.get("system_setting_id"),
+            course_id=row.get("course_id"),
             person_analysis_user_prompt_text=row.get("value"),
         )
     except HTTPException:

@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Path as PathParam
 
+from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -223,14 +224,15 @@ def _person_analysis_user_prompt_display(raw: Optional[str]) -> str:
     return (raw or "").strip() or "（未提供）"
 
 
-def _fetch_person_analysis_user_prompt_text_from_setting() -> str:
-    """讀取 System_Setting key=person_analysis_user_prompt_text；失敗或無列時回傳空字串。"""
+def _fetch_person_analysis_user_prompt_text_from_setting(course_id: int) -> str:
+    """讀取 System_Setting key=person_analysis_user_prompt_text（依 course_id）；失敗或無列時回傳空字串。"""
     try:
         supabase = get_supabase()
         resp = (
             supabase.table("System_Setting")
             .select("value")
             .eq("key", SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY)
+            .eq("course_id", course_id)
             .limit(1)
             .execute()
         )
@@ -262,7 +264,9 @@ def _build_quiz_context_block(quizzes: list[dict]) -> str:
     return "\n\n".join(parts) if parts else ""
 
 
-def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> Optional[str]:
+def _generate_weakness_report_md(
+    quizzes: list[dict], api_key: str, course_id: int
+) -> Optional[str]:
     """呼叫 LLM；成功時只回傳 `choices[0].message.content` 原文（不 strip、不補前後文）。無題可分析、失敗或無內容時回傳 None。"""
     if not (quizzes or []):
         return None
@@ -283,7 +287,7 @@ def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> Optional[
             {ctx or "（無可分析內容）"}
             """).strip()
 
-    setting_prompt = _fetch_person_analysis_user_prompt_text_from_setting()
+    setting_prompt = _fetch_person_analysis_user_prompt_text_from_setting(course_id)
     user_content = USER_PROMPT_WEAKNESS_REPORT.format(
         person_analysis_user_prompt_text=_person_analysis_user_prompt_display(setting_prompt),
         material_md=material_md,
@@ -314,6 +318,7 @@ def _generate_weakness_report_md(quizzes: list[dict], api_key: str) -> Optional[
 @router.get("/quizzes/{person_id}", response_model=ListQuizzesByPersonResponse)
 def list_quizzes_by_person(
     caller_person_id: PersonId,
+    course_id: CourseId,
     person_id: str = PathParam(..., description="要查詢的 person_id"),
 ):
     """
@@ -323,7 +328,7 @@ def list_quizzes_by_person(
     無 API Key、無可分析題目、呼叫失敗或模型回 null 時亦為 null。
     弱點報告 user 訊息會併入 System_Setting `person_analysis_user_prompt_text`
     （與 `/system-settings/person_analysis_user_prompt_text` 同源）。
-    query 的 person_id 須與路徑 {person_id} 一致。
+    query 的 person_id 須與路徑 {person_id} 一致；必填 query course_id。
     """
     try:
         path_pid = (person_id or "").strip()
@@ -355,7 +360,9 @@ def list_quizzes_by_person(
         weakness_report: Optional[str] = None
         api_key = get_llm_api_key()
         if api_key:
-            weakness_report = _generate_weakness_report_md(to_json_safe(quizzes_with_answers), api_key)
+            weakness_report = _generate_weakness_report_md(
+                to_json_safe(quizzes_with_answers), api_key, course_id
+            )
         return ListQuizzesByPersonResponse(exams=data, count=len(data), weakness_report=weakness_report)
     except HTTPException:
         raise

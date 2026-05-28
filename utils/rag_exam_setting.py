@@ -29,19 +29,23 @@ def exam_rag_setting_key(request: Request) -> str:
     return RAG_EXAM_SETTING_KEY_LOCALHOST if is_localhost_request(request) else RAG_EXAM_SETTING_KEY_DEPLOY
 
 
-def fetch_exam_rag_id_from_settings(supabase, request: Request) -> tuple[str, int | None]:
+def fetch_exam_rag_id_from_settings(
+    supabase, request: Request, course_id: int | None = None
+) -> tuple[str, int | None]:
     """
     依連線讀取 System_Setting 中對應 key 的 value，解析為 rag_id。
+    course_id 若指定則一併篩選該課程之設定列。
     回傳 (實際使用的 key, rag_id)；無列或無效數字則 rag_id 為 None。
     """
     key = exam_rag_setting_key(request)
-    resp = (
+    q = (
         supabase.table("System_Setting")
         .select("value")
         .eq("key", key)
-        .limit(1)
-        .execute()
     )
+    if course_id is not None:
+        q = q.eq("course_id", course_id)
+    resp = q.limit(1).execute()
     if not resp.data or len(resp.data) == 0:
         return key, None
     raw = (resp.data[0].get("value") or "").strip()
@@ -178,7 +182,7 @@ def resolve_exam_content_rag_id(
                     if found:
                         return found, None
 
-    key, rid = fetch_exam_rag_id_from_settings(supabase, request)
+    key, rid = fetch_exam_rag_id_from_settings(supabase, request, course_id)
     if rid is not None and rid > 0:
         return rid, None
     return None, key
