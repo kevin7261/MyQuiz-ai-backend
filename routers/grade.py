@@ -52,7 +52,7 @@ from utils.media import (
     audio_media_type_for_suffix,
 )
 from utils.rag_faiss import process_zip_to_docs
-from utils.rag_stem import get_rag_stem_from_rag_id, instruction_from_rag_row
+from utils.rag_stem import get_rag_stem_from_rag_id, instruction_from_rag_row, transcript_from_row
 from utils.rag_transcript import (
     pick_audio_from_upload_zip,
     read_mp3_unit_transcript_from_upload_zip,
@@ -539,7 +539,7 @@ def _rag_llm_generate_quiz_impl(
             status_code=400,
             detail="該使用者尚未填寫 LLM API Key：請至個人設定填寫，或本機在 .env 設定 LLM_API_KEY／OPENAI_API_KEY",
         )
-    transcript_text = (unit_row.get("transcript") or "").strip()
+    transcript_text = transcript_from_row(unit_row)
     if not transcript_text:
         transcript_text = instruction_from_rag_row(row)
 
@@ -945,7 +945,7 @@ async def _enqueue_rag_llm_grade_job(
                 grade_unit_type = int(u0.get("unit_type") or 0)
             except (TypeError, ValueError):
                 grade_unit_type = 0
-            transcript_text = (u0.get("transcript") or "").strip()
+            transcript_text = transcript_from_row(u0)
     if not transcript_text:
         transcript_text = instruction_from_rag_row(row)
 
@@ -1378,11 +1378,7 @@ def rag_unit_text(
         )
 
     text_file_name = (row.get("text_file_name") or "").strip()
-    transcript = row.get("transcript") or ""
-    if isinstance(transcript, str):
-        transcript = transcript.strip()
-    else:
-        transcript = str(transcript).strip()
+    transcript = transcript_from_row(row)
 
     zip_folder = (row.get("folder_combination") or row.get("unit_name") or "").strip()
     if not transcript and zip_folder:

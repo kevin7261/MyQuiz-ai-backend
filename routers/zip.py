@@ -73,6 +73,7 @@ from utils.rag_course import (
     resolve_rag_tab_owner_person_id,
     select_without_course_id_if_needed,
 )
+from utils.rag_stem import transcript_from_row
 from utils.rag_exam_setting import is_localhost_request
 from utils.media import audio_media_type_for_suffix
 from utils.rag_transcript import (
@@ -1836,7 +1837,7 @@ def rag_tab_unit_mp3_file(
     media = audio_media_type_for_suffix(suffix)
     disp_name = Path(inner_path).name
     audio_b64 = base64.b64encode(contents).decode()
-    unit_transcript = (row.get("transcript") or "").strip()
+    unit_transcript = transcript_from_row(row)
     return RagUnitMp3FileResponse(
         rag_unit_id=rag_unit_id,
         rag_tab_id=tab,
@@ -1919,7 +1920,7 @@ def rag_tab_unit_youtube_url(
     yt_url = (row.get("youtube_url") or "").strip()
     if not yt_url:
         raise HTTPException(status_code=404, detail="該 YouTube 單元未記錄 youtube_url，請重新建置 RAG")
-    unit_transcript = (row.get("transcript") or "").strip()
+    unit_transcript = transcript_from_row(row)
     return RagUnitYoutubeUrlResponse(
         rag_unit_id=int(row["rag_unit_id"]),
         rag_tab_id=tab,

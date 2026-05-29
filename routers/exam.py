@@ -1124,6 +1124,14 @@ def _exam_llm_generate_quiz_impl(
             "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
             "rag_file_size, rag_chunk_size, rag_chunk_overlap"
         )
+        _cols_legacy_tr = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcription"
+        )
+        _cols_no_fc_legacy_tr = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcription"
+        )
         try:
             unit_q = _unit_q_execute(_cols_full)
         except APIError as e:
@@ -1132,10 +1140,16 @@ def _exam_llm_generate_quiz_impl(
                 raise
             if "transcript" in msg:
                 try:
-                    unit_q = _unit_q_execute(_cols_no_tr)
-                except APIError as e2:
-                    if e2.code == "42703" and "folder_combination" in (e2.message or "").lower():
-                        unit_q = _unit_q_execute(_cols_min)
+                    unit_q = _unit_q_execute(_cols_legacy_tr)
+                except APIError as e_legacy:
+                    if e_legacy.code == "42703" and "transcription" in (e_legacy.message or "").lower():
+                        try:
+                            unit_q = _unit_q_execute(_cols_no_tr)
+                        except APIError as e2:
+                            if e2.code == "42703" and "folder_combination" in (e2.message or "").lower():
+                                unit_q = _unit_q_execute(_cols_min)
+                            else:
+                                raise
                     else:
                         raise
             elif "folder_combination" in msg:
@@ -1143,7 +1157,13 @@ def _exam_llm_generate_quiz_impl(
                     unit_q = _unit_q_execute(_cols_no_fc)
                 except APIError as e2:
                     if e2.code == "42703" and "transcript" in (e2.message or "").lower():
-                        unit_q = _unit_q_execute(_cols_min)
+                        try:
+                            unit_q = _unit_q_execute(_cols_no_fc_legacy_tr)
+                        except APIError as e3:
+                            if e3.code == "42703" and "transcription" in (e3.message or "").lower():
+                                unit_q = _unit_q_execute(_cols_min)
+                            else:
+                                raise
                     else:
                         raise
             else:
@@ -1169,7 +1189,7 @@ def _exam_llm_generate_quiz_impl(
 
     transcript_text = ""
     if selected:
-        transcript_text = (selected.get("transcript") or "").strip()
+        transcript_text = transcript_from_row(selected)
     if not transcript_text:
         transcript_text = instruction_from_rag_row(rag_row)
 
@@ -1608,6 +1628,14 @@ async def exam_grade_submission(
             "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
             "rag_file_size, rag_chunk_size, rag_chunk_overlap"
         )
+        _gcols_legacy_tr = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcription"
+        )
+        _gcols_no_fc_legacy_tr = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcription"
+        )
         try:
             unit_sel = _grade_unit_execute(_gcols_full)
         except APIError as e:
@@ -1616,10 +1644,16 @@ async def exam_grade_submission(
                 raise
             if "transcript" in msg:
                 try:
-                    unit_sel = _grade_unit_execute(_gcols_no_tr)
-                except APIError as e2:
-                    if e2.code == "42703" and "folder_combination" in (e2.message or "").lower():
-                        unit_sel = _grade_unit_execute(_gcols_min)
+                    unit_sel = _grade_unit_execute(_gcols_legacy_tr)
+                except APIError as e_legacy:
+                    if e_legacy.code == "42703" and "transcription" in (e_legacy.message or "").lower():
+                        try:
+                            unit_sel = _grade_unit_execute(_gcols_no_tr)
+                        except APIError as e2:
+                            if e2.code == "42703" and "folder_combination" in (e2.message or "").lower():
+                                unit_sel = _grade_unit_execute(_gcols_min)
+                            else:
+                                raise
                     else:
                         raise
             elif "folder_combination" in msg:
@@ -1627,7 +1661,13 @@ async def exam_grade_submission(
                     unit_sel = _grade_unit_execute(_gcols_no_fc)
                 except APIError as e2:
                     if e2.code == "42703" and "transcript" in (e2.message or "").lower():
-                        unit_sel = _grade_unit_execute(_gcols_min)
+                        try:
+                            unit_sel = _grade_unit_execute(_gcols_no_fc_legacy_tr)
+                        except APIError as e3:
+                            if e3.code == "42703" and "transcription" in (e3.message or "").lower():
+                                unit_sel = _grade_unit_execute(_gcols_min)
+                            else:
+                                raise
                     else:
                         raise
             else:
@@ -1641,7 +1681,7 @@ async def exam_grade_submission(
                 exam_grade_unit_type = int(u0.get("unit_type") or 0)
             except (TypeError, ValueError):
                 exam_grade_unit_type = 0
-            transcript_for_unit = (u0.get("transcript") or "").strip()
+            transcript_for_unit = transcript_from_row(u0)
 
     rag_id_used: int | None = None
     rt_exam = (str(qrow.get("rag_tab_id") or "").strip())
