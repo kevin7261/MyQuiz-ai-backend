@@ -3,7 +3,7 @@ RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/followup：更新 Rag_Quiz.follow_up（body `followup` 預設 false；true 標記追問、false 取消）。
 - POST /rag/tab/unit/quiz/llm-generate：依 rag_quiz_id 出題（LLM）；選填 quiz_history_list 避免重複出題；unit_type 1 僅 RAG ZIP 向量檢索；2/3/4 以 transcription 純生成；其餘載 RAG ZIP 向量檢索。
 - POST /rag/tab/unit/quiz/llm-generate-db：同 llm-generate，唯 body 不包含 quiz_user_prompt_text，一律沿用 Rag_Quiz 列上既有值。
-- POST /rag/tab/unit/quiz/llm-generate-followup：接續出題；答不好追問弱點，答好則出新題；quiz_history_list 為先前問答（題幹＋作答）列表。
+- POST /rag/tab/unit/quiz/llm-generate-followup：接續出題；答不好追問弱點，答好則出新題；quiz_history_list 為先前問答（題幹＋作答）列表；出題後保留 answer_user_prompt_text、answer_content。
 - POST /rag/tab/unit/quiz/llm-generate-followup-db：同 llm-generate-followup，唯 body 不包含 quiz_user_prompt_text。
 - POST /rag/tab/unit/quiz/llm-grade：非同步 RAG+LLM 評分（body 以 rag_id 置頂；quiz_content 可空，自 Rag_Quiz 讀題幹）；answer_user_prompt_text 可空——空字串會寫入並覆蓋該列。回傳 202 + job_id，輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
 - POST /rag/tab/unit/quiz/llm-grade-db：同 llm-grade，唯 body 不包含 answer_user_prompt_text，評分與寫回一律沿用 Rag_Quiz.answer_user_prompt_text（不論請求）。
@@ -421,7 +421,6 @@ def _rag_llm_generate_quiz_impl(
     followup: bool,
     quiz_history_stems: list[str] | None = None,
     quiz_history_qa: list[QuizHistoryPair] | None = None,
-    clear_answer_fields: bool = True,
 ):
     supabase = get_supabase()
 
@@ -625,9 +624,6 @@ def _rag_llm_generate_quiz_impl(
             "follow_up": followup,
             "updated_at": qts,
         }
-        if clear_answer_fields:
-            quiz_update["answer_user_prompt_text"] = ""
-            quiz_update["answer_content"] = ""
         try:
             supabase.table("Rag_Quiz").update(quiz_update).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
         except Exception as e:
@@ -710,7 +706,6 @@ def rag_llm_generate_quiz(
         course_id=course_id,
         followup=False,
         quiz_history_stems=body.quiz_history_list,
-        clear_answer_fields=False,
     )
 
 
@@ -734,7 +729,7 @@ def rag_llm_generate_quiz_followup(
     Body 與 `llm-generate` 類似，但 `quiz_history_list` 為物件陣列，
     每項含 `quiz_content`、`answer_content`、`quiz_answer_reference`、`answer_critique`，一問一答一項。
     使用 `SYSTEM_PROMPT_QUIZ_FOLLOWUP`／`USER_PROMPT_COURSE_FOLLOWUP`。
-    出題成功後同樣更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=true；並清空 answer_*）。
+    出題成功後同樣更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=true；保留 answer_user_prompt_text、answer_content）。
     """
     return _rag_llm_generate_quiz_impl(
         rag_quiz_id=body.rag_quiz_id,
@@ -778,7 +773,6 @@ def rag_llm_generate_quiz_db_prompt(
         course_id=course_id,
         followup=False,
         quiz_history_stems=body.quiz_history_list,
-        clear_answer_fields=False,
     )
 
 
@@ -814,6 +808,7 @@ def rag_llm_generate_quiz_followup_db_prompt(
     """
     與 `llm-generate-followup` 相同，但請求不含 `quiz_user_prompt_text`，出題時一律使用
     Rag_Quiz 該列既有之 `quiz_user_prompt_text`。
+    出題後保留 answer_user_prompt_text、answer_content。
     """
     return _rag_llm_generate_quiz_impl(
         rag_quiz_id=body.rag_quiz_id,
