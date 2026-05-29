@@ -4,12 +4,12 @@ routers/grade.py 與 routers/exam.py 共用，不含任何 FastAPI 路由。
 
 檔案結構（由上而下）：
 1. 模型／檢索（及講義臨時向量）常數
-2. **LLM 批改 Prompt**（對齊 `quiz_generation`：`SYSTEM_PROMPT_GRADE`、`USER_PROMPT_GRADE_TRANSCRIPTION_COURSE`、`USER_PROMPT_GRADE_FAISS_COURSE`）
+2. **LLM 批改 Prompt**（對齊 `quiz_generation`：`SYSTEM_PROMPT_GRADE`、`USER_PROMPT_GRADE_TRANSCRIPT_COURSE`、`USER_PROMPT_GRADE_FAISS_COURSE`）
 3. `_grade_field_display`、LLM JSON 解析輔助、暫存清理、批改與 DB 寫回
 
 重要（維持行為時請留意）：
 - 批改 LLM 使用 `response_format=json_object`；模板須含「json」字樣。模型頂層 JSON **僅**含 `answer_critique`（純評語，無分數欄）；管線展開為 **`quiz_comments`** 後，**寫入 DB 之 `answer_critique` 為合併後純文字**（非 `{"quiz_comments":[…]}`）；記憶體 job `result` 仍含 `quiz_comments` 陣列供輪詢（**不依數值評分**）。
-- run_grade_job_background：transcription_grade 非空時不走向量庫，與有 FAISS 路徑互斥。
+- run_grade_job_background：transcript_grade 非空時不走向量庫，與有 FAISS 路徑互斥。
 - Rag_Quiz／Exam_Quiz 之 `answer_critique` 皆為評語純文字；不包含數值評分。
 """
 
@@ -56,7 +56,7 @@ GRADE_RAG_CHUNK_OVERLAP = 200
 # -----------------------------------------------------------------------------
 # Chat messages：
 #   role=system … SYSTEM_PROMPT_GRADE
-#   role=user … USER_PROMPT_GRADE_TRANSCRIPTION_COURSE 或 USER_PROMPT_GRADE_FAISS_COURSE；
+#   role=user … USER_PROMPT_GRADE_TRANSCRIPT_COURSE 或 USER_PROMPT_GRADE_FAISS_COURSE；
 #   其中 `{context_md}` 僅由逐字稿／向量檢索經 `_context_as_markdown_fenced` 產生，`{id_block}`、`quiz_*` 占位同一 `.format` 填入。
 #
 
@@ -84,7 +84,7 @@ SYSTEM_PROMPT_GRADE = textwrap.dedent("""
     - `answer_critique`：**物件**（頂層**僅**此鍵；**物件內**為 `quiz_comments`：Markdown 字串陣列，**與／或** `text`：Markdown 字串。**勿**出現鍵 `grade`、`quiz_grade`、`score`。）
     """).strip()
 
-USER_PROMPT_GRADE_TRANSCRIPTION_COURSE = textwrap.dedent("""
+USER_PROMPT_GRADE_TRANSCRIPT_COURSE = textwrap.dedent("""
     {id_block}## 必須遵守（最高優先）
 
     - 緊接於下的 **`## 出題 user prompt`**、**`## 作答 user prompt`** 兩節內文為本任務**最重要**之依據；與本訊息後段（題幹、學生作答、課程引用、**批改說明**）牴觸時，**以該兩節為準**。
@@ -274,9 +274,9 @@ def cleanup_grade_workspace(work_dir: Path) -> None:
 # 逐字稿純 LLM 批改（unit_type 2／3／4，不讀 RAG ZIP）
 # ---------------------------------------------------------------------------
 
-def run_grade_job_transcription_only(
+def run_grade_job_transcript_only(
     api_key: str,
-    transcription: str,
+    transcript: str,
     quiz_content: str,
     quiz_answer: str,
     *,
@@ -286,17 +286,17 @@ def run_grade_job_transcription_only(
     rag_quiz_id: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
-    無 RAG ZIP（unit_type 2／3／4）：system = SYSTEM_PROMPT_GRADE；user = USER_PROMPT_GRADE_TRANSCRIPTION_COURSE，
+    無 RAG ZIP（unit_type 2／3／4）：system = SYSTEM_PROMPT_GRADE；user = USER_PROMPT_GRADE_TRANSCRIPT_COURSE，
     其中課程逐字稿／全文經 `_context_as_markdown_fenced` 填入 `{context_md}`。
     回傳 (LLM 訊息原文, 解析後 JSON)。
 
-    quiz_user_prompt_text／answer_user_prompt_text：與 **USER_PROMPT_GRADE_TRANSCRIPTION_COURSE** 占位符同名，空則經 `_grade_field_display` 為「（未提供）」。
+    quiz_user_prompt_text／answer_user_prompt_text：與 **USER_PROMPT_GRADE_TRANSCRIPT_COURSE** 占位符同名，空則經 `_grade_field_display` 為「（未提供）」。
     """
-    ts = (transcription or "").strip()
+    ts = (transcript or "").strip()
     if not ts:
-        raise ValueError("批改用 transcription 未設定")
+        raise ValueError("批改用 transcript 未設定")
 
-    # 關聯識別 Markdown（格式須與 run_grade_job 一致；供 USER_PROMPT_GRADE_TRANSCRIPTION_COURSE）
+    # 關聯識別 Markdown（格式須與 run_grade_job 一致；供 USER_PROMPT_GRADE_TRANSCRIPT_COURSE）
     id_lines: list[str] = []
     if exam_quiz_id is not None and exam_quiz_id > 0:
         id_lines.append(f"- **exam_quiz_id**：`{exam_quiz_id}`")
@@ -306,7 +306,7 @@ def run_grade_job_transcription_only(
 
     context_md = _context_as_markdown_fenced(ts)
     # system／user 與 services.quiz_generation 出題路徑一致：規範在 system；題目／欄位／課程內文在 user。
-    user_msg = USER_PROMPT_GRADE_TRANSCRIPTION_COURSE.format(
+    user_msg = USER_PROMPT_GRADE_TRANSCRIPT_COURSE.format(
         id_block=id_block,
         quiz_user_prompt_text=_grade_field_display(quiz_user_prompt_text),
         answer_user_prompt_text=_grade_field_display(answer_user_prompt_text),
@@ -405,7 +405,7 @@ def run_grade_job(
     context_text = "\n\n".join([d.page_content for d in docs])
     context_md = _context_as_markdown_fenced(context_text)
 
-    # 關聯識別 Markdown（格式須與 run_grade_job_transcription_only 一致；供 USER_PROMPT_GRADE_FAISS_COURSE）
+    # 關聯識別 Markdown（格式須與 run_grade_job_transcript_only 一致；供 USER_PROMPT_GRADE_FAISS_COURSE）
     id_lines: list[str] = []
     if exam_quiz_id is not None and exam_quiz_id > 0:
         id_lines.append(f"- **exam_quiz_id**：`{exam_quiz_id}`")
@@ -463,20 +463,20 @@ def run_grade_job_background(
     exam_quiz_id: int | None = None,
     rag_quiz_id: int | None = None,
     unit_type: int = 0,
-    transcription_grade: str | None = None,
+    transcript_grade: str | None = None,
     quiz_user_prompt_text: str = "",
 ) -> None:
     """
     通用背景評分：執行評分、可選寫入 DB、結果存 results_store。
     insert_answer_fn(result_dict, quiz_answer) 寫入 DB 並回傳 (id_key, id_val) 或 None。
-    transcription_grade 非空時改走逐字稿純 LLM 批改（不讀 RAG ZIP）。
+    transcript_grade 非空時改走逐字稿純 LLM 批改（不讀 RAG ZIP）。
     """
     try:
         # 與 unit_type 2/3/4 批改一致：有逐字稿字串則不開 ref.zip 向量流程（避免重複讀 ZIP）。
-        if (transcription_grade or "").strip():
-            _, llm_json = run_grade_job_transcription_only(
+        if (transcript_grade or "").strip():
+            _, llm_json = run_grade_job_transcript_only(
                 api_key,
-                transcription_grade.strip(),
+                transcript_grade.strip(),
                 quiz_content,
                 quiz_answer,
                 quiz_user_prompt_text=quiz_user_prompt_text,

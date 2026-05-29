@@ -5,7 +5,7 @@ Embeddings 由呼叫端傳入 API key，不從環境變數讀取。
 unit_type（與 Rag_Unit.unit_type／POST /rag/tab/build-rag-zip 之 unit_types 對齊）：
   0／1：Office／PDF＋Markdown
   2／4：僅 Markdown（.md）
-  3：音訊＋文字檔（逐字稿來自文字檔內容）
+  3：恰好一個音訊檔＋一個文字檔（逐字稿來自文字檔內容，缺一不可）
 """
 
 import io
@@ -165,7 +165,7 @@ def _empty_docs_user_message(unit_type: int) -> str:
     if ut in (UNIT_TYPE_TEXT, UNIT_TYPE_YOUTUBE):
         return "ZIP 內無可讀 .md（文字／YouTube 單元僅使用 Markdown）"
     if ut == UNIT_TYPE_MP3:
-        return "ZIP 內無文字檔（.md／.txt／.doc／.docx）；音訊單元須附逐字稿文字檔"
+        return "ZIP 內無文字檔（.md／.txt／.doc／.docx）；音訊單元須附一個非空逐字稿文字檔"
     return "ZIP 內無可讀文件（支援：.pdf .doc .docx .ppt .pptx .md）"
 
 
@@ -177,7 +177,7 @@ def process_zip_to_docs(
 
     - 0／1：.pdf, .doc, .docx, .ppt, .pptx, .md
     - 2／4：僅 .md
-    - 3：音訊＋文字檔（逐字稿來自文字檔內容）
+    - 3：恰好一個音訊檔＋一個文字檔（逐字稿來自文字檔內容，缺一不可）
 
     自動過濾 __MACOSX、.DS_Store，並修正 cp437/big5 編碼。
     """

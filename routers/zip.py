@@ -8,7 +8,7 @@ ZIP 與 RAG 相關 API 模組。
 - PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
 - PUT /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除 Rag 及其 Rag_Unit，並刪除儲存（須傳 query person_id）
 - POST /rag/tab/upload-zip：上傳 ZIP（須先 tab/create；亦可改用 tab/create-upload-zip 一次完成）
-- POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名；`.md`/`.txt` 內容 UTF-8 原文寫入 Rag_Unit.transcription，含 Markdown）；可選 body.build_faiss 覆寫；**rag_chunk_size／rag_chunk_overlap** 為全批預設，**rag_chunk_sizes／rag_chunk_overlaps**（逗號字串或 JSON 整數陣列）可與任務同序逐段覆寫；**unit_names**（逗號字串或 JSON 字串陣列）同序非空段覆寫 Rag_Unit.unit_name（顯示名）；**folder_combination** 恒為 repack ZIP 檔名 stem 寫入 DB（多資料夾為 ``folder1/tfolder2``，非底線 ``_``）；**unit_type≠1** 時寫入／回傳之 rag_chunk_size／rag_chunk_overlap 為 0；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
+- POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名；`.md`/`.txt` 內容 UTF-8 原文寫入 Rag_Unit.transcript，含 Markdown）；可選 body.build_faiss 覆寫；**rag_chunk_size／rag_chunk_overlap** 為全批預設，**rag_chunk_sizes／rag_chunk_overlaps**（逗號字串或 JSON 整數陣列）可與任務同序逐段覆寫；**unit_names**（逗號字串或 JSON 字串陣列）同序非空段覆寫 Rag_Unit.unit_name（顯示名）；**folder_combination** 恒為 repack ZIP 檔名 stem 寫入 DB（多資料夾為 ``folder1/tfolder2``，非底線 ``_``）；**unit_type≠1** 時寫入／回傳之 rag_chunk_size／rag_chunk_overlap 為 0；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
 - PUT /rag/tab/quiz/delete/{rag_quiz_id}：依 rag_quiz_id 軟刪除 Rag_Quiz（deleted=true；須為該列 person_id）
 - PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
 - GET /rag/tab/unit/mp3-file：query rag_tab_id、rag_unit_id（**不需** query person_id；後端依 rag_tab_id 自 Rag 解析擁有者）；僅 unit_type=3 時回傳音訊（優先該單元 **repack** ZIP；repack 缺漏時改讀該 tab 之 upload ZIP，與 GET /rag/unit/mp3-file 相同語意）
@@ -250,7 +250,7 @@ def _rag_unit_default_row(
     repack_file_name: str = "",
     rag_file_name: str = "",
     rag_file_size: float = 0.0,
-    transcription: str = "",
+    transcript: str = "",
     text_file_name: str = "",
     mp3_file_name: str = "",
     youtube_url: str = "",
@@ -271,7 +271,7 @@ def _rag_unit_default_row(
         "repack_file_name": repack_file_name,
         "rag_file_name": rag_file_name,
         "rag_file_size": rag_file_size,
-        "transcription": transcription,
+        "transcript": transcript,
         "text_file_name": text_file_name,
         "mp3_file_name": mp3_file_name,
         "youtube_url": youtube_url,
@@ -398,7 +398,7 @@ class RagUnitMp3FileResponse(BaseModel):
     audio_base64: str
     media_type: str
     filename: str
-    transcription: str = ""
+    transcript: str = ""
 
 
 class RagUnitYoutubeUrlResponse(BaseModel):
@@ -406,7 +406,7 @@ class RagUnitYoutubeUrlResponse(BaseModel):
     rag_unit_id: int
     rag_tab_id: str
     youtube_url: str
-    transcription: str = ""
+    transcript: str = ""
 
 
 class CreateRagRequest(BaseModel):
@@ -425,7 +425,7 @@ class UpdateRagUnitNameRequest(BaseModel):
 
 class PackRequest(BaseModel):
     """
-    rag_tab_id、person_id（同 public.Rag）→ unit_list → Rag_Unit 相關欄（unit_name、unit_type、transcription、rag_chunk_*）。
+    rag_tab_id、person_id（同 public.Rag）→ unit_list → Rag_Unit 相關欄（unit_name、unit_type、transcript、rag_chunk_*）。
     rag_chunk_size／rag_chunk_overlap：全批預設（寫入 Rag_Unit、建 FAISS 時用）。
     rag_chunk_sizes／rag_chunk_overlaps：可選逗號字串或整數陣列（JSON），與 unit_list 解出之任務數同序；某段空白則該段用 rag_chunk_size／rag_chunk_overlap。
     unit_names：可選逗號字串或字串陣列（JSON），與任務同序；某段 strip 後非空則覆寫該單元 Rag_Unit.unit_name（顯示名），空白則與 folder_combination 相同（皆為檔名 stem）。
@@ -438,7 +438,7 @@ class PackRequest(BaseModel):
         description="可選；逗號字串或 JSON 字串陣列，與 packed 任務同序；該段 strip 後非空則覆寫 Rag_Unit.unit_name（顯示名），空段則與 folder_combination 相同（檔名 stem）",
     )
     unit_types: str = ""
-    transcriptions: list[str] | None = Field(
+    transcripts: list[str] | None = Field(
         default=None,
         description="可選；與 unit_list 逗號分段對齊；非空時覆寫逐字稿全文",
     )
@@ -604,8 +604,8 @@ def _build_one_rag_zip_output_item(
     將單一 repack 單元上傳至 repack。
     do_rag 為 True：另以 FAISS 建 RAG ZIP 上傳至 rag。
     do_rag 為 False 且 unit_type 為 2/3/4：repack 照舊，rag 區上傳逐字稿之 transcript.md ZIP（rag_mode=transcript_md），output 含 transcript_plain 與對應欄位。
-    若請求漏傳對齊的 **unit_types**（導致 unit_type==0），會嘗試由單元 ZIP 推斷：有音訊→3；否則恰一文字檔→2（**完整保留 .md 原文**）。YouTube（4）須明確傳 unit_types。
-    do_rag 為 False 且無法推斷時：將與 repack 相同內容複製至 rag（rag_mode=repack_copy），transcription 為空。
+    若請求漏傳對齊的 **unit_types**（導致 unit_type==0），會嘗試由單元 ZIP 推斷：恰好一音訊＋一文字檔→3；否則恰一文字檔→2（**完整保留 .md 原文**）。YouTube（4）須明確傳 unit_types。
+    do_rag 為 False 且無法推斷時：將與 repack 相同內容複製至 rag（rag_mode=repack_copy），transcript 為空。
     註：bucket 內檔名仍為 stem_rag.zip；請看 output.rag_mode。
     回傳與 build-rag-zip outputs[] 單筆相同結構；失敗時含 rag_error。
     每筆皆含 **folder_combination**（檔名 stem，寫入 Rag_Unit.folder_combination）、**unit_name**（顯示名，可經請求 unit_names 覆寫）、rag_chunk_size／rag_chunk_overlap（本任務實際使用，供寫入 Rag_Unit）。
@@ -813,7 +813,7 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, course_id: int, res
             unit_type_val = RAG_UNIT_TYPE_DEFAULT
         if unit_type_val < 0 or unit_type_val > 4:
             unit_type_val = RAG_UNIT_TYPE_DEFAULT
-        unit_transcription = ""
+        unit_transcript = ""
         text_fn = ""
         mp3_fn = ""
         yt_url = ""
@@ -821,7 +821,7 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, course_id: int, res
             tp_raw = output.get("transcript_plain")
             tp = tp_raw if isinstance(tp_raw, str) else ("" if tp_raw is None else str(tp_raw))
             if tp.strip():
-                unit_transcription = tp
+                unit_transcript = tp
             if unit_type_val == RAG_UNIT_TYPE_TEXT:
                 text_fn = output.get("text_file_name") or ""
             if unit_type_val == RAG_UNIT_TYPE_MP3:
@@ -850,7 +850,7 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, course_id: int, res
             repack_file_name=output.get("repack_filename", ""),
             rag_file_name=output.get("rag_filename", ""),
             rag_file_size=float(output.get("file_size") or 0),
-            transcription=unit_transcription,
+            transcript=unit_transcript,
             text_file_name=text_fn,
             mp3_file_name=mp3_fn,
             youtube_url=yt_url,
@@ -1370,7 +1370,7 @@ def build_rag_zip(
             "unit_list": "folder1",
             "unit_names": "",
             "unit_types": "",
-            "transcriptions": None,
+            "transcripts": None,
             "rag_chunk_size": 1000,
             "rag_chunk_overlap": 200,
             "rag_chunk_sizes": "",
@@ -1391,8 +1391,8 @@ def build_rag_zip(
     可選 query **repack_only=true**：強制全部 unit 不建 FAISS；**不影響** 2／3／4 之逐字稿 rag ZIP 行為。
     可選 body **build_faiss**：`false` 同 repack_only；`true` 強制允許 FAISS（仍需 unit_type==1 觸發）；省略時依 user_type 判定。
     LLM API Key 僅在「最終會建 FAISS」（do_rag 為 True）時必填（依 person_id 自 User 表取得）。
-    body.unit_types 為選填，與 unit_list 逗號分段對齊；**未傳或該段為 0** 時會依單元 ZIP 推斷（僅一個 .md 等→2、有音訊→3；**YouTube 仍須明確傳 4**）。寫入各 Rag_Unit.unit_type。**推斷為 2** 且來源為 `.md`/`.txt` 時 **Rag_Unit.transcription** 為檔案 UTF-8 全文（含 Markdown）。
-    body.transcriptions 為選填，與 unit_list 逗號分段同序；索引 i 之字串若非空白，覆寫該單元逐字稿（Markdown UTF-8 原樣），仍自 ZIP 擷取 text_file_name／mp3_file_name／youtube_url。
+    body.unit_types 為選填，與 unit_list 逗號分段對齊；**未傳或該段為 0** 時會依單元 ZIP 推斷（恰一音訊＋一文字檔→3、僅一個 .md 等→2；**YouTube 仍須明確傳 4**）。寫入各 Rag_Unit.unit_type。**推斷為 2** 且來源為 `.md`/`.txt` 時 **Rag_Unit.transcript** 為檔案 UTF-8 全文（含 Markdown）。
+    body.transcripts 為選填，與 unit_list 逗號分段同序；索引 i 之字串若非空白，覆寫該單元逐字稿（Markdown UTF-8 原樣），仍自 ZIP 擷取 text_file_name／mp3_file_name／youtube_url。
     body.unit_names 為選填，與 packed 任務同序（逗號字串或 JSON 字串陣列）；該段非空白時覆寫串流 output.unit_name 與寫入之 Rag_Unit.unit_name（顯示名）。output.folder_combination 恒為 repack ZIP 檔名 stem（寫入 Rag_Unit.folder_combination；多資料夾為 ``a/tb/tc``）。
 
     **回應為 NDJSON 串流**（`application/x-ndjson`），請以 `fetch` 讀取 `response.body`，勿使用單次 `response.json()`。
@@ -1403,7 +1403,7 @@ def build_rag_zip(
     事件列舉（每行一個物件）：
     - `{"type":"start","total":N,"source_rag_tab_id":"...","unit_list":"...","user_type":int,"build_faiss_request":bool|null,"repack_only":bool,"allow_faiss":bool}`（allow_faiss=各 unit 是否可建 FAISS，仍需 unit_type==1 才實際建）
     - `{"type":"building","index":i,"total":N,"completed_before":i-1,"filename":"..."}`
-    - `{"type":"unit",...,"output":{...}}`：output 含 **folder_combination**（單元 repack ZIP 檔名 stem，寫入 Rag_Unit.folder_combination；多資料夾為 ``folder1/tfolder2``）、**unit_name**（顯示名，可經 unit_names 覆寫）、rag_mode（`faiss`＝向量庫；`transcript_md`＝逐字稿 md ZIP；`repack_copy`＝與 repack 同內容複製）、`transcript_plain`（鍵名沿用舊版；**unit_type=2 且來源為 .md/.txt 時為檔案 UTF-8 全文，Markdown 原樣**，與寫入 Rag_Unit.transcription 一致）；**text_file_name** 僅 **unit_type=2** 有值（來源文字檔檔名）；**mp3_file_name** 僅 3；**youtube_url** 僅 4；**rag_chunk_size**、**rag_chunk_overlap**（本任務實際使用，與 Rag_Unit 一致）；rag_filename（物件鍵仍為 *_rag.zip）
+    - `{"type":"unit",...,"output":{...}}`：output 含 **folder_combination**（單元 repack ZIP 檔名 stem，寫入 Rag_Unit.folder_combination；多資料夾為 ``folder1/tfolder2``）、**unit_name**（顯示名，可經 unit_names 覆寫）、rag_mode（`faiss`＝向量庫；`transcript_md`＝逐字稿 md ZIP；`repack_copy`＝與 repack 同內容複製）、`transcript_plain`（鍵名沿用舊版；**unit_type=2 且來源為 .md/.txt 時為檔案 UTF-8 全文，Markdown 原樣**，與寫入 Rag_Unit.transcript 一致）；**text_file_name** 僅 **unit_type=2** 有值（來源文字檔檔名）；**mp3_file_name** 僅 3；**youtube_url** 僅 4；**rag_chunk_size**、**rag_chunk_overlap**（本任務實際使用，與 Rag_Unit 一致）；rag_filename（物件鍵仍為 *_rag.zip）
     - `{"type":"complete","success":bool,"total","built_ok","built_failed","source_rag_tab_id","unit_list","outputs"}`
 
     串流階段 HTTP 狀態碼固定 **200**；請以最後一則 `type===complete` 的 `success` 判斷整批成敗。
@@ -1507,7 +1507,7 @@ def build_rag_zip(
                 )
                 ut = unit_types_per_task[idx]
                 t_cs, t_co = chunk_pairs[idx]
-                ov_list = body.transcriptions or []
+                ov_list = body.transcripts or []
                 transcript_override = ov_list[idx] if idx < len(ov_list) else None
                 item = _build_one_rag_zip_output_item(
                     body,
@@ -1713,9 +1713,9 @@ def rag_tab_unit_mp3_file(
     def fetch_mp3_unit_row(*, include_folder_combination: bool):
         def build(with_course_filter: bool):
             base_cols = (
-                "rag_unit_id, rag_tab_id, unit_name, folder_combination, unit_type, deleted, repack_file_name, transcription, course_id"
+                "rag_unit_id, rag_tab_id, unit_name, folder_combination, unit_type, deleted, repack_file_name, transcript, course_id"
                 if include_folder_combination
-                else "rag_unit_id, rag_tab_id, unit_name, unit_type, deleted, repack_file_name, transcription, course_id"
+                else "rag_unit_id, rag_tab_id, unit_name, unit_type, deleted, repack_file_name, transcript, course_id"
             )
             cols = select_without_course_id_if_needed("Rag_Unit", base_cols, with_course_filter)
             q = (
@@ -1836,14 +1836,14 @@ def rag_tab_unit_mp3_file(
     media = audio_media_type_for_suffix(suffix)
     disp_name = Path(inner_path).name
     audio_b64 = base64.b64encode(contents).decode()
-    unit_transcription = (row.get("transcription") or "").strip()
+    unit_transcript = (row.get("transcript") or "").strip()
     return RagUnitMp3FileResponse(
         rag_unit_id=rag_unit_id,
         rag_tab_id=tab,
         audio_base64=audio_b64,
         media_type=media,
         filename=disp_name,
-        transcription=unit_transcription,
+        transcript=unit_transcript,
     )
 
 
@@ -1875,7 +1875,7 @@ def rag_tab_unit_youtube_url(
     def build_youtube_sel(with_course_filter: bool):
         cols = select_without_course_id_if_needed(
             "Rag_Unit",
-            "rag_unit_id, rag_tab_id, unit_type, youtube_url, transcription, deleted, course_id",
+            "rag_unit_id, rag_tab_id, unit_type, youtube_url, transcript, deleted, course_id",
             with_course_filter,
         )
         q = (
@@ -1919,12 +1919,12 @@ def rag_tab_unit_youtube_url(
     yt_url = (row.get("youtube_url") or "").strip()
     if not yt_url:
         raise HTTPException(status_code=404, detail="該 YouTube 單元未記錄 youtube_url，請重新建置 RAG")
-    unit_transcription = (row.get("transcription") or "").strip()
+    unit_transcript = (row.get("transcript") or "").strip()
     return RagUnitYoutubeUrlResponse(
         rag_unit_id=int(row["rag_unit_id"]),
         rag_tab_id=tab,
         youtube_url=yt_url,
-        transcription=unit_transcription,
+        transcript=unit_transcript,
     )
 
 

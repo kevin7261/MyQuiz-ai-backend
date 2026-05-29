@@ -24,16 +24,17 @@ from utils.supabase import get_supabase
 
 
 # ---------------------------------------------------------------------------
-# Rag 表查詢（含 transcription 欄位相容）
+# Rag 表查詢（含 transcript 欄位相容）
 # ---------------------------------------------------------------------------
 
-def select_rag_row_with_transcription_fallback(supabase: Any, rag_id: int) -> Any:
+def select_rag_row_with_transcript_fallback(supabase: Any, rag_id: int) -> Any:
     """讀取 public.Rag；SELECT 欄位順序同 public.Rag DDL。缺欄（42703）時依序降級。"""
     candidates = (
         RAG_SELECT_COLUMNS,
         RAG_SELECT_COLUMNS_NO_FILE_METADATA,
         RAG_SELECT_COLUMNS_LEGACY,
         RAG_SELECT_COLUMNS_LEGACY_NO_FILE_METADATA,
+        "rag_id, rag_tab_id, transcript",
         "rag_id, rag_tab_id, transcription",
         "rag_id, rag_tab_id",
     )
@@ -52,7 +53,8 @@ def select_rag_row_with_transcription_fallback(supabase: Any, rag_id: int) -> An
             last_err = e
             msg = (e.message or "").lower()
             if e.code == "42703" and any(
-                x in msg for x in ("course_id", "file_metadata", "person_id", "tab_name", "transcription")
+                x in msg
+                for x in ("course_id", "file_metadata", "person_id", "tab_name", "transcript", "transcription")
             ):
                 continue
             raise

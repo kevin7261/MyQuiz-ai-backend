@@ -202,6 +202,12 @@ def pick_audio_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[byte
             candidates.append((raw, dec, suf))
 
         candidates.sort(key=lambda x: x[1])
+        if len(candidates) > 1:
+            names = ", ".join(d for _, d, _ in candidates[:5])
+            more = f" 等共 {len(candidates)} 個" if len(candidates) > 5 else ""
+            raise ValueError(
+                f"於資料夾「{fn}」下僅允許**一個**音訊檔，目前有 {len(candidates)} 個：{names}{more}"
+            )
         if not candidates:
             has_text = any(
                 path_has_folder_segment(dec, fn) and _is_transcript_text_path(dec)
@@ -327,8 +333,8 @@ def read_supplementary_text_from_youtube_unit(zip_bytes: bytes, folder_name: str
 
 def read_mp3_unit_transcript_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[str, str]:
     """
-    unit_type=3 資料夾：至多一個文字檔（與音訊並存）；若有則回傳全文作為逐字稿。
-    回傳 (transcript, text_file_name)；無文字檔時為 ("", "")。
+    unit_type=3 資料夾：須恰好一個文字檔（與音訊並存）；回傳全文作為逐字稿。
+    回傳 (transcript, text_file_name)；無文字檔或內容為空時拋 ValueError。
     """
     fn = (folder_name or "").strip()
     if not fn:
@@ -346,7 +352,10 @@ def read_mp3_unit_transcript_from_upload_zip(zip_bytes: bytes, folder_name: str)
             text_files.append((raw, dec))
         text_files.sort(key=lambda x: x[1])
         if not text_files:
-            return "", ""
+            raise ValueError(
+                f"於資料夾「{fn}」下找不到逐字稿文字檔"
+                "（unit_type=3 須一個音訊檔與一個 .md／.txt／.doc／.docx）"
+            )
         if len(text_files) > 1:
             names = ", ".join(d for _, d in text_files[:5])
             more = f" 等共 {len(text_files)} 個" if len(text_files) > 5 else ""
@@ -356,6 +365,8 @@ def read_mp3_unit_transcript_from_upload_zip(zip_bytes: bytes, folder_name: str)
         raw, dec = text_files[0]
         raw_b = z.read(raw)
         text = _decode_transcript_file_bytes(raw_b, Path(dec).suffix.lower()) or ""
+        if not text.strip():
+            raise ValueError(f"{Path(dec).name} 內容為空（unit_type=3 逐字稿不可為空）")
         return text, Path(dec).name
 
 
@@ -429,10 +440,10 @@ def _audio_members_in_zip(z: zipfile.ZipFile) -> list[tuple[str, str, str]]:
 def infer_unit_type_when_unspecified(declared_unit_type: int, zip_bytes: bytes) -> int:
     """
     POST /rag/tab/build-rag-zip：若請求未帶對齊的 unit_types，`declared_unit_type` 會是 0。
-    此時 Rag_Unit.transcription **不會**寫入（僅複製 ZIP），易被誤以為「沒存 MD」。
+    此時 Rag_Unit.transcript **不會**寫入（僅複製 ZIP），易被誤以為「沒存 MD」。
 
     規則（僅在 declared_unit_type == 0 時推斷；已明確傳 2／3／4 則不覆寫）：
-    - 有音訊檔 → 3（與使用者明確選 mp3 單元一致）。
+    - 恰好一個音訊檔且恰好一個文字檔（內容非空）→ 3（MP3 單元須音訊＋逐字稿）。
     - 否則若 ZIP 內**恰好一個**可辨識之文字檔（.md／.txt／…）→ 2，逐字稿以檔案 UTF-8 **原文**寫入 DB（Markdown 保留）。
 
     **不**自 0 推成 4（YouTube）；請明確傳 unit_types 分段含 4，否則單檔連結檔易被誤當教材 MD。
@@ -445,8 +456,17 @@ def infer_unit_type_when_unspecified(declared_unit_type: int, zip_bytes: bytes) 
         return d
     try:
         with zipfile.ZipFile(BytesIO(zip_bytes), "r") as z:
-            if _audio_members_in_zip(z):
-                return 3
+            aud = _audio_members_in_zip(z)
+            text_rows = _transcript_text_members_in_zip(z)
+            if len(aud) == 1 and len(text_rows) == 1:
+                raw, dec = text_rows[0]
+                raw_b = z.read(raw)
+                suf = Path(dec).suffix.lower()
+                text = _decode_transcript_file_bytes(raw_b, suf) or ""
+                if text.strip():
+                    return 3
+            if aud:
+                return 0
             text_rows = _transcript_text_members_in_zip(z)
             if len(text_rows) != 1:
                 return 0
@@ -477,7 +497,7 @@ def _extract_transcript_type2(z: zipfile.ZipFile, out: dict[str, str]) -> dict[s
         )
     raw, dec = text_rows[0]
     raw_b = z.read(raw)
-    # 寫入 DB／Rag_Unit.transcription 時保留檔案原文（含首尾換行與 MD 語法），勿 .strip() 整份。
+    # 寫入 DB／Rag_Unit.transcript 時保留檔案原文（含首尾換行與 MD 語法），勿 .strip() 整份。
     text = _decode_transcript_file_bytes(raw_b, Path(dec).suffix.lower()) or ""
     if not text.strip():
         raise ValueError(f"{Path(dec).name} 內容為空")
@@ -487,7 +507,7 @@ def _extract_transcript_type2(z: zipfile.ZipFile, out: dict[str, str]) -> dict[s
 
 
 def _extract_transcript_type3(z: zipfile.ZipFile, out: dict[str, str]) -> dict[str, str]:
-    """unit_type=3（音訊）：至少一個音訊檔，可附一個文字檔（可選）；逐字稿來自文字檔內容（若有）。"""
+    """unit_type=3（音訊）：恰好一個音訊檔與一個文字檔（逐字稿）；缺一不可。"""
     aud = _audio_members_in_zip(z)
     if not aud:
         raise ValueError(
@@ -495,7 +515,17 @@ def _extract_transcript_type3(z: zipfile.ZipFile, out: dict[str, str]) -> dict[s
             + ", ".join(sorted(_AUDIO_EXTS))
             + "）"
         )
+    if len(aud) > 1:
+        raise ValueError(
+            "unit_type=3 須恰好一個音訊檔，目前有 "
+            f"{len(aud)} 個："
+            + ", ".join(d for _, d, _ in aud[:5])
+        )
     text_rows = _transcript_text_members_in_zip(z)
+    if not text_rows:
+        raise ValueError(
+            "unit_type=3 須附一個逐字稿文字檔（.md／.txt／.doc／.docx）"
+        )
     if len(text_rows) > 1:
         raise ValueError(
             "unit_type=3 僅允許一個文字檔，目前有 "
@@ -504,12 +534,13 @@ def _extract_transcript_type3(z: zipfile.ZipFile, out: dict[str, str]) -> dict[s
         )
     _, dec, _ = aud[0]
     out["mp3_file_name"] = Path(dec).name
-    if text_rows:
-        raw, text_dec = text_rows[0]
-        raw_b = z.read(raw)
-        text = _decode_transcript_file_bytes(raw_b, Path(text_dec).suffix.lower()) or ""
-        out["transcript"] = text
-        out["text_file_name"] = Path(text_dec).name
+    raw, text_dec = text_rows[0]
+    raw_b = z.read(raw)
+    text = _decode_transcript_file_bytes(raw_b, Path(text_dec).suffix.lower()) or ""
+    if not text.strip():
+        raise ValueError(f"{Path(text_dec).name} 內容為空（unit_type=3 逐字稿不可為空）")
+    out["transcript"] = text
+    out["text_file_name"] = Path(text_dec).name
     return out
 
 
@@ -549,7 +580,7 @@ def extract_transcript_for_rag_build(zip_bytes: bytes, unit_type: int) -> dict[s
     """
     自 build-rag-zip 產出之「單元小 ZIP」擷取逐字稿與 Rag_Unit 附帶欄位。
     回傳 transcript、text_file_name、mp3_file_name、youtube_url（非適用之欄位為空字串）。
-    unit_type：2=文字、3=音訊（至少一個音訊＋一個文字檔）、4=YouTube（恰好一個文字檔，第一行 YouTube URL，第二行起逐字稿）。
+    unit_type：2=文字、3=音訊（恰好一個音訊＋一個文字檔逐字稿）、4=YouTube（恰好一個文字檔，第一行 YouTube URL，第二行起逐字稿）。
     """
     out: dict[str, str] = {
         "transcript": "",

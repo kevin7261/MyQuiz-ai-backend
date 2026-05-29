@@ -44,7 +44,7 @@ RAG_SELECT_COLUMNS_LEGACY_NO_FILE_METADATA = (
 RAG_UNIT_SELECT_COLUMNS = (
     "rag_unit_id, rag_tab_id, person_id, course_id, unit_name, folder_combination, unit_type, "
     "repack_file_name, rag_file_name, rag_file_size, rag_chunk_size, rag_chunk_overlap, "
-    "transcription, text_file_name, mp3_file_name, youtube_url, deleted, updated_at, created_at"
+    "transcript, text_file_name, mp3_file_name, youtube_url, deleted, updated_at, created_at"
 )
 
 RAG_QUIZ_SELECT_COLUMNS = (

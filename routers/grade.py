@@ -1,7 +1,7 @@
 """
 RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/followup：更新 Rag_Quiz.follow_up（body `followup` 預設 false；true 標記追問、false 取消）。
-- POST /rag/tab/unit/quiz/llm-generate：依 rag_quiz_id 出題（LLM）；選填 quiz_history_list 避免重複出題；unit_type 1 僅 RAG ZIP 向量檢索；2/3/4 以 transcription 純生成；其餘載 RAG ZIP 向量檢索。
+- POST /rag/tab/unit/quiz/llm-generate：依 rag_quiz_id 出題（LLM）；選填 quiz_history_list 避免重複出題；unit_type 1 僅 RAG ZIP 向量檢索；2/3/4 以 transcript 純生成；其餘載 RAG ZIP 向量檢索。
 - POST /rag/tab/unit/quiz/llm-generate-db：同 llm-generate，唯 body 不包含 quiz_user_prompt_text，一律沿用 Rag_Quiz 列上既有值。
 - POST /rag/tab/unit/quiz/llm-generate-followup：接續出題；答不好追問弱點，答好則出新題；quiz_history_list 為先前問答（題幹＋作答）列表；出題後保留 answer_user_prompt_text、answer_content。
 - POST /rag/tab/unit/quiz/llm-generate-followup-db：同 llm-generate-followup，唯 body 不包含 quiz_user_prompt_text。
@@ -9,7 +9,7 @@ RAG 評分與出題 API 模組。
 - POST /rag/tab/unit/quiz/llm-grade-db：同 llm-grade，唯 body 不包含 answer_user_prompt_text，評分與寫回一律沿用 Rag_Quiz.answer_user_prompt_text（不論請求）。
 - POST /rag/tab/unit/quiz/for-exam：更新 Rag_Quiz.for_exam（body `for_exam` 預設 true；false 取消測驗用）。
 - GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
-- GET /rag/unit/text：依 rag_tab_id、folder_name 自 upload ZIP 回傳文字檔全文 transcription（需 person_id）；或依 rag_unit_id 自 DB 讀取（**不需** person_id），DB 為空時改讀 upload ZIP。
+- GET /rag/unit/text：依 rag_tab_id、folder_name 自 upload ZIP 回傳文字檔全文 transcript（需 person_id）；或依 rag_unit_id 自 DB 讀取（**不需** person_id），DB 為空時改讀 upload ZIP。
 - GET /rag/unit/mp3-file：自 upload ZIP 依 folder_name 回傳音訊（base64）與同資料夾內文字檔逐字稿；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者。
 - GET /rag/unit/youtube-url：自 upload ZIP 依 folder_name 解析 YouTube URL 與文字檔第二行起之逐字稿；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者。
 """
@@ -28,8 +28,8 @@ from typing import Annotated, Any, Literal
 from services.quiz_generation import (
     generate_quiz,
     generate_quiz_followup,
-    generate_quiz_followup_transcription_only,
-    generate_quiz_transcription_only,
+    generate_quiz_followup_transcript_only,
+    generate_quiz_transcript_only,
 )
 from utils.openapi import openapi_body
 
@@ -258,7 +258,7 @@ class RagUnitTextResponse(BaseModel):
     folder_name: str = ""
     rag_unit_id: int = 0
     text_file_name: str = ""
-    transcription: str = ""
+    transcript: str = ""
 
 
 class RagUnitMp3FileFromZipResponse(BaseModel):
@@ -270,7 +270,7 @@ class RagUnitMp3FileFromZipResponse(BaseModel):
     media_type: str
     filename: str
     text_file_name: str = ""
-    transcription: str = ""
+    transcript: str = ""
 
 
 class RagUnitYoutubeUrlFromZipResponse(BaseModel):
@@ -280,7 +280,7 @@ class RagUnitYoutubeUrlFromZipResponse(BaseModel):
     folder_name: str
     youtube_url: str = Field(..., description="https://www.youtube.com/watch?v=…")
     text_file_name: str = ""
-    transcription: str = ""
+    transcript: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -454,9 +454,9 @@ def _rag_llm_generate_quiz_impl(
     def fetch_unit_row(*, include_folder_combination: bool):
         def build(with_course_filter: bool):
             base_cols = (
-                "rag_unit_id, rag_tab_id, unit_name, folder_combination, transcription, unit_type, course_id"
+                "rag_unit_id, rag_tab_id, unit_name, folder_combination, transcript, unit_type, course_id"
                 if include_folder_combination
-                else "rag_unit_id, rag_tab_id, unit_name, transcription, unit_type, course_id"
+                else "rag_unit_id, rag_tab_id, unit_name, transcript, unit_type, course_id"
             )
             cols = select_without_course_id_if_needed("Rag_Unit", base_cols, with_course_filter)
             q = (
@@ -539,19 +539,19 @@ def _rag_llm_generate_quiz_impl(
             status_code=400,
             detail="該使用者尚未填寫 LLM API Key：請至個人設定填寫，或本機在 .env 設定 LLM_API_KEY／OPENAI_API_KEY",
         )
-    transcription_text = (unit_row.get("transcription") or "").strip()
-    if not transcription_text:
-        transcription_text = instruction_from_rag_row(row)
+    transcript_text = (unit_row.get("transcript") or "").strip()
+    if not transcript_text:
+        transcript_text = instruction_from_rag_row(row)
 
     try:
         unit_type_val = int(unit_row.get("unit_type") or 0)
     except (TypeError, ValueError):
         unit_type_val = 0
 
-    if unit_type_val in (2, 3, 4) and not transcription_text:
+    if unit_type_val in (2, 3, 4) and not transcript_text:
         raise HTTPException(
             status_code=400,
-            detail="單元類型 2／3／4 需有逐字稿：請於 Rag_Unit 或 Rag 設定 transcription，或經 POST /rag/tab/build-rag-zip 寫入 Rag_Unit.transcription",
+            detail="單元類型 2／3／4 需有逐字稿：請於 Rag_Unit 或 Rag 設定 transcript，或經 POST /rag/tab/build-rag-zip 寫入 Rag_Unit.transcript",
         )
 
     path: Path | None = None
@@ -559,16 +559,16 @@ def _rag_llm_generate_quiz_impl(
         qa_dicts = _quiz_history_qa_dicts(quiz_history_qa or [])
         if unit_type_val in (2, 3, 4):
             if followup:
-                result = generate_quiz_followup_transcription_only(
+                result = generate_quiz_followup_transcript_only(
                     api_key=api_key,
-                    transcription=transcription_text,
+                    transcript=transcript_text,
                     quiz_user_prompt_text=qup_for_llm,
                     quiz_history_list=qa_dicts,
                 )
             else:
-                result = generate_quiz_transcription_only(
+                result = generate_quiz_transcript_only(
                     api_key=api_key,
-                    transcription=transcription_text,
+                    transcript=transcript_text,
                     quiz_user_prompt_text=qup_for_llm,
                     quiz_history_list=quiz_history_stems or [],
                 )
@@ -593,7 +593,7 @@ def _rag_llm_generate_quiz_impl(
                     quiz_user_prompt_text=qup_for_llm,
                     quiz_history_list=quiz_history_stems or [],
                 )
-        result["transcription"] = "" if unit_type_val == 1 else transcription_text
+        result["transcript"] = "" if unit_type_val == 1 else transcript_text
         result["rag_output"] = {
             "rag_tab_id": stem,
             "unit_name": stem,
@@ -694,7 +694,7 @@ def rag_llm_generate_quiz(
     Body：rag_quiz_id、quiz_name、quiz_user_prompt_text（可空字串）、quiz_history_list（選填；順序同 public.Rag_Quiz）；
     rag_tab_id／rag_unit_id 由後端依 rag_quiz_id 自資料庫帶入；quiz_user_prompt_text 空則自該列 Rag_Quiz 讀取。
     選填 `quiz_history_list`（字串陣列）：已出過的題目題幹，由 `services.quiz_generation` 併入 user「已出過題目」區塊，避免重複出題。
-    unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcription。
+    unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcript。
     unit_type 2／3／4 時不載入 RAG ZIP，改以逐字稿為 context；與 unit_type=1 共用 `SYSTEM_PROMPT_QUIZ`、`USER_PROMPT_COURSE` 與 `_generate_quiz_from_context`。
     出題成功後更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=false；保留 answer_user_prompt_text、answer_content、answer_critique）。
     """
@@ -915,7 +915,7 @@ async def _enqueue_rag_llm_grade_job(
         aup = (answer_user_prompt_from_request or "").strip()
 
     grade_unit_type = 0
-    transcription_text = ""
+    transcript_text = ""
     try:
         ruid_raw = rq_row.get("rag_unit_id")
         ruid_i = int(ruid_raw) if ruid_raw is not None else 0
@@ -925,7 +925,7 @@ async def _enqueue_rag_llm_grade_job(
         def build_grade_unit_sel(with_course_filter: bool):
             cols = select_without_course_id_if_needed(
                 "Rag_Unit",
-                "unit_type, transcription, course_id",
+                "unit_type, transcript, course_id",
                 with_course_filter,
             )
             q = (
@@ -945,19 +945,19 @@ async def _enqueue_rag_llm_grade_job(
                 grade_unit_type = int(u0.get("unit_type") or 0)
             except (TypeError, ValueError):
                 grade_unit_type = 0
-            transcription_text = (u0.get("transcription") or "").strip()
-    if not transcription_text:
-        transcription_text = instruction_from_rag_row(row)
+            transcript_text = (u0.get("transcript") or "").strip()
+    if not transcript_text:
+        transcript_text = instruction_from_rag_row(row)
 
-    transcription_grade: str | None = None
+    transcript_grade: str | None = None
 
     if grade_unit_type in (2, 3, 4):
-        if not transcription_text.strip():
+        if not transcript_text.strip():
             return JSONResponse(
                 status_code=400,
-                content={"error": "批改用 transcription 未設定：請於 Rag_Unit 或 Rag 設定 transcription（單元 2／3／4）"},
+                content={"error": "批改用 transcript 未設定：請於 Rag_Unit 或 Rag 設定 transcript（單元 2／3／4）"},
             )
-        transcription_grade = transcription_text
+        transcript_grade = transcript_text
         work_dir = Path(tempfile.mkdtemp(prefix="myquizai_grade_tx_"))
     else:
         rag_zip_path = get_zip_path(rag_zip_tab_id)
@@ -1005,7 +1005,7 @@ async def _enqueue_rag_llm_grade_job(
         aup,
         rag_quiz_id=rag_quiz_id_int,
         unit_type=grade_unit_type,
-        transcription_grade=transcription_grade,
+        transcript_grade=transcript_grade,
         quiz_user_prompt_text=quiz_user_prompt_db,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id})
@@ -1031,7 +1031,7 @@ async def grade_submission(
     """
     非同步評分：Body 以 rag_id、rag_quiz_id 為核心；quiz_content 可省略（自 Rag_Quiz 讀）。
     `answer_user_prompt_text` 以請求為準（可空；空字串會寫入並覆蓋 Rag_Quiz 該列）。
-    unit_type 2／3／4 時以 transcription 純 LLM 批改；其餘依 rag_id 載入 RAG ZIP。
+    unit_type 2／3／4 時以 transcript 純 LLM 批改；其餘依 rag_id 載入 RAG ZIP。
     回傳 202 + job_id；輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
     """
     return await _enqueue_rag_llm_grade_job(
@@ -1234,12 +1234,12 @@ async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseI
 # ---------------------------------------------------------------------------
 
 
-def _transcription_from_upload_zip_for_folder(
+def _transcript_from_upload_zip_for_folder(
     person_id: str,
     rag_tab_id: str,
     folder_name: str,
 ) -> tuple[str, str]:
-    """自 upload ZIP 資料夾讀取 unit_type=2 文字檔全文；回傳 (transcription, text_file_name)。"""
+    """自 upload ZIP 資料夾讀取 unit_type=2 文字檔全文；回傳 (transcript, text_file_name)。"""
     zip_bytes = read_upload_zip_bytes(person_id, rag_tab_id)
     text, inner_path = read_single_transcript_text_from_upload_zip(zip_bytes, folder_name)
     return text, Path(inner_path).name
@@ -1272,7 +1272,7 @@ def rag_unit_text(
     ] = None,
 ):
     """
-    回傳 **unit_type=2（文字單元）** 之 `text_file_name` 與 `transcription`（全文，含 Markdown）。
+    回傳 **unit_type=2（文字單元）** 之 `text_file_name` 與 `transcript`（全文，含 Markdown）。
 
     - **folder_name**：自 upload ZIP 讀取（與 build-rag-zip unit_type=2 一致）；須傳 `person_id`。
     - **rag_unit_id**：自 `Rag_Unit` 讀取，**不需** `person_id`；若 DB 無逐字稿則改讀 upload ZIP（以 `folder_combination` 或 `unit_name` 為資料夾名）。
@@ -1292,7 +1292,7 @@ def rag_unit_text(
             raise HTTPException(status_code=400, detail="使用 folder_name 時須傳入 person_id")
         require_rag_tab_owner(pid, rag_tab_id, course_id)
         try:
-            transcription, text_file_name = _transcription_from_upload_zip_for_folder(pid, tab, folder)
+            transcript, text_file_name = _transcript_from_upload_zip_for_folder(pid, tab, folder)
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except ValueError as e:
@@ -1305,7 +1305,7 @@ def rag_unit_text(
             folder_name=folder,
             rag_unit_id=0,
             text_file_name=text_file_name,
-            transcription=transcription,
+            transcript=transcript,
         )
 
     owner_pid = resolve_rag_tab_owner_person_id(rag_tab_id, course_id)
@@ -1314,9 +1314,9 @@ def rag_unit_text(
     def build_text_sel(with_course_filter: bool, *, include_folder: bool):
         cols = (
             "rag_unit_id, rag_tab_id, unit_type, unit_name, folder_combination, "
-            "text_file_name, transcription, deleted, course_id"
+            "text_file_name, transcript, deleted, course_id"
             if include_folder
-            else "rag_unit_id, rag_tab_id, unit_type, unit_name, text_file_name, transcription, deleted, course_id"
+            else "rag_unit_id, rag_tab_id, unit_type, unit_name, text_file_name, transcript, deleted, course_id"
         )
         cols = select_without_course_id_if_needed("Rag_Unit", cols, with_course_filter)
         q = (
@@ -1378,16 +1378,16 @@ def rag_unit_text(
         )
 
     text_file_name = (row.get("text_file_name") or "").strip()
-    transcription = row.get("transcription") or ""
-    if isinstance(transcription, str):
-        transcription = transcription.strip()
+    transcript = row.get("transcript") or ""
+    if isinstance(transcript, str):
+        transcript = transcript.strip()
     else:
-        transcription = str(transcription).strip()
+        transcript = str(transcript).strip()
 
     zip_folder = (row.get("folder_combination") or row.get("unit_name") or "").strip()
-    if not transcription and zip_folder:
+    if not transcript and zip_folder:
         try:
-            transcription, zip_text_name = _transcription_from_upload_zip_for_folder(
+            transcript, zip_text_name = _transcript_from_upload_zip_for_folder(
                 owner_pid, tab, zip_folder
             )
             if not text_file_name:
@@ -1402,7 +1402,7 @@ def rag_unit_text(
         folder_name=zip_folder,
         rag_unit_id=unit_id,
         text_file_name=text_file_name,
-        transcription=transcription,
+        transcript=transcript,
     )
 
 
@@ -1427,7 +1427,7 @@ def rag_unit_audio_file(
     ),
 ):
     """
-    自 upload ZIP 內指定資料夾擷取音訊（base64）與**至多一個**文字檔全文作為 `transcription`（與 build-rag-zip unit_type=3 一致）。
+    自 upload ZIP 內指定資料夾擷取音訊（base64）與**恰好一個**文字檔全文作為 `transcript`（與 build-rag-zip unit_type=3 一致；須音訊＋逐字稿）。
     query 須含 `person_id`，且須與該 `rag_tab_id` 之 Rag.person_id 一致。
     """
     require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
@@ -1449,7 +1449,7 @@ def rag_unit_audio_file(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     try:
-        transcription, text_file_name = read_mp3_unit_transcript_from_upload_zip(zip_bytes, folder)
+        transcript, text_file_name = read_mp3_unit_transcript_from_upload_zip(zip_bytes, folder)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -1462,7 +1462,7 @@ def rag_unit_audio_file(
         media_type=media,
         filename=disp_name,
         text_file_name=text_file_name,
-        transcription=transcription,
+        transcript=transcript,
     )
 
 
@@ -1487,7 +1487,7 @@ def rag_unit_youtube_url(
     ),
 ):
     """
-    自 upload ZIP 內指定資料夾讀取**恰好一個**文字檔：第一行為 YouTube URL，第二行起為 `transcription`（與 build-rag-zip unit_type=4 一致）。
+    自 upload ZIP 內指定資料夾讀取**恰好一個**文字檔：第一行為 YouTube URL，第二行起為 `transcript`（與 build-rag-zip unit_type=4 一致）。
     query 須含 `person_id`，且須與該 rag_tab_id 之 Rag.person_id 一致。
     """
     require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
@@ -1505,7 +1505,7 @@ def rag_unit_youtube_url(
 
     try:
         vid, inner_path = read_youtube_video_id_from_upload_zip(zip_bytes, folder)
-        transcription, _ = read_supplementary_text_from_youtube_unit(zip_bytes, folder)
+        transcript, _ = read_supplementary_text_from_youtube_unit(zip_bytes, folder)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -1514,7 +1514,7 @@ def rag_unit_youtube_url(
         folder_name=folder,
         youtube_url=f"https://www.youtube.com/watch?v={vid}",
         text_file_name=Path(inner_path).name,
-        transcription=transcription,
+        transcript=transcript,
     )
 
 

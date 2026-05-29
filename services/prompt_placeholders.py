@@ -27,7 +27,7 @@ def prompt_placeholder_descriptions() -> dict[str, dict[str, str]]:
                 "逐組排版，或無資料時為占位說明。"
             ),
             "context_md": (
-                "課程內容：unit_type=1 為 FAISS 檢索片段、2/3/4 為 Rag_Unit.transcription 全文，"
+                "課程內容：unit_type=1 為 FAISS 檢索片段、2/3/4 為 Rag_Unit.transcript 全文，"
                 "經 _context_as_markdown_fenced 包成 ```text …``` fenced block。"
             ),
         },
@@ -51,7 +51,7 @@ def prompt_placeholder_descriptions() -> dict[str, dict[str, str]]:
                 "學生作答；請求 body 之 answer_content／quiz_answer。"
             ),
             "context_md": (
-                "課程內容：逐字稿路徑為 Rag_Unit.transcription 全文；"
+                "課程內容：逐字稿路徑為 Rag_Unit.transcript 全文；"
                 "FAISS 路徑為以 quiz_content 檢索之 chunk，同樣包成 ```text …```。"
             ),
         },

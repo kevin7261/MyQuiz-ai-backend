@@ -462,9 +462,9 @@ def _generate_quiz_followup_from_context(
 # 公開 API（由 routers/exam.py、routers/grade.py 動態 import）
 # ---------------------------------------------------------------------------
 
-def generate_quiz_transcription_only(
+def generate_quiz_transcript_only(
     api_key: str,
-    transcription: str,
+    transcript: str,
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[str] | None = None,
 ) -> dict:
@@ -476,13 +476,13 @@ def generate_quiz_transcription_only(
 
     Args:
         api_key: OpenAI API Key（與 embeddings 無關，本路徑不建向量）。
-        transcription: 課程全文或逐字稿，填入 user 課程內容區塊；不可空。
+        transcript: 課程全文或逐字稿，填入 user 課程內容區塊；不可空。
         quiz_user_prompt_text: 填入 USER_PROMPT_* 之「出題 user prompt」占位；空字串時依 system 指示略過該節。
         quiz_history_list: 已出過題目題幹；併入「已出過題目（quiz_history_list）」區塊，避免重複出題。
     """
-    raw_tc = transcription if transcription is not None else ""
+    raw_tc = transcript if transcript is not None else ""
     if not raw_tc.strip():
-        raise ValueError("請傳入 transcription（課程內容區塊，必填）")
+        raise ValueError("請傳入 transcript（課程內容區塊，必填）")
     return _generate_quiz_from_context(
         api_key,
         raw_tc,
@@ -556,18 +556,18 @@ def generate_quiz(
         shutil.rmtree(extract_folder, ignore_errors=True)
 
 
-def generate_quiz_followup_transcription_only(
+def generate_quiz_followup_transcript_only(
     api_key: str,
-    transcription: str,
+    transcript: str,
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[dict[str, str]] | None = None,
 ) -> dict:
     """
     追問出題（無 FAISS）：答不好追問弱點，答好出新題；quiz_history_list 為先前問答（題幹＋作答）列表。
     """
-    raw_tc = transcription if transcription is not None else ""
+    raw_tc = transcript if transcript is not None else ""
     if not raw_tc.strip():
-        raise ValueError("請傳入 transcription（課程內容區塊，必填）")
+        raise ValueError("請傳入 transcript（課程內容區塊，必填）")
     return _generate_quiz_followup_from_context(
         api_key,
         raw_tc,

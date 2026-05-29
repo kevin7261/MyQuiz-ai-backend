@@ -11,11 +11,16 @@ from postgrest.exceptions import APIError
 from utils.zip_utils import repack_zip_stem_from_filename
 
 
-def instruction_from_rag_row(row: dict | None) -> str:
-    """Rag 表層說明文：**Rag.transcription**（與出題時注入 LLM 的內容一致）。"""
+def transcript_from_row(row: dict | None) -> str:
+    """Rag / Rag_Unit 逐字稿欄位（新欄 transcript；舊欄 transcription 向下相容）。"""
     if not row:
         return ""
-    return (row.get("transcription") or "").strip()
+    return (row.get("transcript") or row.get("transcription") or "").strip()
+
+
+def instruction_from_rag_row(row: dict | None) -> str:
+    """Rag 表層說明文：**Rag.transcript**（與出題時注入 LLM 的內容一致）。"""
+    return transcript_from_row(row)
 
 
 def _fetch_rag_metadata_if_present(supabase, rag_id: int):
@@ -110,14 +115,17 @@ def get_rag_stem_from_rag_id(
     否則 unit_name 若指定（非空白），則選取該名稱的單元；皆未指定則使用第一筆。
     """
     # 勿在主要 SELECT 含 rag_metadata：部分環境尚未 migration 該欄，會導致整筆查詢 42703。
-    # 部分環境 Rag 表尚無 transcription 欄位（42703）時改選不含該欄。
+    # 部分環境 Rag 表尚無 transcript 欄位（42703）時改選不含該欄。
     select_cols = (
-        "rag_tab_id, transcription, person_id, rag_id"
+        "rag_tab_id, transcript, person_id, rag_id"
         if include_row
         else "rag_tab_id"
     )
-    select_cols_no_transcription = (
+    select_cols_no_transcript = (
         "rag_tab_id, person_id, rag_id" if include_row else "rag_tab_id"
+    )
+    select_cols_legacy_transcription = (
+        "rag_tab_id, transcription, person_id, rag_id" if include_row else "rag_tab_id"
     )
     try:
         rag_rows = (
@@ -129,14 +137,27 @@ def get_rag_stem_from_rag_id(
         )
     except APIError as e:
         msg = (e.message or "").lower()
-        if e.code == "42703" and "transcription" in msg and include_row:
-            rag_rows = (
-                supabase.table("Rag")
-                .select(select_cols_no_transcription)
-                .eq("rag_id", rag_id)
-                .eq("deleted", False)
-                .execute()
-            )
+        if e.code == "42703" and "transcript" in msg and include_row:
+            try:
+                rag_rows = (
+                    supabase.table("Rag")
+                    .select(select_cols_legacy_transcription)
+                    .eq("rag_id", rag_id)
+                    .eq("deleted", False)
+                    .execute()
+                )
+            except APIError as e2:
+                msg2 = (e2.message or "").lower()
+                if e2.code == "42703" and "transcription" in msg2:
+                    rag_rows = (
+                        supabase.table("Rag")
+                        .select(select_cols_no_transcript)
+                        .eq("rag_id", rag_id)
+                        .eq("deleted", False)
+                        .execute()
+                    )
+                else:
+                    raise
         else:
             raise
     if not rag_rows.data or len(rag_rows.data) == 0:

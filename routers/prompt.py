@@ -11,7 +11,7 @@ from dependencies.person_id import PersonId
 from services.grading import (
     SYSTEM_PROMPT_GRADE,
     USER_PROMPT_GRADE_FAISS_COURSE,
-    USER_PROMPT_GRADE_TRANSCRIPTION_COURSE,
+    USER_PROMPT_GRADE_TRANSCRIPT_COURSE,
 )
 from services.quiz_generation import (
     SYSTEM_PROMPT_QUIZ,
@@ -70,9 +70,9 @@ class LlmGradePrompts(BaseModel):
     """POST .../llm-grade 所用 prompt 模板。"""
 
     system: str = Field(..., description="批改 system prompt（SYSTEM_PROMPT_GRADE）")
-    user_transcription_course: str = Field(
+    user_transcript_course: str = Field(
         ...,
-        description="逐字稿路徑 user prompt（USER_PROMPT_GRADE_TRANSCRIPTION_COURSE）",
+        description="逐字稿路徑 user prompt（USER_PROMPT_GRADE_TRANSCRIPT_COURSE）",
     )
     user_faiss_course: str = Field(
         ...,
@@ -123,7 +123,7 @@ def get_all_prompt_templates(_person_id: PersonId):
         ),
         llm_grade=LlmGradePrompts(
             system=SYSTEM_PROMPT_GRADE,
-            user_transcription_course=USER_PROMPT_GRADE_TRANSCRIPTION_COURSE,
+            user_transcript_course=USER_PROMPT_GRADE_TRANSCRIPT_COURSE,
             user_faiss_course=USER_PROMPT_GRADE_FAISS_COURSE,
         ),
         person_analysis=AnalysisPrompts(**person_tpl),
