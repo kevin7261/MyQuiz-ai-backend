@@ -235,21 +235,6 @@ _YT_URL_RE = re.compile(
 )
 
 
-def extract_video_id_from_unit_md(text: str) -> str | None:
-    """自文字檔內容解析 YouTube video_id（連結或純 id）。"""
-    t = (text or "").strip()
-    if not t:
-        return None
-    for chunk in (t, *[ln.strip() for ln in t.splitlines() if ln.strip()]):
-        vid = parse_youtube_video_id(chunk)
-        if vid:
-            return vid
-    m = _YT_URL_RE.search(t)
-    if m:
-        return parse_youtube_video_id(m.group(1))
-    return None
-
-
 def _extract_youtube_video_id_url_only(text: str) -> str | None:
     """自文字檔內容解析 YouTube video_id，只接受 URL 格式（拒絕裸 11 字元 video_id）。"""
     t = (text or "").strip()

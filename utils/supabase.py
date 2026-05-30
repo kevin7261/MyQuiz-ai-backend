@@ -10,11 +10,14 @@ Key 優先順序（use_service_role=True）：
 
 import os
 import warnings
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from supabase import Client
 
 # 單例快取：service_role 與 anon 各一份，避免重複建立連線
-_client_service: Optional["SupabaseClient"] = None
-_client_anon: Optional["SupabaseClient"] = None
+_client_service: Optional["Client"] = None
+_client_anon: Optional["Client"] = None
 
 
 def get_supabase(use_service_role: bool = True):

@@ -16,5 +16,3 @@ docx2txt
 python-pptx
 unstructured
 # google-generativeai  # 若要用 Gemini 請取消註解
-# RAG／transcript：YouTube 字幕
-youtube-transcript-api>=0.6.2

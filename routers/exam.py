@@ -44,15 +44,12 @@ from services.quiz_generation import (
 from utils.openapi import openapi_body
 
 from services.exam_queries import (
-    all_exam_quizzes,
     ensure_exam_quiz_rag_id_keys,
     enrich_exam_quizzes_rag_tab_from_units,
     exam_default_row,
-    exams_by_tab_ids,
     exams_table_select,
     exam_tab_quizzes_response,
     quizzes_by_exam_tab_ids,
-    quizzes_by_person_id,
     rag_quiz_for_exam_response_row,
     select_rag_row_with_transcript_fallback,
 )
@@ -304,6 +301,14 @@ class ExamQuizGradeRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # 路由內輔助（僅限此模組）
 # ---------------------------------------------------------------------------
+
+def _safe_unlink(p: Path) -> None:
+    """刪除暫存檔；忽略檔案不存在或刪除失敗。"""
+    try:
+        p.unlink(missing_ok=True)
+    except Exception:
+        pass
+
 
 def _load_exam_for_quiz(
     supabase: Any,
@@ -880,6 +885,117 @@ def _resolve_exam_followup_mode(
     return use_followup_llm, mark_follow_up, resolved_id, _history_stems(request_qa), request_qa
 
 
+def _select_rag_unit_for_exam_prompt(
+    supabase: Any,
+    *,
+    rag_tab_id_for_units: str,
+    course_id: int,
+    stem_rag_unit_id: int | None,
+    unit_filter: str | None,
+) -> dict | None:
+    """依 rag_tab_id 列出 Rag_Unit（含欄位降級相容），挑出對應 stem_rag_unit_id 或 unit_filter 的單元；無 rag_tab_id 時回傳 None。"""
+    selected: dict | None = None
+    if rag_tab_id_for_units:
+        def _unit_q_select(cols: str, with_course_filter: bool):
+            c = select_without_course_id_if_needed("Rag_Unit", cols, with_course_filter)
+            q = (
+                supabase.table("Rag_Unit")
+                .select(c)
+                .eq("rag_tab_id", rag_tab_id_for_units)
+                .eq("deleted", False)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q.order("created_at", desc=False)
+
+        def _unit_q_execute(cols: str):
+            return execute_with_course_id_fallback(
+                "Rag_Unit",
+                lambda wc: _unit_q_select(cols, wc),
+                course_id,
+            )
+
+        _cols_full = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcript"
+        )
+        _cols_no_tr = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap"
+        )
+        _cols_no_fc = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcript"
+        )
+        _cols_min = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap"
+        )
+        _cols_legacy_tr = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcription"
+        )
+        _cols_no_fc_legacy_tr = (
+            "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
+            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcription"
+        )
+        try:
+            unit_q = _unit_q_execute(_cols_full)
+        except APIError as e:
+            msg = (e.message or "").lower()
+            if e.code != "42703":
+                raise
+            if "transcript" in msg:
+                try:
+                    unit_q = _unit_q_execute(_cols_legacy_tr)
+                except APIError as e_legacy:
+                    if e_legacy.code == "42703" and "transcription" in (e_legacy.message or "").lower():
+                        try:
+                            unit_q = _unit_q_execute(_cols_no_tr)
+                        except APIError as e2:
+                            if e2.code == "42703" and "folder_combination" in (e2.message or "").lower():
+                                unit_q = _unit_q_execute(_cols_min)
+                            else:
+                                raise
+                    else:
+                        raise
+            elif "folder_combination" in msg:
+                try:
+                    unit_q = _unit_q_execute(_cols_no_fc)
+                except APIError as e2:
+                    if e2.code == "42703" and "transcript" in (e2.message or "").lower():
+                        try:
+                            unit_q = _unit_q_execute(_cols_no_fc_legacy_tr)
+                        except APIError as e3:
+                            if e3.code == "42703" and "transcription" in (e3.message or "").lower():
+                                unit_q = _unit_q_execute(_cols_min)
+                            else:
+                                raise
+                    else:
+                        raise
+            else:
+                raise
+        units = unit_q.data or []
+        if stem_rag_unit_id and stem_rag_unit_id > 0:
+            for u in units:
+                try:
+                    if int(u.get("rag_unit_id") or 0) == stem_rag_unit_id:
+                        selected = u
+                        break
+                except (TypeError, ValueError):
+                    continue
+        if selected is None and not unit_filter:
+            selected = units[0] if units else None
+        elif selected is None and unit_filter:
+            for u in units:
+                un = (u.get("unit_name") or "").strip()
+                fc = (u.get("folder_combination") or "").strip()
+                if un == unit_filter or fc == unit_filter:
+                    selected = u
+                    break
+    return selected
+
+
 def _exam_llm_generate_quiz_impl(
     *,
     exam_quiz_id: int,
@@ -1087,105 +1203,13 @@ def _exam_llm_generate_quiz_impl(
         supabase, rag_id, unit_name=unit_filter, rag_unit_id=stem_rag_unit_id
     )
 
-    selected: dict | None = None
-    if rag_tab_id_for_units:
-        def _unit_q_select(cols: str, with_course_filter: bool):
-            c = select_without_course_id_if_needed("Rag_Unit", cols, with_course_filter)
-            q = (
-                supabase.table("Rag_Unit")
-                .select(c)
-                .eq("rag_tab_id", rag_tab_id_for_units)
-                .eq("deleted", False)
-            )
-            if with_course_filter and course_id is not None:
-                q = q.eq("course_id", course_id)
-            return q.order("created_at", desc=False)
-
-        def _unit_q_execute(cols: str):
-            return execute_with_course_id_fallback(
-                "Rag_Unit",
-                lambda wc: _unit_q_select(cols, wc),
-                course_id,
-            )
-
-        _cols_full = (
-            "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcript"
-        )
-        _cols_no_tr = (
-            "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, rag_chunk_size, rag_chunk_overlap"
-        )
-        _cols_no_fc = (
-            "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcript"
-        )
-        _cols_min = (
-            "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, rag_chunk_size, rag_chunk_overlap"
-        )
-        _cols_legacy_tr = (
-            "rag_unit_id, rag_tab_id, person_id, unit_name, folder_combination, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcription"
-        )
-        _cols_no_fc_legacy_tr = (
-            "rag_unit_id, rag_tab_id, person_id, unit_name, unit_type, repack_file_name, rag_file_name, "
-            "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcription"
-        )
-        try:
-            unit_q = _unit_q_execute(_cols_full)
-        except APIError as e:
-            msg = (e.message or "").lower()
-            if e.code != "42703":
-                raise
-            if "transcript" in msg:
-                try:
-                    unit_q = _unit_q_execute(_cols_legacy_tr)
-                except APIError as e_legacy:
-                    if e_legacy.code == "42703" and "transcription" in (e_legacy.message or "").lower():
-                        try:
-                            unit_q = _unit_q_execute(_cols_no_tr)
-                        except APIError as e2:
-                            if e2.code == "42703" and "folder_combination" in (e2.message or "").lower():
-                                unit_q = _unit_q_execute(_cols_min)
-                            else:
-                                raise
-                    else:
-                        raise
-            elif "folder_combination" in msg:
-                try:
-                    unit_q = _unit_q_execute(_cols_no_fc)
-                except APIError as e2:
-                    if e2.code == "42703" and "transcript" in (e2.message or "").lower():
-                        try:
-                            unit_q = _unit_q_execute(_cols_no_fc_legacy_tr)
-                        except APIError as e3:
-                            if e3.code == "42703" and "transcription" in (e3.message or "").lower():
-                                unit_q = _unit_q_execute(_cols_min)
-                            else:
-                                raise
-                    else:
-                        raise
-            else:
-                raise
-        units = unit_q.data or []
-        if stem_rag_unit_id and stem_rag_unit_id > 0:
-            for u in units:
-                try:
-                    if int(u.get("rag_unit_id") or 0) == stem_rag_unit_id:
-                        selected = u
-                        break
-                except (TypeError, ValueError):
-                    continue
-        if selected is None and not unit_filter:
-            selected = units[0] if units else None
-        elif selected is None and unit_filter:
-            for u in units:
-                un = (u.get("unit_name") or "").strip()
-                fc = (u.get("folder_combination") or "").strip()
-                if un == unit_filter or fc == unit_filter:
-                    selected = u
-                    break
+    selected = _select_rag_unit_for_exam_prompt(
+        supabase,
+        rag_tab_id_for_units=rag_tab_id_for_units,
+        course_id=course_id,
+        stem_rag_unit_id=stem_rag_unit_id,
+        unit_filter=unit_filter,
+    )
 
     transcript_text = ""
     if selected:
@@ -1330,10 +1354,7 @@ def _exam_llm_generate_quiz_impl(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if path is not None:
-            try:
-                path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            _safe_unlink(path)
 
 
 @router.post(
@@ -1786,15 +1807,13 @@ async def exam_grade_submission(
             cleanup_grade_workspace(work_dir)
             return JSONResponse(status_code=500, content={"error": str(e)})
         finally:
-            try:
-                rag_zip_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            _safe_unlink(rag_zip_path)
 
     job_id = str(uuid.uuid4())
     _exam_grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
     exam_quiz_id_int = int(body.exam_quiz_id)
-    insert_fn = lambda rd, qa: update_exam_quiz_with_grade(rd, qa, exam_quiz_id=exam_quiz_id_int)
+    def insert_fn(rd, qa):
+        return update_exam_quiz_with_grade(rd, qa, exam_quiz_id=exam_quiz_id_int)
     background_tasks.add_task(
         run_grade_job_background,
         job_id,

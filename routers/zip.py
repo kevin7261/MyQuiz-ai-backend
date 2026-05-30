@@ -32,7 +32,7 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, File, Form, HTTPException, Path as PathParam, Query, Request, UploadFile
 from postgrest.exceptions import APIError
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from storage3.exceptions import StorageApiError
 
@@ -98,11 +98,23 @@ RAG_UNIT_TYPE_RAG = 1
 RAG_UNIT_TYPE_TEXT = 2
 RAG_UNIT_TYPE_MP3 = 3
 RAG_UNIT_TYPE_YOUTUBE = 4
-RAG_UNIT_TYPE_ZIP_BUILD = RAG_UNIT_TYPE_RAG  # 同義 rag，向下相容
 
 
 def _bytes_to_mb(size_bytes: int) -> float:
     return size_bytes / BYTES_PER_MB
+
+
+def _ndjson_line(obj: dict[str, Any]) -> str:
+    """序列化單一 NDJSON 事件（UTF-8 原樣，不轉 ASCII），結尾附換行。"""
+    return json.dumps(obj, ensure_ascii=False) + "\n"
+
+
+def _safe_unlink(p: Path) -> None:
+    """刪除暫存檔；忽略檔案不存在或刪除失敗。"""
+    try:
+        p.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _fetch_user_llm_key_and_user_type(person_id: str, course_id: int) -> tuple[str | None, int]:
@@ -532,16 +544,10 @@ def _try_read_upload_zip_once(pid: str, rag_tab_id: str) -> Path | None:
             z.namelist()
         return path
     except zipfile.BadZipFile:
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        _safe_unlink(path)
         return None
     except Exception:
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        _safe_unlink(path)
         return None
 
 
@@ -579,123 +585,124 @@ def _verify_saved_rag_zip_readable(rag_zip_tab_id: str) -> str | None:
             else:
                 return None
         finally:
-            try:
-                verify_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            _safe_unlink(verify_path)
         time.sleep(delay)
         delay = min(delay * 1.3, _RAG_ZIP_VERIFY_SLEEP_MAX)
     return last_err
 
 
-def _build_one_rag_zip_output_item(
+def _build_repack_or_transcript_rag_item(
     body: PackRequest,
     pid: str,
-    api_key: str,
     zip_bytes: bytes,
     filename: str,
+    repack_tab_id: str,
     *,
-    do_rag: bool = True,
-    unit_type: int = RAG_UNIT_TYPE_DEFAULT,
+    unit_type: int,
     task_rag_chunk_size: int,
     task_rag_chunk_overlap: int,
-    transcript_override: str | None = None,
+    transcript_override: str | None,
 ) -> dict[str, Any]:
     """
-    將單一 repack 單元上傳至 repack。
-    do_rag 為 True：另以 FAISS 建 RAG ZIP 上傳至 rag。
-    do_rag 為 False 且 unit_type 為 2/3/4：repack 照舊，rag 區上傳逐字稿之 transcript.md ZIP（rag_mode=transcript_md），output 含 transcript_plain 與對應欄位。
-    若請求漏傳對齊的 **unit_types**（導致 unit_type==0），會嘗試由單元 ZIP 推斷：恰好一音訊＋一文字檔→3；否則恰一文字檔→2（**完整保留 .md 原文**）。YouTube（4）須明確傳 unit_types。
-    do_rag 為 False 且無法推斷時：將與 repack 相同內容複製至 rag（rag_mode=repack_copy），transcript 為空。
-    註：bucket 內檔名仍為 stem_rag.zip；請看 output.rag_mode。
-    回傳與 build-rag-zip outputs[] 單筆相同結構；失敗時含 rag_error。
-    每筆皆含 **folder_combination**（檔名 stem，寫入 Rag_Unit.folder_combination）、**unit_name**（顯示名，可經請求 unit_names 覆寫）、rag_chunk_size／rag_chunk_overlap（本任務實際使用，供寫入 Rag_Unit）。
+    do_rag=False 分支（不建 FAISS）：repack 照舊上傳。
+    unit_type 為 2/3/4：rag 區上傳逐字稿之 transcript.md ZIP（rag_mode=transcript_md），output 含 transcript_plain 與對應欄位。
+    若 unit_type==0（請求漏傳對齊的 unit_types），會由單元 ZIP 推斷：恰一音訊＋一文字檔→3；否則恰一文字檔→2（完整保留 .md 原文）。YouTube（4）須明確傳。
+    無法推斷時：將與 repack 相同內容複製至 rag（rag_mode=repack_copy），transcript 為空。
     """
-    repack_tab_id = repack_zip_stem_from_filename(filename) if filename else None
-    if not repack_tab_id or "\\" in repack_tab_id:
-        repack_tab_id = str(uuid.uuid4())
-
-    if not do_rag:
-        effective_ut = infer_unit_type_when_unspecified(unit_type, zip_bytes)
-        item_zip: dict[str, Any] = {
-            "filename": filename,
-            "folder_combination": repack_tab_id,
-            "unit_name": repack_tab_id,
-            "repack_filename": f"{repack_tab_id}.zip",
-            "rag_filename": "",
-            "unit_type": effective_ut,
-            "rag_mode": "repack_copy",
-            "transcript_plain": "",
-            "text_file_name": "",
-            "mp3_file_name": "",
-            "youtube_url": "",
-            "rag_chunk_size": int(task_rag_chunk_size),
-            "rag_chunk_overlap": int(task_rag_chunk_overlap),
-        }
-        if effective_ut != unit_type:
-            item_zip["unit_type_declared"] = unit_type
-        try:
-            tab_id = save_zip(
-                zip_bytes,
-                filename,
-                folder=FOLDER_REPACK,
-                person_id=pid,
-                parent_tab_id=body.rag_tab_id,
-                tab_id=repack_tab_id,
-            )
-            item_zip["repack_filename"] = f"{tab_id}.zip"
-            rag_zip_tab_id = f"{tab_id}_rag"
-            item_zip["rag_filename"] = f"{rag_zip_tab_id}.zip"
-            rag_payload: bytes | None = None
-            if effective_ut in (RAG_UNIT_TYPE_TEXT, RAG_UNIT_TYPE_MP3, RAG_UNIT_TYPE_YOUTUBE):
-                item_zip["rag_mode"] = "transcript_md"
-                try:
-                    extracted = extract_transcript_for_rag_build(zip_bytes, effective_ut)
-                except ValueError as e:
-                    item_zip["rag_error"] = str(e)
-                else:
-                    item_zip["transcript_plain"] = extracted.get("transcript") or ""
-                    item_zip["text_file_name"] = extracted.get("text_file_name") or ""
-                    item_zip["mp3_file_name"] = extracted.get("mp3_file_name") or ""
-                    item_zip["youtube_url"] = extracted.get("youtube_url") or ""
-                    if transcript_override is not None:
-                        ov = (
-                            transcript_override
-                            if isinstance(transcript_override, str)
-                            else str(transcript_override)
-                        )
-                        if ov.strip() != "":
-                            item_zip["transcript_plain"] = ov
-                    rag_payload = build_transcript_md_zip_bytes(item_zip["transcript_plain"])
-                    save_zip(
-                        rag_payload,
-                        f"{tab_id}.zip",
-                        folder=FOLDER_RAG,
-                        person_id=pid,
-                        parent_tab_id=body.rag_tab_id,
-                        tab_id=rag_zip_tab_id,
-                    )
+    effective_ut = infer_unit_type_when_unspecified(unit_type, zip_bytes)
+    item_zip: dict[str, Any] = {
+        "filename": filename,
+        "folder_combination": repack_tab_id,
+        "unit_name": repack_tab_id,
+        "repack_filename": f"{repack_tab_id}.zip",
+        "rag_filename": "",
+        "unit_type": effective_ut,
+        "rag_mode": "repack_copy",
+        "transcript_plain": "",
+        "text_file_name": "",
+        "mp3_file_name": "",
+        "youtube_url": "",
+        "rag_chunk_size": int(task_rag_chunk_size),
+        "rag_chunk_overlap": int(task_rag_chunk_overlap),
+    }
+    if effective_ut != unit_type:
+        item_zip["unit_type_declared"] = unit_type
+    try:
+        tab_id = save_zip(
+            zip_bytes,
+            filename,
+            folder=FOLDER_REPACK,
+            person_id=pid,
+            parent_tab_id=body.rag_tab_id,
+            tab_id=repack_tab_id,
+        )
+        item_zip["repack_filename"] = f"{tab_id}.zip"
+        rag_zip_tab_id = f"{tab_id}_rag"
+        item_zip["rag_filename"] = f"{rag_zip_tab_id}.zip"
+        rag_payload: bytes | None = None
+        if effective_ut in (RAG_UNIT_TYPE_TEXT, RAG_UNIT_TYPE_MP3, RAG_UNIT_TYPE_YOUTUBE):
+            item_zip["rag_mode"] = "transcript_md"
+            try:
+                extracted = extract_transcript_for_rag_build(zip_bytes, effective_ut)
+            except ValueError as e:
+                item_zip["rag_error"] = str(e)
             else:
-                rag_payload = zip_bytes
+                item_zip["transcript_plain"] = extracted.get("transcript") or ""
+                item_zip["text_file_name"] = extracted.get("text_file_name") or ""
+                item_zip["mp3_file_name"] = extracted.get("mp3_file_name") or ""
+                item_zip["youtube_url"] = extracted.get("youtube_url") or ""
+                if transcript_override is not None:
+                    ov = (
+                        transcript_override
+                        if isinstance(transcript_override, str)
+                        else str(transcript_override)
+                    )
+                    if ov.strip() != "":
+                        item_zip["transcript_plain"] = ov
+                rag_payload = build_transcript_md_zip_bytes(item_zip["transcript_plain"])
                 save_zip(
-                    zip_bytes,
+                    rag_payload,
                     f"{tab_id}.zip",
                     folder=FOLDER_RAG,
                     person_id=pid,
                     parent_tab_id=body.rag_tab_id,
                     tab_id=rag_zip_tab_id,
                 )
-            if not item_zip.get("rag_error"):
-                verify_err = _verify_saved_rag_zip_readable(rag_zip_tab_id)
-                if verify_err:
-                    item_zip["rag_error"] = verify_err
-            item_zip["file_size"] = _bytes_to_mb(
-                len(rag_payload) if rag_payload is not None else len(zip_bytes)
+        else:
+            rag_payload = zip_bytes
+            save_zip(
+                zip_bytes,
+                f"{tab_id}.zip",
+                folder=FOLDER_RAG,
+                person_id=pid,
+                parent_tab_id=body.rag_tab_id,
+                tab_id=rag_zip_tab_id,
             )
-        except Exception as e:
-            item_zip["rag_error"] = str(e)
-        return item_zip
+        if not item_zip.get("rag_error"):
+            verify_err = _verify_saved_rag_zip_readable(rag_zip_tab_id)
+            if verify_err:
+                item_zip["rag_error"] = verify_err
+        item_zip["file_size"] = _bytes_to_mb(
+            len(rag_payload) if rag_payload is not None else len(zip_bytes)
+        )
+    except Exception as e:
+        item_zip["rag_error"] = str(e)
+    return item_zip
 
+
+def _build_faiss_rag_item(
+    body: PackRequest,
+    pid: str,
+    api_key: str,
+    zip_bytes: bytes,
+    filename: str,
+    repack_tab_id: str,
+    *,
+    unit_type: int,
+    task_rag_chunk_size: int,
+    task_rag_chunk_overlap: int,
+) -> dict[str, Any]:
+    """do_rag=True 分支：repack 上傳後以 FAISS 建向量庫 RAG ZIP 上傳至 rag，失敗時重試。"""
     last_item: dict[str, Any] = {}
     for attempt in range(_RAG_UNIT_FULL_BUILD_ATTEMPTS):
         item: dict[str, Any] = {
@@ -738,10 +745,7 @@ def _build_one_rag_zip_output_item(
                     unit_type=unit_type,
                 )
             finally:
-                try:
-                    repack_local.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                _safe_unlink(repack_local)
 
             if not rag_bytes_out or len(rag_bytes_out) < _MIN_RAG_ZIP_BYTES:
                 item["rag_error"] = "RAG ZIP 產物無效或過小（未產生可用向量庫 ZIP）"
@@ -757,8 +761,6 @@ def _build_one_rag_zip_output_item(
                 verify_err = _verify_saved_rag_zip_readable(rag_zip_tab_id)
                 if verify_err:
                     item["rag_error"] = verify_err
-        except ValueError as e:
-            item["rag_error"] = str(e)
         except Exception as e:
             item["rag_error"] = str(e)
 
@@ -775,10 +777,119 @@ def _build_one_rag_zip_output_item(
     return last_item
 
 
+def _build_one_rag_zip_output_item(
+    body: PackRequest,
+    pid: str,
+    api_key: str,
+    zip_bytes: bytes,
+    filename: str,
+    *,
+    do_rag: bool = True,
+    unit_type: int = RAG_UNIT_TYPE_DEFAULT,
+    task_rag_chunk_size: int,
+    task_rag_chunk_overlap: int,
+    transcript_override: str | None = None,
+) -> dict[str, Any]:
+    """
+    將單一 repack 單元上傳至 repack，並依 do_rag 分派建立對應的 rag 產物。
+    do_rag 為 True：以 FAISS 建向量庫 RAG ZIP（見 :func:`_build_faiss_rag_item`）。
+    do_rag 為 False：repack 照舊，rag 區改上傳逐字稿 transcript.md ZIP 或 repack 同內容複製
+    （見 :func:`_build_repack_or_transcript_rag_item`）。
+    回傳與 build-rag-zip outputs[] 單筆相同結構；失敗時含 rag_error。
+    每筆皆含 **folder_combination**（檔名 stem，寫入 Rag_Unit.folder_combination）、**unit_name**（顯示名，可經請求 unit_names 覆寫）、rag_chunk_size／rag_chunk_overlap（本任務實際使用，供寫入 Rag_Unit）。
+    註：bucket 內檔名仍為 stem_rag.zip；請看 output.rag_mode。
+    """
+    repack_tab_id = repack_zip_stem_from_filename(filename) if filename else None
+    if not repack_tab_id or "\\" in repack_tab_id:
+        repack_tab_id = str(uuid.uuid4())
+
+    if not do_rag:
+        return _build_repack_or_transcript_rag_item(
+            body,
+            pid,
+            zip_bytes,
+            filename,
+            repack_tab_id,
+            unit_type=unit_type,
+            task_rag_chunk_size=task_rag_chunk_size,
+            task_rag_chunk_overlap=task_rag_chunk_overlap,
+            transcript_override=transcript_override,
+        )
+
+    return _build_faiss_rag_item(
+        body,
+        pid,
+        api_key,
+        zip_bytes,
+        filename,
+        repack_tab_id,
+        unit_type=unit_type,
+        task_rag_chunk_size=task_rag_chunk_size,
+        task_rag_chunk_overlap=task_rag_chunk_overlap,
+    )
+
+
 def _rag_zip_build_counts(outputs: list[dict[str, Any]]) -> dict[str, int]:
     total = len(outputs)
     failed = sum(1 for o in outputs if o.get("rag_error"))
     return {"total": total, "built_ok": total - failed, "built_failed": failed}
+
+
+def _rag_unit_row_from_build_output(
+    output: dict[str, Any], body: PackRequest, pid: str, course_id: int
+) -> dict[str, Any]:
+    """由 build-rag-zip 單筆 output 組出 Rag_Unit 列；依 unit_type 帶入 transcript／檔名／youtube_url。"""
+    ut = output.get("unit_type")
+    try:
+        unit_type_val = int(ut) if ut is not None else RAG_UNIT_TYPE_DEFAULT
+    except (TypeError, ValueError):
+        unit_type_val = RAG_UNIT_TYPE_DEFAULT
+    if unit_type_val < 0 or unit_type_val > 4:
+        unit_type_val = RAG_UNIT_TYPE_DEFAULT
+    unit_transcript = ""
+    text_fn = ""
+    mp3_fn = ""
+    yt_url = ""
+    if unit_type_val in (RAG_UNIT_TYPE_TEXT, RAG_UNIT_TYPE_MP3, RAG_UNIT_TYPE_YOUTUBE):
+        tp_raw = output.get("transcript_plain")
+        tp = tp_raw if isinstance(tp_raw, str) else ("" if tp_raw is None else str(tp_raw))
+        if tp.strip():
+            unit_transcript = tp
+        if unit_type_val == RAG_UNIT_TYPE_TEXT:
+            text_fn = output.get("text_file_name") or ""
+        if unit_type_val == RAG_UNIT_TYPE_MP3:
+            mp3_fn = output.get("mp3_file_name") or ""
+            text_fn = output.get("text_file_name") or ""
+        if unit_type_val == RAG_UNIT_TYPE_YOUTUBE:
+            yt_url = output.get("youtube_url") or ""
+            text_fn = output.get("text_file_name") or ""
+    try:
+        cs_raw = output.get("rag_chunk_size", output.get("chunk_size", body.rag_chunk_size))
+        co_raw = output.get("rag_chunk_overlap", output.get("chunk_overlap", body.rag_chunk_overlap))
+        cs_out = int(cs_raw)
+        co_out = int(co_raw)
+    except (TypeError, ValueError):
+        cs_out, co_out = _clamp_chunk_pair(body.rag_chunk_size, body.rag_chunk_overlap)
+    else:
+        cs_out, co_out = _clamp_chunk_pair(cs_out, co_out)
+    fc = (output.get("folder_combination") or "").strip() or (output.get("unit_name") or "").strip()
+    return _rag_unit_default_row(
+        body.rag_tab_id,
+        pid,
+        course_id=course_id,
+        unit_name=output.get("unit_name", ""),
+        folder_combination=fc,
+        unit_type=unit_type_val,
+        repack_file_name=output.get("repack_filename", ""),
+        rag_file_name=output.get("rag_filename", ""),
+        rag_file_size=float(output.get("file_size") or 0),
+        transcript=unit_transcript,
+        text_file_name=text_fn,
+        mp3_file_name=mp3_fn,
+        youtube_url=yt_url,
+        rag_chunk_size=cs_out,
+        rag_chunk_overlap=co_out,
+    )
 
 
 def _persist_rag_build_metadata(body: PackRequest, pid: str, course_id: int, response: dict[str, Any]) -> None:
@@ -807,57 +918,7 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, course_id: int, res
     for output in outputs:
         if output.get("rag_error"):
             continue
-        ut = output.get("unit_type")
-        try:
-            unit_type_val = int(ut) if ut is not None else RAG_UNIT_TYPE_DEFAULT
-        except (TypeError, ValueError):
-            unit_type_val = RAG_UNIT_TYPE_DEFAULT
-        if unit_type_val < 0 or unit_type_val > 4:
-            unit_type_val = RAG_UNIT_TYPE_DEFAULT
-        unit_transcript = ""
-        text_fn = ""
-        mp3_fn = ""
-        yt_url = ""
-        if unit_type_val in (RAG_UNIT_TYPE_TEXT, RAG_UNIT_TYPE_MP3, RAG_UNIT_TYPE_YOUTUBE):
-            tp_raw = output.get("transcript_plain")
-            tp = tp_raw if isinstance(tp_raw, str) else ("" if tp_raw is None else str(tp_raw))
-            if tp.strip():
-                unit_transcript = tp
-            if unit_type_val == RAG_UNIT_TYPE_TEXT:
-                text_fn = output.get("text_file_name") or ""
-            if unit_type_val == RAG_UNIT_TYPE_MP3:
-                mp3_fn = output.get("mp3_file_name") or ""
-                text_fn = output.get("text_file_name") or ""
-            if unit_type_val == RAG_UNIT_TYPE_YOUTUBE:
-                yt_url = output.get("youtube_url") or ""
-                text_fn = output.get("text_file_name") or ""
-        try:
-            cs_raw = output.get("rag_chunk_size", output.get("chunk_size", body.rag_chunk_size))
-            co_raw = output.get("rag_chunk_overlap", output.get("chunk_overlap", body.rag_chunk_overlap))
-            cs_out = int(cs_raw)
-            co_out = int(co_raw)
-        except (TypeError, ValueError):
-            cs_out, co_out = _clamp_chunk_pair(body.rag_chunk_size, body.rag_chunk_overlap)
-        else:
-            cs_out, co_out = _clamp_chunk_pair(cs_out, co_out)
-        fc = (output.get("folder_combination") or "").strip() or (output.get("unit_name") or "").strip()
-        unit_row = _rag_unit_default_row(
-            body.rag_tab_id,
-            pid,
-            course_id=course_id,
-            unit_name=output.get("unit_name", ""),
-            folder_combination=fc,
-            unit_type=unit_type_val,
-            repack_file_name=output.get("repack_filename", ""),
-            rag_file_name=output.get("rag_filename", ""),
-            rag_file_size=float(output.get("file_size") or 0),
-            transcript=unit_transcript,
-            text_file_name=text_fn,
-            mp3_file_name=mp3_fn,
-            youtube_url=yt_url,
-            rag_chunk_size=cs_out,
-            rag_chunk_overlap=co_out,
-        )
+        unit_row = _rag_unit_row_from_build_output(output, body, pid, course_id)
         try:
             insert_rag_child_row("Rag_Unit", unit_row)
         except Exception:
@@ -1424,18 +1485,12 @@ def build_rag_zip(
         with zipfile.ZipFile(path, "r") as z:
             folder_map = build_folder_map(z)
     except zipfile.BadZipFile:
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        _safe_unlink(path)
         raise HTTPException(status_code=400, detail="無法讀取該 ZIP 檔案")
 
     packed = repack_tasks_to_zips(path, folder_map, body.unit_list)
     if not packed:
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        _safe_unlink(path)
         raise HTTPException(status_code=400, detail="unit_list 為空或格式錯誤，例：220222+220301")
 
     api_key, user_type_val = _fetch_user_llm_key_and_user_type(pid, course_id)
@@ -1449,10 +1504,7 @@ def build_rag_zip(
         allow_faiss = (user_type_val == 1)
 
     if allow_faiss and not api_key:
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        _safe_unlink(path)
         raise HTTPException(
             status_code=400,
             detail="該使用者（person_id）尚未於個人設定填寫 LLM API Key，請至 User 設定",
@@ -1476,35 +1528,27 @@ def build_rag_zip(
     def ndjson_events():
         outputs: list[dict[str, Any]] = []
         try:
-            yield (
-                json.dumps(
-                    {
-                        "type": "start",
-                        "total": total,
-                        "source_rag_tab_id": body.rag_tab_id,
-                        "unit_list": body.unit_list,
-                        "user_type": user_type_val,
-                        "build_faiss_request": body.build_faiss,
-                        "repack_only": repack_only,
-                        "allow_faiss": allow_faiss,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
+            yield _ndjson_line(
+                {
+                    "type": "start",
+                    "total": total,
+                    "source_rag_tab_id": body.rag_tab_id,
+                    "unit_list": body.unit_list,
+                    "user_type": user_type_val,
+                    "build_faiss_request": body.build_faiss,
+                    "repack_only": repack_only,
+                    "allow_faiss": allow_faiss,
+                }
             )
             for idx, (zip_bytes, filename) in enumerate(packed):
-                yield (
-                    json.dumps(
-                        {
-                            "type": "building",
-                            "index": idx + 1,
-                            "total": total,
-                            "completed_before": idx,
-                            "filename": filename,
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
+                yield _ndjson_line(
+                    {
+                        "type": "building",
+                        "index": idx + 1,
+                        "total": total,
+                        "completed_before": idx,
+                        "filename": filename,
+                    }
                 )
                 ut = unit_types_per_task[idx]
                 t_cs, t_co = chunk_pairs[idx]
@@ -1533,12 +1577,8 @@ def build_rag_zip(
                     item["rag_chunk_size"] = 0
                     item["rag_chunk_overlap"] = 0
                 outputs.append(item)
-                yield (
-                    json.dumps(
-                        {"type": "unit", "index": idx + 1, "total": total, "output": item},
-                        ensure_ascii=False,
-                    )
-                    + "\n"
+                yield _ndjson_line(
+                    {"type": "unit", "index": idx + 1, "total": total, "output": item}
                 )
             success = not any(o.get("rag_error") for o in outputs)
             counts = _rag_zip_build_counts(outputs)
@@ -1560,12 +1600,9 @@ def build_rag_zip(
             }
             if not success:
                 complete_ev["message"] = "RAG ZIP 建立失敗（請修正後重試）"
-            yield json.dumps(complete_ev, ensure_ascii=False) + "\n"
+            yield _ndjson_line(complete_ev)
         finally:
-            try:
-                path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            _safe_unlink(path)
 
     return StreamingResponse(
         ndjson_events(),

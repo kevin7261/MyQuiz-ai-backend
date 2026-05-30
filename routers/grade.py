@@ -17,7 +17,6 @@ RAG 評分與出題 API 模組。
 import base64
 import json
 import logging
-import os
 import shutil
 import tempfile
 import uuid
@@ -51,7 +50,6 @@ from utils.llm_key import get_llm_api_key_for_person
 from utils.media import (
     audio_media_type_for_suffix,
 )
-from utils.rag_faiss import process_zip_to_docs
 from utils.rag_stem import get_rag_stem_from_rag_id, instruction_from_rag_row, transcript_from_row
 from utils.rag_transcript import (
     pick_audio_from_upload_zip,
@@ -399,6 +397,14 @@ _RAG_LLM_GENERATE_FOLLOWUP_OPENAPI_EXAMPLE = {
 }
 
 
+def _safe_unlink(p: Path) -> None:
+    """刪除暫存檔；忽略檔案不存在或刪除失敗。"""
+    try:
+        p.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _quiz_history_qa_dicts(pairs: list[QuizHistoryPair]) -> list[dict[str, str]]:
     return [
         {
@@ -409,6 +415,77 @@ def _quiz_history_qa_dicts(pairs: list[QuizHistoryPair]) -> list[dict[str, str]]
         }
         for p in pairs
     ]
+
+
+def _resolve_rag_quiz_tab_id(
+    supabase: Any, *, unit_rag_tab_id: str, source_rag_tab_id: str, rag_quiz_id: int
+) -> str:
+    """rag_tab_id 以 Rag_Unit 為準（FK 綁 rag_unit_id）；Quiz 欄位為冗餘，過期時回寫。回傳解析後的 rag_tab_id。"""
+    if unit_rag_tab_id:
+        rag_tab_id = unit_rag_tab_id
+        if source_rag_tab_id != unit_rag_tab_id:
+            try:
+                supabase.table("Rag_Quiz").update(
+                    {"rag_tab_id": unit_rag_tab_id, "updated_at": now_taipei_iso()}
+                ).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
+            except Exception as e:
+                _logger.warning(
+                    "Rag_Quiz rag_tab_id 與 Rag_Unit 不一致，回寫失敗 rag_quiz_id=%s: %s",
+                    rag_quiz_id,
+                    e,
+                )
+    else:
+        rag_tab_id = source_rag_tab_id
+    if not rag_tab_id:
+        raise HTTPException(status_code=400, detail="無法由 rag_quiz_id 解析 rag_tab_id")
+    return rag_tab_id
+
+
+def _persist_and_verify_rag_quiz(
+    supabase: Any, *, rag_quiz_id: int, quiz_update: dict[str, Any], qc: str
+) -> None:
+    """更新 Rag_Quiz 出題結果並讀回驗證；任何失敗或讀回不一致皆拋 500 HTTPException。"""
+    try:
+        supabase.table("Rag_Quiz").update(quiz_update).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
+    except Exception as e:
+        _logger.error(
+            "Rag_Quiz llm-generate 更新失敗 rag_quiz_id=%s: %s",
+            rag_quiz_id,
+            e,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "寫入 Rag_Quiz 失敗。請確認資料表欄位與 API 一致、RLS 是否允許 UPDATE，"
+                "且後端使用 SUPABASE_SERVICE_ROLE_KEY（或具足夠權限的 Secret key）。"
+                f" 原始錯誤：{e}"
+            ),
+        ) from e
+
+    chk = (
+        supabase.table("Rag_Quiz")
+        .select("quiz_content, quiz_user_prompt_text")
+        .eq("rag_quiz_id", rag_quiz_id)
+        .eq("deleted", False)
+        .limit(1)
+        .execute()
+    )
+    row_out = (chk.data or [None])[0]
+    if qc and not row_out:
+        raise HTTPException(
+            status_code=500,
+            detail="寫入 Rag_Quiz 後仍讀不到該 rag_quiz_id 列，請檢查主鍵、deleted 狀態或 RLS。",
+        )
+    if qc and row_out and (row_out.get("quiz_content") or "").strip() != qc:
+        _logger.error(
+            "Rag_Quiz llm-generate 讀回驗證失敗 rag_quiz_id=%s（quiz_content 不一致）",
+            rag_quiz_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="寫入 Rag_Quiz 未生效（更新後讀回題幹與預期不符）。請檢查 RLS 政策或是否以 anon key 連線導致更新被擋。",
+        )
 
 
 def _rag_llm_generate_quiz_impl(
@@ -487,24 +564,12 @@ def _rag_llm_generate_quiz_impl(
     )
     unit_rag_tab_id = (unit_row.get("rag_tab_id") or "").strip()
     source_rag_tab_id = (q_row.get("rag_tab_id") or "").strip()
-    # rag_tab_id 以 Rag_Unit 為準（FK 綁 rag_unit_id）；Quiz 欄位為冗餘，過期時回寫
-    if unit_rag_tab_id:
-        rag_tab_id = unit_rag_tab_id
-        if source_rag_tab_id != unit_rag_tab_id:
-            try:
-                supabase.table("Rag_Quiz").update(
-                    {"rag_tab_id": unit_rag_tab_id, "updated_at": now_taipei_iso()}
-                ).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
-            except Exception as e:
-                _logger.warning(
-                    "Rag_Quiz rag_tab_id 與 Rag_Unit 不一致，回寫失敗 rag_quiz_id=%s: %s",
-                    rag_quiz_id,
-                    e,
-                )
-    else:
-        rag_tab_id = source_rag_tab_id
-    if not rag_tab_id:
-        raise HTTPException(status_code=400, detail="無法由 rag_quiz_id 解析 rag_tab_id")
+    rag_tab_id = _resolve_rag_quiz_tab_id(
+        supabase,
+        unit_rag_tab_id=unit_rag_tab_id,
+        source_rag_tab_id=source_rag_tab_id,
+        rag_quiz_id=rag_quiz_id,
+    )
 
     rag_sel = (
         supabase.table("Rag")
@@ -626,47 +691,9 @@ def _rag_llm_generate_quiz_impl(
             "follow_up": followup,
             "updated_at": qts,
         }
-        try:
-            supabase.table("Rag_Quiz").update(quiz_update).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
-        except Exception as e:
-            _logger.error(
-                "Rag_Quiz llm-generate 更新失敗 rag_quiz_id=%s: %s",
-                rag_quiz_id,
-                e,
-                exc_info=True,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "寫入 Rag_Quiz 失敗。請確認資料表欄位與 API 一致、RLS 是否允許 UPDATE，"
-                    "且後端使用 SUPABASE_SERVICE_ROLE_KEY（或具足夠權限的 Secret key）。"
-                    f" 原始錯誤：{e}"
-                ),
-            ) from e
-
-        chk = (
-            supabase.table("Rag_Quiz")
-            .select("quiz_content, quiz_user_prompt_text")
-            .eq("rag_quiz_id", rag_quiz_id)
-            .eq("deleted", False)
-            .limit(1)
-            .execute()
+        _persist_and_verify_rag_quiz(
+            supabase, rag_quiz_id=rag_quiz_id, quiz_update=quiz_update, qc=qc
         )
-        row_out = (chk.data or [None])[0]
-        if qc and not row_out:
-            raise HTTPException(
-                status_code=500,
-                detail="寫入 Rag_Quiz 後仍讀不到該 rag_quiz_id 列，請檢查主鍵、deleted 狀態或 RLS。",
-            )
-        if qc and row_out and (row_out.get("quiz_content") or "").strip() != qc:
-            _logger.error(
-                "Rag_Quiz llm-generate 讀回驗證失敗 rag_quiz_id=%s（quiz_content 不一致）",
-                rag_quiz_id,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="寫入 Rag_Quiz 未生效（更新後讀回題幹與預期不符）。請檢查 RLS 政策或是否以 anon key 連線導致更新被擋。",
-            )
         return Response(
             content=json.dumps(result, ensure_ascii=False).encode("utf-8"),
             media_type="application/json; charset=utf-8",
@@ -679,10 +706,7 @@ def _rag_llm_generate_quiz_impl(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if path is not None:
-            try:
-                path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            _safe_unlink(path)
 
 
 @router.post("/tab/unit/quiz/llm-generate", summary="Rag LLM Generate Quiz", operation_id="rag_llm_generate_quiz")
@@ -981,20 +1005,18 @@ async def _enqueue_rag_llm_grade_job(
             cleanup_grade_workspace(work_dir)
             return JSONResponse(status_code=500, content={"error": str(e)})
         finally:
-            try:
-                rag_zip_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            _safe_unlink(rag_zip_path)
 
     job_id = str(uuid.uuid4())
     _grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
-    insert_fn = lambda rd, qa: update_rag_quiz_with_grade(
-        rd,
-        qa,
-        rag_quiz_id=rag_quiz_id_int,
-        answer_user_prompt_text=aup,
-        quiz_content=qc_from_body,
-    )
+    def insert_fn(rd, qa):
+        return update_rag_quiz_with_grade(
+            rd,
+            qa,
+            rag_quiz_id=rag_quiz_id_int,
+            answer_user_prompt_text=aup,
+            quiz_content=qc_from_body,
+        )
     background_tasks.add_task(
         run_grade_job_background,
         job_id,
@@ -1236,6 +1258,19 @@ async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseI
 # ---------------------------------------------------------------------------
 
 
+def _read_upload_zip_bytes_or_http_error(person_id: str, rag_tab_id: str) -> bytes:
+    """讀取 upload ZIP 內容；對應 404（找不到）／400（值錯誤）／500（其他）HTTPException。"""
+    try:
+        return read_upload_zip_bytes(person_id, rag_tab_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        _logger.exception("讀取 upload ZIP 失敗")
+        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+
+
 def _transcript_from_upload_zip_for_folder(
     person_id: str,
     rag_tab_id: str,
@@ -1431,15 +1466,7 @@ def rag_unit_audio_file(
     require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
     tab = (rag_tab_id or "").strip()
     folder = (folder_name or "").strip()
-    try:
-        zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        _logger.exception("讀取 upload ZIP 失敗")
-        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+    zip_bytes = _read_upload_zip_bytes_or_http_error(caller_person_id, rag_tab_id)
 
     try:
         contents, suffix, inner_path = pick_audio_from_upload_zip(zip_bytes, folder)
@@ -1491,15 +1518,7 @@ def rag_unit_youtube_url(
     require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
     tab = (rag_tab_id or "").strip()
     folder = (folder_name or "").strip()
-    try:
-        zip_bytes = read_upload_zip_bytes(caller_person_id, rag_tab_id)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        _logger.exception("讀取 upload ZIP 失敗")
-        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+    zip_bytes = _read_upload_zip_bytes_or_http_error(caller_person_id, rag_tab_id)
 
     try:
         vid, inner_path = read_youtube_video_id_from_upload_zip(zip_bytes, folder)

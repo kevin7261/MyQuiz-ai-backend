@@ -252,15 +252,6 @@ def get_zip_path_by_person(person_id: str, tab_id: str) -> Optional[Path]:
     return _download_to_temp(f"{pid}/{tab_id}/{FOLDER_UPLOAD}/{tab_id}.zip")
 
 
-def get_tab_folder_path(person_id: str, tab_id: str) -> Path:
-    """
-    回傳 {tmp}/{person_id}/{tab_id} 路徑（相容介面，Supabase Storage 版本不使用本機目錄）。
-    """
-    if not tab_id or "/" in tab_id or "\\" in tab_id:
-        raise ValueError("tab_id 不可包含路徑字元且不可為空")
-    return Path(tempfile.gettempdir()) / _resolve_person_id(person_id) / tab_id.strip()
-
-
 def delete_tab_folder(person_id: str, tab_id: str) -> bool:
     """
     刪除 Supabase Storage 中該 tab_id 下的所有檔案（upload/repack/rag），

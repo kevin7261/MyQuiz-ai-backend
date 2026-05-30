@@ -3,7 +3,6 @@ Exam / Exam_Quiz 資料存取 service。包含 DB 查詢輔助、資料組裝輔
 routers/exam.py、routers/course_analysis.py、routers/person_analysis.py 共用，不含任何 FastAPI 路由。
 """
 
-import json
 from typing import Any
 
 from postgrest.exceptions import APIError
@@ -111,21 +110,6 @@ def exams_table_select(
     return q.execute().data or []
 
 
-def exams_by_ids(exam_ids: list[int]) -> list[dict]:
-    """依 exam_id 查詢 Exam 表（僅 deleted=False）。"""
-    if not exam_ids:
-        return []
-    supabase = get_supabase()
-    return (
-        supabase.table("Exam")
-        .select("*")
-        .in_("exam_id", exam_ids)
-        .eq("deleted", False)
-        .execute()
-        .data or []
-    )
-
-
 def exams_by_tab_ids(exam_tab_ids: list[str]) -> list[dict]:
     """依 exam_tab_id 查詢 Exam 表（僅 deleted=False）。"""
     if not exam_tab_ids:
@@ -211,11 +195,6 @@ def quizzes_by_person_id(person_id: str, *, course_id: int) -> list[dict]:
 def quizzes_by_course_id(course_id: int) -> list[dict]:
     """依 course_id 查詢 Exam_Quiz 全部筆數（供課程分析使用）。"""
     return _select_exam_quiz_rows_with_follow_up_fallback(course_id=course_id)
-
-
-def all_exam_quizzes() -> list[dict]:
-    """查詢 Exam_Quiz 表全部筆數（不限 course_id；新程式請優先 quizzes_by_course_id）。"""
-    return _select_exam_quiz_rows_with_follow_up_fallback()
 
 
 # ---------------------------------------------------------------------------
@@ -317,44 +296,6 @@ def nest_follow_up_quizzes(quizzes: list[dict]) -> None:
             prev_q["follow_up_quiz"] = q
 
 
-def load_exam_quiz_followup_history_qa(
-    supabase: Any,
-    *,
-    exam_tab_id: str,
-    rag_quiz_id: int,
-    person_id: str,
-    course_id: int,
-    exclude_exam_quiz_id: int,
-) -> list[dict[str, str]]:
-    """同 exam_tab_id／rag_quiz_id／person_id 之先前 Exam_Quiz 問答；依 exam_quiz_id 升序（舊→新）。"""
-    cur_tab = (exam_tab_id or "").strip()
-    q = (
-        supabase.table("Exam_Quiz")
-        .select("quiz_content, quiz_answer_reference, answer_content, answer_critique, exam_quiz_id")
-        .eq("rag_quiz_id", rag_quiz_id)
-        .eq("course_id", course_id)
-        .eq("person_id", person_id.strip())
-        .neq("exam_quiz_id", exclude_exam_quiz_id)
-    )
-    if cur_tab:
-        q = q.eq("exam_tab_id", cur_tab)
-    rows = q.order("exam_quiz_id", desc=False).execute().data or []
-    out: list[dict[str, str]] = []
-    for row in rows:
-        qc = (row.get("quiz_content") or "").strip()
-        if not qc:
-            continue
-        out.append(
-            {
-                "quiz_content": qc,
-                "answer_content": (row.get("answer_content") or "").strip(),
-                "quiz_answer_reference": (row.get("quiz_answer_reference") or "").strip(),
-                "answer_critique": (row.get("answer_critique") or "").strip(),
-            }
-        )
-    return out
-
-
 def filter_to_chain_roots(quizzes: list[dict]) -> list[dict]:
     """只回傳 chain root 為頂層：follow_up_exam_quiz_id 為 0／空者（含 follow_up=true 但無前一題）。
     其餘 follow_up_exam_quiz_id>0 者嵌於前一題的 follow_up_quiz。"""
@@ -386,34 +327,6 @@ def exam_tab_quizzes_response(quizzes: list[dict]) -> list[dict]:
     roots = filter_to_chain_roots(quizzes)
     roots.sort(key=chain_root_exam_quiz_id)
     return roots
-
-
-def group_exam_quizzes_into_units(quizzes: list[dict]) -> list[dict]:
-    """依 Exam_Quiz.unit_name 分群；units[] 每筆含 unit_name、rag_unit_id（取自首筆有效值）、quizzes[]。"""
-    order: list[str] = []
-    buckets: dict[str, list[dict]] = {}
-    for q in quizzes:
-        un = (q.get("unit_name") or "").strip()
-        if un not in buckets:
-            order.append(un)
-            buckets[un] = []
-        buckets[un].append(q)
-    units_out: list[dict] = []
-    for un in order:
-        qlist = buckets[un]
-        rag_uid: int | None = None
-        for q in qlist:
-            ru = q.get("rag_unit_id")
-            if ru is None:
-                continue
-            try:
-                if int(ru) > 0:
-                    rag_uid = int(ru)
-                    break
-            except (TypeError, ValueError):
-                pass
-        units_out.append({"unit_name": un, "rag_unit_id": rag_uid, "quizzes": qlist})
-    return units_out
 
 
 def rag_quiz_for_exam_response_row(row: dict[str, Any]) -> dict[str, Any]:
