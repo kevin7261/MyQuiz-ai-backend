@@ -17,7 +17,7 @@ FastAPI 後端（MyQuiz.ai）：使用者登入（Supabase）、ZIP RAG、出題
    uvicorn main:app --reload
    ```
 
-LLM／Deepgram API key 請在 `.env`（本機）或部署平台 **Environment** 設定 `LLM_API_KEY` 或 `OPENAI_API_KEY`、`DEEPGRAM_API_KEY`。Rag 相關出題／評分可另於使用者資料 `User.llm_api_key` 填寫；未填時 fallback 至上述環境變數。
+LLM API Key 存於 `Course_Setting`（依 `course_id`：`rag-api-key`、`exam-api-key`），以 GET/PUT `/rag/api_key`、`/exam/api_key` 管理。Deepgram 請在 `.env` 設定 `DEEPGRAM_API_KEY`。
 
 評分請求（`POST /rag/tab/unit/quiz/llm-grade`、`POST /exam/tab/quiz/llm-grade` 等）請求 body 中學生作答欄位為 **`quiz_answer`**（仍相容舊欄位名 `answer`）；寫入 **`Rag_Quiz`／`Exam_Quiz` 的 `answer_content`**，批改評語寫入 **`answer_critique`**。已無獨立的 `Rag_Answer`／`Exam_Answer` 表，亦無 `quiz_grade`／`answer_grade` 欄位。
 
@@ -145,8 +145,7 @@ HTTP 4xx / 5xx 時統一回傳：
       "user_id": 1,
       "person_id": "string",
       "name": "string",
-      "user_type": 3,
-      "llm_api_key": "string | null",
+      "courses": [],
       "user_metadata": null,
       "updated_at": "2024-01-01T00:00:00+08:00",
       "created_at": "2024-01-01T00:00:00+08:00"
@@ -169,7 +168,6 @@ HTTP 4xx / 5xx 時統一回傳：
     "person_id": "string",
     "name": "string",
     "user_type": 3,
-    "llm_api_key": null,
     "user_metadata": null,
     "updated_at": "2024-01-01T00:00:00+08:00",
     "created_at": "2024-01-01T00:00:00+08:00"
@@ -192,7 +190,6 @@ HTTP 4xx / 5xx 時統一回傳：
       "person_id": "string",
       "name": "string",
       "user_type": 3,
-      "llm_api_key": null,
       "user_metadata": null,
       "updated_at": "2024-01-01T00:00:00+08:00",
       "created_at": "2024-01-01T00:00:00+08:00"
@@ -219,7 +216,6 @@ HTTP 4xx / 5xx 時統一回傳：
     "person_id": "string",
     "name": "string",
     "user_type": 3,
-    "llm_api_key": null,
     "user_metadata": null,
     "updated_at": "2024-01-01T00:00:00+08:00",
     "created_at": "2024-01-01T00:00:00+08:00"
@@ -241,7 +237,6 @@ HTTP 4xx / 5xx 時統一回傳：
     "person_id": "string",
     "name": "string",
     "user_type": 3,
-    "llm_api_key": "string | null",
     "user_metadata": null,
     "updated_at": "2024-01-01T00:00:00+08:00",
     "created_at": "2024-01-01T00:00:00+08:00"
@@ -261,7 +256,7 @@ HTTP 4xx / 5xx 時統一回傳：
 
 #### `PATCH /user/profile`
 
-更新個人資料（name、user_type、llm_api_key）；courses 固定為空列表。
+更新個人資料（name、user_type）；`user_type` 更新會套用至該使用者所有選課列。
 
 ```json
 {
@@ -270,7 +265,6 @@ HTTP 4xx / 5xx 時統一回傳：
     "person_id": "string",
     "name": "string",
     "user_type": 3,
-    "llm_api_key": "string | null",
     "user_metadata": null,
     "updated_at": "2024-01-01T00:00:00+08:00",
     "created_at": "2024-01-01T00:00:00+08:00"

@@ -15,6 +15,8 @@ Exam API 模組。對應 public.Exam、public.Exam_Quiz。
 - POST /exam/tab/quiz/llm-grade：非同步 RAG+LLM 評分；回傳 202 + job_id，輪詢 GET /exam/tab/quiz/grade-result/{job_id}。
 - PUT /exam/tab/delete/{exam_tab_id}：軟刪除 Exam。
 - POST /exam/tab/quiz/rate：更新 Exam_Quiz.quiz_rate（僅 -1、0、1）。
+- GET /exam/api_key：讀取 Course_Setting key=exam-api-key（依 query course_id）；僅開發者／管理者。
+- PUT /exam/api_key：寫入 Course_Setting key=exam-api-key（依 query course_id）；僅開發者／管理者。
 """
 
 import json
@@ -25,7 +27,7 @@ import textwrap
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path as PathParam, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -61,7 +63,12 @@ from services.grading import (
 from utils.taipei_time import now_taipei_iso, to_taipei_iso
 from utils.retry import call_with_transient_http_retry
 from utils.serialization import to_json_safe
-from utils.llm_key import get_llm_api_key
+from utils.llm_key import fetch_api_key_setting_row, get_exam_api_key
+from utils.course_setting import COURSE_SETTING_EXAM_API_KEY
+from routers.course_settings import (
+    _require_developer_or_manager_for_analysis_prompt_write,
+    _upsert_setting_and_get_row,
+)
 from utils.exam_course import require_exam_row
 from utils.rag_course import (
     assert_row_course_id,
@@ -729,7 +736,7 @@ def exam_insert_empty_quiz(
 
 _EXAM_LLM_GEN_DESCRIPTION = """\
 Body：`exam_quiz_id`、`rag_tab_id`、`rag_unit_id`、`rag_quiz_id` 皆必填（順序同 public.Exam_Quiz）。
-`rag_tab_id` 須對應 `public.Rag.rag_tab_id`，且與所列 `rag_unit_id`、`rag_quiz_id` 在 DB 上所隸屬之 Tab 一致；並用此載入 ZIP／單元（**不依賴** System_Setting 之 `rag_localhost`/`rag_deploy`）。
+`rag_tab_id` 須對應 `public.Rag.rag_tab_id`，且與所列 `rag_unit_id`、`rag_quiz_id` 在 DB 上所隸屬之 Tab 一致；並用此載入 ZIP／單元（**不依賴** Course_Setting 之 `rag_localhost`/`rag_deploy`）。
 若該 Exam_Quiz 列**已有**有效的 `rag_unit_id`、`rag_quiz_id`，請求兩鍵須與列**完全一致**，否則 400。
 若列**尚未**寫入（缺其一或為 0），則以此請求綁定，出題成功後一併寫回。
 `quiz_user_prompt_text`／`answer_user_prompt_text` 僅自 Rag_Quiz（請求中的 `rag_quiz_id`）讀取，不另由 body 帶入文字；出題成功後寫入 Exam_Quiz 以記錄當下模板。
@@ -1184,11 +1191,11 @@ def _exam_llm_generate_quiz_impl(
     if not unit_filter:
         unit_filter = (qrow.get("unit_name") or "").strip() or None
 
-    api_key = get_llm_api_key()
+    api_key = get_exam_api_key(course_id)
     if not api_key:
         raise HTTPException(
             status_code=400,
-            detail="請設定 LLM API Key：環境變數 LLM_API_KEY 或 OPENAI_API_KEY（本機可寫入 .env）",
+            detail="請設定 Exam API Key：PUT /exam/api_key（Course_Setting key=exam-api-key，依 course_id）",
         )
 
     rag_rows = select_rag_row_with_transcript_fallback(supabase, rag_id_resolved)
@@ -1585,12 +1592,12 @@ async def exam_grade_submission(
 
     quiz_content = (body.quiz_content or "").strip() or stored_quiz_content
 
-    api_key = get_llm_api_key()
+    api_key = get_exam_api_key(course_id)
     if not api_key:
         return JSONResponse(
             status_code=400,
             content={
-                "error": "請設定 LLM API Key：環境變數 LLM_API_KEY 或 OPENAI_API_KEY（本機可寫入 .env）",
+                "error": "請設定 Exam API Key：PUT /exam/api_key（Course_Setting key=exam-api-key，依 course_id）",
             },
         )
 
@@ -1724,7 +1731,7 @@ async def exam_grade_submission(
             content={
                 "error": (
                     "無法決定評分用之 RAG：請確認 Exam_Quiz 填有對應 `Rag` 之 rag_tab_id，"
-                    "或 rag_unit_id／rag_quiz_id 可自 Rag_Unit／Rag_Quiz 解析；仍可於 System_Setting "
+                    "或 rag_unit_id／rag_quiz_id 可自 Rag_Unit／Rag_Quiz 解析；仍可於 Course_Setting "
                     "設定 rag_localhost／rag_deploy，value=Rag.rag_id。"
                 ),
             },
@@ -1920,3 +1927,68 @@ def update_exam_quiz_rate(
     out = dict(after.data[0])
     out["message"] = "已更新 quiz_rate"
     return to_json_safe(out)
+
+
+# ---------------------------------------------------------------------------
+# GET / PUT /exam/api_key
+# ---------------------------------------------------------------------------
+
+
+class ExamApiKeyResponse(BaseModel):
+    """GET/PUT /exam/api_key 回應（Course_Setting key=exam-api-key）。"""
+
+    course_setting_id: Optional[int] = None
+    course_id: int
+    api_key: Optional[str] = None
+
+
+class PutExamApiKeyRequest(BaseModel):
+    """PUT /exam/api_key 的 body。"""
+
+    api_key: str = Field(..., description="Exam LLM API Key")
+
+
+@router.get("/api_key", response_model=ExamApiKeyResponse)
+def get_exam_api_key_setting(person_id: PersonId, course_id: CourseId):
+    """讀取 Exam LLM API Key（Course_Setting key=exam-api-key，依 course_id）。"""
+    _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
+    row = fetch_api_key_setting_row(COURSE_SETTING_EXAM_API_KEY, course_id)
+    if not row:
+        return ExamApiKeyResponse(course_id=course_id)
+    value = (row.get("value") or "").strip()
+    return ExamApiKeyResponse(
+        course_setting_id=row.get("course_setting_id"),
+        course_id=course_id,
+        api_key=value or None,
+    )
+
+
+@router.put("/api_key", response_model=ExamApiKeyResponse)
+def put_exam_api_key_setting(
+    body: openapi_body(PutExamApiKeyRequest, {"api_key": "sk-..."}),
+    person_id: PersonId,
+    course_id: CourseId,
+):
+    """寫入 Exam LLM API Key（Course_Setting key=exam-api-key，依 course_id）。"""
+    _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
+    value_to_save = (body.api_key or "").strip()
+    try:
+        supabase = get_supabase()
+        row = _upsert_setting_and_get_row(
+            supabase,
+            COURSE_SETTING_EXAM_API_KEY,
+            value_to_save,
+            course_id,
+        )
+        if not row:
+            return ExamApiKeyResponse(course_id=course_id, api_key=value_to_save or None)
+        saved = (row.get("value") or "").strip()
+        return ExamApiKeyResponse(
+            course_setting_id=row.get("course_setting_id"),
+            course_id=course_id,
+            api_key=saved or None,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e

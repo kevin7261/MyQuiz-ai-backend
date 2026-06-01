@@ -12,6 +12,10 @@ RAG 評分與出題 API 模組。
 - GET /rag/unit/text：依 rag_tab_id、folder_name 自 upload ZIP 回傳文字檔全文 transcript（需 person_id）；或依 rag_unit_id 自 DB 讀取（**不需** person_id），DB 為空時改讀 upload ZIP。
 - GET /rag/unit/mp3-file：自 upload ZIP 依 folder_name 回傳音訊（base64）與同資料夾內文字檔逐字稿；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者。
 - GET /rag/unit/youtube-url：自 upload ZIP 依 folder_name 解析 YouTube URL 與文字檔第二行起之逐字稿；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者。
+- GET /rag/api_key：讀取 Course_Setting key=rag-api-key（依 query course_id）；僅開發者／管理者。
+- PUT /rag/api_key：寫入 Course_Setting key=rag-api-key（依 query course_id）；僅開發者／管理者。
+- GET /rag/person_analysis_user_prompt_text、PUT /rag/person_analysis_user_prompt_text：個人分析 prompt（見 course_settings 路由）。
+- GET /rag/course_analysis_user_prompt_text、PUT /rag/course_analysis_user_prompt_text：課程分析 prompt（見 course_settings 路由）。
 """
 
 import base64
@@ -22,7 +26,7 @@ import tempfile
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Optional
 
 from services.quiz_generation import (
     generate_quiz,
@@ -46,7 +50,12 @@ from services.grading import (
 )
 from utils.taipei_time import now_taipei_iso
 from utils.serialization import to_json_safe
-from utils.llm_key import get_llm_api_key_for_person
+from utils.llm_key import fetch_api_key_setting_row, get_rag_api_key
+from utils.course_setting import COURSE_SETTING_RAG_API_KEY
+from routers.course_settings import (
+    _require_developer_or_manager_for_analysis_prompt_write,
+    _upsert_setting_and_get_row,
+)
 from utils.media import (
     audio_media_type_for_suffix,
 )
@@ -595,14 +604,14 @@ def _rag_llm_generate_quiz_impl(
     )
     person_id = (row.get("person_id") or "").strip()
     if not person_id:
-        raise HTTPException(status_code=400, detail="該筆 Rag 的 person_id 為空，無法取得 LLM API Key")
+        raise HTTPException(status_code=400, detail="該筆 Rag 的 person_id 為空，無法出題")
     if person_id != caller_person_id:
         raise HTTPException(status_code=403, detail="無權對該 Rag 出題")
-    api_key = get_llm_api_key_for_person(person_id)
+    api_key = get_rag_api_key(course_id)
     if not api_key:
         raise HTTPException(
             status_code=400,
-            detail="該使用者尚未填寫 LLM API Key：請至個人設定填寫，或本機在 .env 設定 LLM_API_KEY／OPENAI_API_KEY",
+            detail="請設定 RAG API Key：PUT /rag/api_key（Course_Setting key=rag-api-key，依 course_id）",
         )
     transcript_text = transcript_from_row(unit_row)
     if not transcript_text:
@@ -881,7 +890,7 @@ async def _enqueue_rag_llm_grade_job(
 
     person_id = (row.get("person_id") or "").strip()
     if not person_id:
-        return JSONResponse(status_code=400, content={"error": "該筆 Rag 的 person_id 為空，無法取得 LLM API Key"})
+        return JSONResponse(status_code=400, content={"error": "該筆 Rag 的 person_id 為空，無法評分"})
     if person_id != caller_person_id:
         return JSONResponse(status_code=403, content={"error": "無權對該 Rag 評分"})
     assert_row_course_id(row, course_id, "Rag")
@@ -893,12 +902,12 @@ async def _enqueue_rag_llm_grade_job(
     if rag_quiz_id_int <= 0:
         return JSONResponse(status_code=400, content={"error": "rag_quiz_id 必填且須為大於 0 的整數（對應 Rag_Quiz 主鍵）"})
 
-    api_key = get_llm_api_key_for_person(person_id)
+    api_key = get_rag_api_key(course_id)
     if not api_key:
         return JSONResponse(
             status_code=400,
             content={
-                "error": "該使用者尚未填寫 LLM API Key：請至個人設定填寫，或本機在 .env 設定 LLM_API_KEY／OPENAI_API_KEY",
+                "error": "請設定 RAG API Key：PUT /rag/api_key（Course_Setting key=rag-api-key，依 course_id）",
             },
         )
 
@@ -1534,4 +1543,68 @@ def rag_unit_youtube_url(
         transcript=transcript,
     )
 
+
+# ---------------------------------------------------------------------------
+# GET / PUT /rag/api_key
+# ---------------------------------------------------------------------------
+
+
+class RagApiKeyResponse(BaseModel):
+    """GET/PUT /rag/api_key 回應（Course_Setting key=rag-api-key）。"""
+
+    course_setting_id: Optional[int] = None
+    course_id: int
+    api_key: Optional[str] = None
+
+
+class PutRagApiKeyRequest(BaseModel):
+    """PUT /rag/api_key 的 body。"""
+
+    api_key: str = Field(..., description="RAG LLM API Key")
+
+
+@router.get("/api_key", response_model=RagApiKeyResponse)
+def get_rag_api_key_setting(person_id: PersonId, course_id: CourseId):
+    """讀取 RAG LLM API Key（Course_Setting key=rag-api-key，依 course_id）。"""
+    _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
+    row = fetch_api_key_setting_row(COURSE_SETTING_RAG_API_KEY, course_id)
+    if not row:
+        return RagApiKeyResponse(course_id=course_id)
+    value = (row.get("value") or "").strip()
+    return RagApiKeyResponse(
+        course_setting_id=row.get("course_setting_id"),
+        course_id=course_id,
+        api_key=value or None,
+    )
+
+
+@router.put("/api_key", response_model=RagApiKeyResponse)
+def put_rag_api_key_setting(
+    body: openapi_body(PutRagApiKeyRequest, {"api_key": "sk-..."}),
+    person_id: PersonId,
+    course_id: CourseId,
+):
+    """寫入 RAG LLM API Key（Course_Setting key=rag-api-key，依 course_id）。"""
+    _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
+    value_to_save = (body.api_key or "").strip()
+    try:
+        supabase = get_supabase()
+        row = _upsert_setting_and_get_row(
+            supabase,
+            COURSE_SETTING_RAG_API_KEY,
+            value_to_save,
+            course_id,
+        )
+        if not row:
+            return RagApiKeyResponse(course_id=course_id, api_key=value_to_save or None)
+        saved = (row.get("value") or "").strip()
+        return RagApiKeyResponse(
+            course_setting_id=row.get("course_setting_id"),
+            course_id=course_id,
+            api_key=saved or None,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 

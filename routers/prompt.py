@@ -1,6 +1,6 @@
 """
 LLM Prompt 模板查詢 API。
-- GET /prompt/templates：回傳抓 RAG、llm-generate、llm-grade、個人分析、課程分析之 prompt 全文（程式內建模板，非 System_Setting 或 DB 動態值）。
+- GET /prompt/templates：回傳抓 RAG、llm-generate、llm-grade、個人分析、課程分析之 prompt 全文（程式內建模板，非 Course_Setting 或 DB 動態值）。
 """
 
 from fastapi import APIRouter

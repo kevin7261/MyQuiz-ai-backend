@@ -410,7 +410,7 @@ def _generate_quiz_from_context(
 ) -> dict:
     """FAISS 與逐字稿共用：組 USER_PROMPT_COURSE → 呼叫 LLM。"""
     if not api_key or not api_key.strip():
-        raise ValueError("請傳入 llm_api_key")
+        raise ValueError("請傳入 api_key")
     if not (context_text or "").strip():
         raise ValueError("請傳入課程內容（檢索片段或逐字稿，必填）")
     context_md = _context_as_markdown_fenced(context_text)
@@ -439,7 +439,7 @@ def _generate_quiz_followup_from_context(
 ) -> dict:
     """追問出題：組 USER_PROMPT_COURSE_FOLLOWUP → 呼叫 LLM。"""
     if not api_key or not api_key.strip():
-        raise ValueError("請傳入 llm_api_key")
+        raise ValueError("請傳入 api_key")
     if not (context_text or "").strip():
         raise ValueError("請傳入課程內容（檢索片段或逐字稿，必填）")
     context_md = _context_as_markdown_fenced(context_text)
@@ -510,7 +510,7 @@ def generate_quiz(
         quiz_history_list: 已出過題目題幹；併入「已出過題目（quiz_history_list）」區塊，避免重複出題。
     """
     if not api_key or not api_key.strip():
-        raise ValueError("請傳入 llm_api_key")
+        raise ValueError("請傳入 api_key")
 
     extract_folder = Path(tempfile.mkdtemp())
     try:
@@ -584,7 +584,7 @@ def generate_quiz_followup(
 ) -> dict:
     """追問出題（有 FAISS RAG ZIP）：答不好追問弱點，答好出新題。"""
     if not api_key or not api_key.strip():
-        raise ValueError("請傳入 llm_api_key")
+        raise ValueError("請傳入 api_key")
 
     extract_folder = Path(tempfile.mkdtemp())
     try:

@@ -1,10 +1,11 @@
-"""供測驗用 RAG：System_Setting key（rag_localhost / rag_deploy）與依連線判斷本機。"""
+"""供測驗用 RAG：Course_Setting key（rag_localhost / rag_deploy）與依連線判斷本機。"""
 
 from __future__ import annotations
 
 from fastapi import Request
 
 from utils.rag_course import execute_with_course_id_fallback
+from utils.course_setting import COURSE_SETTING_TABLE
 
 RAG_EXAM_SETTING_KEY_LOCALHOST = "rag_localhost"
 RAG_EXAM_SETTING_KEY_DEPLOY = "rag_deploy"
@@ -33,13 +34,13 @@ def fetch_exam_rag_id_from_settings(
     supabase, request: Request, course_id: int | None = None
 ) -> tuple[str, int | None]:
     """
-    依連線讀取 System_Setting 中對應 key 的 value，解析為 rag_id。
+    依連線讀取 Course_Setting 中對應 key 的 value，解析為 rag_id。
     course_id 若指定則一併篩選該課程之設定列。
     回傳 (實際使用的 key, rag_id)；無列或無效數字則 rag_id 為 None。
     """
     key = exam_rag_setting_key(request)
     q = (
-        supabase.table("System_Setting")
+        supabase.table(COURSE_SETTING_TABLE)
         .select("value")
         .eq("key", key)
     )
@@ -96,7 +97,7 @@ def resolve_exam_content_rag_id(
     """
     供測驗出題／批改選擇 Rag.rag_id。
 
-    GET /exam/rag-for-exams 可列出多個 rag_tab_id 底下之單元（並依 Rag.local／連線篩選）；若僅依 System_Setting
+    GET /exam/rag-for-exams 可列出多個 rag_tab_id 底下之單元（並依 Rag.local／連線篩選）；若僅依 Course_Setting
     單一 rag_id，會與 rag_unit_id 所屬 tab 不一致。故優先：
 
     1. stem_rag_unit_id > 0：由 Rag_Unit.rag_tab_id → Rag.rag_id

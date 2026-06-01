@@ -11,7 +11,7 @@ from typing import Any
 USER_TABLE = "User"
 COLLEGE_TABLE = "College"
 COURSE_TABLE = "Course"
-# enrollments / per-course profile（user_type、llm_api_key）
+# enrollments / per-course profile（user_type）
 USER_COURSE_RELATION_TABLE = "User_Course_Relation"
 
 # Supabase PostgREST：deleted 為 false 或 null 視為有效列（與舊資料相容）

@@ -6,7 +6,7 @@
   另帶 weakness_report：每次請求皆呼叫 LLM 產生弱點報告（有 LLM API Key 且成功呼叫時為模型回覆原文，否則 null）。
 
 重要：弱點報告與出題／批改相同，系統與使用者訊息皆為 **Markdown**；本路由**不**使用 `response_format=json_object`。
-**個人分析 user prompt** 取自 `System_Setting.key=person_analysis_user_prompt_text`（與 GET/PUT `/system-settings/person_analysis_user_prompt_text` 同源），嵌入 user 訊息之 **`## 個人分析 user prompt`**。
+**個人分析 user prompt** 取自 `Course_Setting.key=person_analysis_user_prompt_text`（與 GET/PUT `/rag/person_analysis_user_prompt_text` 同源），嵌入 user 訊息之 **`## 個人分析 user prompt`**。
 """
 
 from typing import Optional
@@ -17,10 +17,16 @@ from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
 from pydantic import BaseModel, Field
 
-from routers.system_settings import (
-    SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY,
-    fetch_system_setting_text,
+from utils.course_setting import (
+    COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY,
+    fetch_course_setting_text,
 )
+
+# 向後相容別名
+SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY = (
+    COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY
+)
+fetch_system_setting_text = fetch_course_setting_text
 from services.exam_queries import (
     exams_by_tab_ids,
     enrich_exam_quizzes_rag_tab_from_units,
@@ -30,7 +36,7 @@ from services.exam_queries import (
 )
 from services.weakness_report import generate_weakness_report_md, quiz_has_answer
 from utils.serialization import to_json_safe
-from utils.llm_key import get_llm_api_key
+from utils.llm_key import get_exam_api_key
 
 router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
 
@@ -57,8 +63,8 @@ def list_quizzes_by_person(
     依 person_id、course_id 取得已作答的 Exam_Quiz（answer_content 非空），依 exam_tab_id 分群後對應 Exam；
     每筆 Exam 的 quizzes 形狀與 GET /exam/tabs 一致（題目為完整 Exam_Quiz 列，含作答欄位）。
     weakness_report：每次請求皆嘗試呼叫 LLM 產生；成功時為 `message.content` 原文，否則為 null。
-    弱點報告 user 訊息會併入 System_Setting `person_analysis_user_prompt_text`
-    （與 `/system-settings/person_analysis_user_prompt_text` 同源）。
+    弱點報告 user 訊息會併入 Course_Setting `person_analysis_user_prompt_text`
+    （與 `/rag/person_analysis_user_prompt_text` 同源）。
     query 的 person_id 須與路徑 {person_id} 一致；必填 query course_id。
     """
     try:
@@ -89,7 +95,7 @@ def list_quizzes_by_person(
 
         data = to_json_safe(exam_rows)
         weakness_report: Optional[str] = None
-        api_key = get_llm_api_key()
+        api_key = get_exam_api_key(course_id)
         if api_key:
             setting_prompt = fetch_system_setting_text(
                 SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY, course_id

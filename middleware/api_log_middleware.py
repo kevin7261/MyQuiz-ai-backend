@@ -31,14 +31,14 @@ _SKIP_PATH_PREFIXES = (
 
 # 不寫入 Log 的「方法 + 路徑」（精確比對 path，不含 query）
 _SKIP_LOG_ROUTES = frozenset({
-    ("GET", "/system-settings/person_analysis_user_prompt_text"),
-    ("GET", "/system-settings/course_analysis_user_prompt_text"),
+    ("GET", "/rag/person_analysis_user_prompt_text"),
+    ("GET", "/rag/course_analysis_user_prompt_text"),
 })
 
 # parameters 內敏感欄位遮罩
 _REDACT_SUBSTRINGS = ("password", "secret", "token", "api_key", "apikey", "authorization")
 _REDACT_EXACT = frozenset(
-    {"password", "llm_api_key", "llmapikey", "deepgram_api_key", "openai_api_key"}
+    {"password", "llm_api_key", "llmapikey", "deepgram_api_key", "openai_api_key", "rag_api_key", "exam_api_key"}
 )
 
 
