@@ -9,6 +9,8 @@ from typing import Any
 
 # public."User"
 USER_TABLE = "User"
+COLLEGE_TABLE = "College"
+COURSE_TABLE = "Course"
 # enrollments / per-course profile（user_type、llm_api_key）
 USER_COURSE_RELATION_TABLE = "User_Course_Relation"
 

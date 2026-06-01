@@ -22,6 +22,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from dependencies.person_id import PersonId
 from middleware.api_log_middleware import APILogMiddleware
+from routers.college import router as college_router
+from routers.course import router as course_router
 from routers.course_analysis import router as course_analysis_router
 from routers.exam import router as exam_router
 from routers.grade import router as grade_router
@@ -97,6 +99,8 @@ app.include_router(exam_router)
 app.include_router(person_analysis_router)
 app.include_router(course_analysis_router)
 app.include_router(users_router)
+app.include_router(college_router)
+app.include_router(course_router)
 app.include_router(system_settings_router)
 app.include_router(prompt_router)
 app.include_router(log_router)

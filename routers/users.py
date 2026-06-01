@@ -1,8 +1,8 @@
 """
 使用者相關 API 模組。
 提供：
-- GET /user/users：列出 User 表（不含 password）
-- POST /user/users：新增單一使用者（person_id、name、user_type）
+- GET /user/users：列出 User 表（不含 password），含各使用者選課 courses 列表
+- POST /user/users：新增單一使用者（person_id、name、course_id、user_type；college_id 自 Course 帶入）
 - POST /user/users/batch：批次新增使用者（每筆僅 person_id、name；user_type 固定為 3；password 預設 0000）
 - PUT /user/users/delete：軟刪除（body.person_id 指定對象，將 deleted 設為 true）
 - POST /user/login：以 person_id + password 登入（成功時另回傳該帳號之 User_Course_Relation 課程列表）
@@ -19,6 +19,8 @@ from pydantic import BaseModel, Field
 from utils.taipei_time import now_taipei_iso, to_taipei_iso
 from utils.db_schema import (
     ACTIVE_DELETED_FILTER,
+    COLLEGE_TABLE,
+    COURSE_TABLE,
     USER_COURSE_RELATION_TABLE,
     USER_TABLE,
 )
@@ -27,12 +29,12 @@ from utils.supabase import get_supabase
 
 router = APIRouter(prefix="/user", tags=["user"])
 
-# User 表實體欄位（user_type / llm_api_key 在 User_Course_Relation）
-USER_TABLE_COLUMNS = "user_id, person_id, name, deleted, updated_at, created_at"
+# User 表實體欄位（llm_api_key 在 User_Course_Relation；user_type 隨 courses 各列；college_name 可自 College 串接）
+USER_TABLE_COLUMNS = "user_id, person_id, college_id, college_name, name, deleted, updated_at, created_at"
 
 
 def _pick_primary_relation_rows(relations: list[dict]) -> dict[int, dict]:
-    """每個 user_id 取 course_user_id 最小之一列，作為 API 上單一 user_type／llm_api_key 來源。"""
+    """每個 user_id 取 course_user_id 最小之一列，作為 API 上 llm_api_key 來源。"""
     best: dict[int, dict] = {}
     for r in relations:
         uid = r.get("user_id")
@@ -54,7 +56,7 @@ def _fetch_relations_by_user_ids(supabase, user_ids: list[int]) -> dict[int, dic
         return {}
     resp = (
         supabase.table(USER_COURSE_RELATION_TABLE)
-        .select("course_user_id, user_id, user_type, llm_api_key")
+        .select("course_user_id, user_id, llm_api_key")
         .in_("user_id", user_ids)
         .or_(ACTIVE_DELETED_FILTER)
         .execute()
@@ -67,28 +69,134 @@ def _fetch_relation_for_user_id(supabase, user_id: int) -> dict | None:
     return _fetch_relations_by_user_ids(supabase, [user_id]).get(user_id)
 
 
-def _fetch_all_course_relations_for_user(supabase, user_id: int) -> list[dict]:
-    """該 user_id 於 User_Course_Relation 之全部有效列（依 course_user_id 排序）。"""
+def _normalize_college_id(raw: Any) -> str:
+    return str(raw or "").strip()
+
+
+def _fetch_colleges_by_ids(supabase, college_ids: list[str]) -> dict[str, str]:
+    """依 college_id 自 College 表批次查詢 college_name。"""
+    ids: list[int] = []
+    for cid in college_ids:
+        c = _normalize_college_id(cid)
+        if not c:
+            continue
+        try:
+            ids.append(int(c))
+        except ValueError:
+            continue
+    if not ids:
+        return {}
+    resp = (
+        supabase.table(COLLEGE_TABLE)
+        .select("college_id, college_name")
+        .in_("college_id", list(dict.fromkeys(ids)))
+        .or_(ACTIVE_DELETED_FILTER)
+        .execute()
+    )
+    out: dict[str, str] = {}
+    for row in resp.data or []:
+        cid = row.get("college_id")
+        if cid is None:
+            continue
+        out[str(cid)] = (row.get("college_name") or "").strip()
+    return out
+
+
+def _college_name_for_user(user_row: dict, college_by_id: dict[str, str] | None = None) -> Optional[str]:
+    cid = _normalize_college_id(user_row.get("college_id"))
+    stored = (user_row.get("college_name") or "").strip()
+    if cid and college_by_id:
+        joined = (college_by_id.get(cid) or "").strip()
+        if joined:
+            return joined
+    return stored or None
+
+
+def _fetch_courses_by_ids(supabase, course_ids: list[int]) -> dict[int, dict]:
+    """依 course_id 自 Course 表批次查詢課程資訊。"""
+    ids = [i for i in dict.fromkeys(course_ids) if i]
+    if not ids:
+        return {}
+    resp = (
+        supabase.table(COURSE_TABLE)
+        .select("course_id, college_id, semester, course_name")
+        .in_("course_id", ids)
+        .or_(ACTIVE_DELETED_FILTER)
+        .execute()
+    )
+    out: dict[int, dict] = {}
+    for row in resp.data or []:
+        cid = row.get("course_id")
+        if cid is not None:
+            out[int(cid)] = row
+    return out
+
+
+def _fetch_course_relations_by_user_ids(supabase, user_ids: list[int]) -> dict[int, list[dict]]:
+    """各 user_id 於 User_Course_Relation 之全部有效列（依 course_user_id 排序）。"""
+    if not user_ids:
+        return {}
     resp = (
         supabase.table(USER_COURSE_RELATION_TABLE)
-        .select("course_user_id, course_id, course_name, user_type")
-        .eq("user_id", user_id)
+        .select("course_user_id, user_id, course_id, college_id, user_type")
+        .in_("user_id", user_ids)
         .or_(ACTIVE_DELETED_FILTER)
         .order("course_user_id")
         .execute()
     )
-    return list(resp.data or [])
+    out: dict[int, list[dict]] = {}
+    for row in resp.data or []:
+        uid = row.get("user_id")
+        if uid is None:
+            continue
+        out.setdefault(int(uid), []).append(row)
+    return out
 
 
-def _user_public_dict(user_row: dict, relation_row: dict | None = None) -> dict:
-    """組出對外使用者 dict；user_type／llm_api_key 來自 User_Course_Relation（可為 None）。"""
+def _fetch_all_course_relations_for_user(supabase, user_id: int) -> list[dict]:
+    return _fetch_course_relations_by_user_ids(supabase, [user_id]).get(user_id, [])
+
+
+def _build_user_course_items(
+    relations: list[dict],
+    course_by_id: dict[int, dict] | None = None,
+) -> list[dict]:
+    """將 User_Course_Relation 列轉為 API 課程項目（course_name 自 Course 表串接）。"""
+    course_by_id = course_by_id or {}
+    items: list[dict] = []
+    for r in relations:
+        course_user_id = r.get("course_user_id")
+        if course_user_id is None:
+            continue
+        course_id = int(r.get("course_id") or 0)
+        course_row = course_by_id.get(course_id, {})
+        college_raw = r.get("college_id")
+        if college_raw is None or int(college_raw or 0) == 0:
+            college_raw = course_row.get("college_id")
+        college_id = int(college_raw) if college_raw is not None and int(college_raw or 0) != 0 else None
+        items.append({
+            "course_user_id": int(course_user_id),
+            "course_id": course_id,
+            "college_id": college_id,
+            "course_name": (course_row.get("course_name") or "").strip() or None,
+            "user_type": r.get("user_type"),
+        })
+    return items
+
+
+def _user_public_dict(
+    user_row: dict,
+    relation_row: dict | None = None,
+    college_by_id: dict[str, str] | None = None,
+    courses: list[dict] | None = None,
+) -> dict:
+    """組出對外使用者 dict；llm_api_key 取自 User_Course_Relation 首列；user_type 見 courses 各項。"""
+    cid = _normalize_college_id(user_row.get("college_id"))
     out = {k: user_row.get(k) for k in ("user_id", "person_id", "name", "updated_at", "created_at")}
-    if relation_row:
-        out["user_type"] = relation_row.get("user_type")
-        out["llm_api_key"] = relation_row.get("llm_api_key")
-    else:
-        out["user_type"] = None
-        out["llm_api_key"] = None
+    out["college_id"] = cid or None
+    out["college_name"] = _college_name_for_user(user_row, college_by_id)
+    out["llm_api_key"] = relation_row.get("llm_api_key") if relation_row else None
+    out["courses"] = courses if courses is not None else []
     out["user_metadata"] = None
     out["updated_at"] = to_taipei_iso(out.get("updated_at"))
     out["created_at"] = to_taipei_iso(out.get("created_at"))
@@ -104,13 +212,15 @@ def _insert_user_course_relation(
     user_type: int,
     ts: str,
     llm_api_key: str = "",
+    college_id: int = 0,
+    course_id: int = 0,
 ) -> None:
     supabase.table(USER_COURSE_RELATION_TABLE).insert({
         "user_id": user_id,
         "person_id": person_id,
         "name": (name or "").strip() or "",
-        "course_id": 0,
-        "course_name": "",
+        "course_id": course_id,
+        "college_id": college_id,
         "user_type": user_type,
         "llm_api_key": llm_api_key,
         "deleted": False,
@@ -120,12 +230,14 @@ def _insert_user_course_relation(
 
 
 class UserListItem(BaseModel):
-    """單筆使用者（不含 password）。"""
+    """單筆使用者（不含 password）；user_type 見 courses 各項。"""
     user_id: int
     person_id: Optional[str] = None
+    college_id: Optional[str] = None
+    college_name: Optional[str] = None
     name: Optional[str] = None
-    user_type: Optional[int] = None
     llm_api_key: Optional[str] = None
+    courses: list["UserCourseItem"] = Field(default_factory=list)
     user_metadata: Optional[Any] = None
     updated_at: Optional[str] = None
     created_at: Optional[str] = None
@@ -144,15 +256,19 @@ class LoginRequest(BaseModel):
 
 
 class UserCourseItem(BaseModel):
-    """User_Course_Relation 單筆課程／選課資訊（不含 llm_api_key）。"""
+    """User_Course_Relation 單筆課程／選課資訊（含 user_type；course_name 自 Course 表串接；不含 llm_api_key）。"""
     course_user_id: int
     course_id: int
+    college_id: Optional[int] = None
     course_name: Optional[str] = None
     user_type: Optional[int] = None
 
 
+UserListItem.model_rebuild()
+
+
 class LoginResponse(BaseModel):
-    """登入成功回傳使用者資訊（不含 password）；login 時 courses 為該帳號選課列，其餘使用同一 schema 之端點為空列表。"""
+    """登入成功回傳使用者資訊（不含 password）；user.courses 與頂層 courses 皆為該帳號選課列。"""
     user: UserListItem
     courses: list[UserCourseItem] = Field(default_factory=list)
 
@@ -166,10 +282,12 @@ class UpdateProfileRequest(BaseModel):
 
 
 class UploadUserRequest(BaseModel):
-    """POST /user/users 請求：新增使用者；query person_id 須與 body.person_id 一致。password 由 DB 寫入空字串（可日後另行更新）。"""
+    """POST /user/users 請求：新增使用者並建立一筆選課；query person_id 須與 body.person_id 一致。"""
     person_id: str
     name: str
+    course_id: int
     user_type: int
+    llm_api_key: Optional[str] = None
 
 
 BATCH_UPLOAD_USER_TYPE = 3
@@ -200,12 +318,45 @@ class DeleteUserRequest(BaseModel):
     person_id: str
 
 
+def _courses_for_users(
+    supabase,
+    user_ids: list[int],
+) -> dict[int, list[UserCourseItem]]:
+    """批次取得各 user 的選課列表。"""
+    rel_by_uid = _fetch_course_relations_by_user_ids(supabase, user_ids)
+    all_course_ids: list[int] = []
+    for rels in rel_by_uid.values():
+        for r in rels:
+            cid = int(r.get("course_id") or 0)
+            if cid:
+                all_course_ids.append(cid)
+    course_by_id = _fetch_courses_by_ids(supabase, all_course_ids)
+    out: dict[int, list[UserCourseItem]] = {}
+    for uid in user_ids:
+        items = _build_user_course_items(rel_by_uid.get(uid, []), course_by_id)
+        out[uid] = [UserCourseItem(**item) for item in items]
+    return out
+
+
+def _user_list_item(
+    user_row: dict,
+    relation_row: dict | None,
+    college_by_id: dict[str, str] | None,
+    courses: list[UserCourseItem] | None = None,
+) -> UserListItem:
+    course_dicts = [c.model_dump() for c in (courses or [])]
+    return UserListItem(**_user_public_dict(user_row, relation_row, college_by_id, course_dicts))
+
+
 def _insert_user_upload(
     supabase,
     person_id: str,
     name: str,
     user_type: int,
     *,
+    college_id: int = 0,
+    course_id: int = 0,
+    llm_api_key: str = "",
     password: str = "",
 ) -> UserListItem:
     exist = (
@@ -227,6 +378,8 @@ def _insert_user_upload(
         "updated_at": ts,
         "created_at": ts,
     }
+    if college_id:
+        row_in["college_id"] = college_id
     ins = supabase.table(USER_TABLE).insert(row_in).execute()
     user_row = ins.data[0] if ins.data else None
     if not user_row:
@@ -248,10 +401,14 @@ def _insert_user_upload(
         name=name,
         user_type=user_type,
         ts=ts,
-        llm_api_key="",
+        llm_api_key=llm_api_key,
+        college_id=college_id,
+        course_id=course_id,
     )
     rel = _fetch_relation_for_user_id(supabase, uid)
-    return UserListItem(**_user_public_dict(user_row, rel))
+    college_map = _fetch_colleges_by_ids(supabase, [_normalize_college_id(user_row.get("college_id"))])
+    courses_map = _courses_for_users(supabase, [uid])
+    return _user_list_item(user_row, rel, college_map, courses_map.get(uid, []))
 
 
 @router.get("/users", response_model=ListUsersResponse)
@@ -270,9 +427,19 @@ def list_users(_person_id: PersonId):
         rows = resp.data or []
         uids = [r["user_id"] for r in rows if r.get("user_id") is not None]
         rel_by_uid = _fetch_relations_by_user_ids(supabase, uids)
+        courses_by_uid = _courses_for_users(supabase, uids)
+        college_map = _fetch_colleges_by_ids(
+            supabase,
+            [_normalize_college_id(r.get("college_id")) for r in rows],
+        )
         return ListUsersResponse(
             users=[
-                UserListItem(**_user_public_dict(r, rel_by_uid.get(r["user_id"])))
+                _user_list_item(
+                    r,
+                    rel_by_uid.get(r["user_id"]),
+                    college_map,
+                    courses_by_uid.get(r["user_id"], []),
+                )
                 for r in rows
             ],
             count=len(rows),
@@ -306,7 +473,9 @@ def _soft_delete_user(supabase, target_person_id: str) -> LoginResponse:
     supabase.table(USER_TABLE).update({"deleted": True, "updated_at": ts}).eq("user_id", user_id).eq("person_id", pid).execute()
     supabase.table(USER_COURSE_RELATION_TABLE).update({"deleted": True, "updated_at": ts}).eq("user_id", user_id).execute()
     row_out = {**row, "deleted": True}
-    return LoginResponse(user=UserListItem(**_user_public_dict(row_out, rel)))
+    college_map = _fetch_colleges_by_ids(supabase, [_normalize_college_id(row_out.get("college_id"))])
+    courses = _courses_for_users(supabase, [int(user_id)]).get(int(user_id), []) if user_id is not None else []
+    return LoginResponse(user=_user_list_item(row_out, rel, college_map, courses), courses=courses)
 
 
 @router.put("/users/delete", response_model=LoginResponse, summary="Soft delete user", operation_id="user_users_delete")
@@ -332,21 +501,48 @@ def soft_delete_user(
 
 @router.post("/users", response_model=LoginResponse)
 def upload_user(
-    body: openapi_body(UploadUserRequest, {"person_id": "string", "name": "string", "user_type": 3}),
+    body: openapi_body(
+        UploadUserRequest,
+        {
+            "person_id": "string",
+            "name": "string",
+            "course_id": 1,
+            "user_type": 3,
+            "llm_api_key": "",
+        },
+    ),
     person_id: PersonId,
 ):
     """
-    新增單一使用者：body 傳入 person_id、name、user_type。
+    新增單一使用者：body 傳入 person_id、name、course_id、user_type（選課身份）；
+    可選 llm_api_key。college_id 依 course_id 自 Course 表帶入。
     query 的 person_id 須與 body.person_id 一致。
     """
     body_pid = (body.person_id or "").strip()
     if body_pid != person_id:
         raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
+    if not body.course_id:
+        raise HTTPException(status_code=400, detail="course_id 不可為空")
 
     try:
         supabase = get_supabase()
-        user = _insert_user_upload(supabase, person_id, body.name, body.user_type)
-        return LoginResponse(user=user)
+        course_by_id = _fetch_courses_by_ids(supabase, [body.course_id])
+        course_row = course_by_id.get(body.course_id)
+        if not course_row:
+            raise HTTPException(status_code=400, detail="找不到指定課程")
+        college_id = int(course_row.get("college_id") or 0)
+        if not college_id:
+            raise HTTPException(status_code=400, detail="課程未設定所屬學院")
+        user = _insert_user_upload(
+            supabase,
+            person_id,
+            body.name,
+            body.user_type,
+            college_id=college_id,
+            course_id=body.course_id,
+            llm_api_key=(body.llm_api_key or "").strip(),
+        )
+        return LoginResponse(user=user, courses=user.courses)
     except HTTPException:
         raise
     except Exception as e:
@@ -452,7 +648,10 @@ def update_profile(
             rel_updates["llm_api_key"] = (body.llm_api_key or "").strip() or ""
         if not user_updates and not rel_updates:
             rel = _fetch_relation_for_user_id(supabase, int(user_id)) if user_id is not None else None
-            return LoginResponse(user=UserListItem(**_user_public_dict(row, rel)))
+            college_map = _fetch_colleges_by_ids(supabase, [_normalize_college_id(row.get("college_id"))])
+            courses = _courses_for_users(supabase, [int(user_id)]).get(int(user_id), []) if user_id is not None else []
+            user = _user_list_item(row, rel, college_map, courses)
+            return LoginResponse(user=user, courses=courses)
 
         ts = now_taipei_iso()
         if user_updates:
@@ -473,7 +672,10 @@ def update_profile(
         )
         out_row = resp2.data[0] if resp2.data else row
         rel = _fetch_relation_for_user_id(supabase, int(user_id)) if user_id is not None else None
-        return LoginResponse(user=UserListItem(**_user_public_dict(out_row, rel)))
+        college_map = _fetch_colleges_by_ids(supabase, [_normalize_college_id(out_row.get("college_id"))])
+        courses = _courses_for_users(supabase, [int(user_id)]).get(int(user_id), []) if user_id is not None else []
+        user = _user_list_item(out_row, rel, college_map, courses)
+        return LoginResponse(user=user, courses=courses)
     except HTTPException:
         raise
     except Exception as e:
@@ -510,18 +712,10 @@ def login(
             raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
         uid = row.get("user_id")
         rel = _fetch_relation_for_user_id(supabase, int(uid)) if uid is not None else None
-        course_rows = _fetch_all_course_relations_for_user(supabase, int(uid)) if uid is not None else []
-        courses = [
-            UserCourseItem(
-                course_user_id=int(r["course_user_id"]),
-                course_id=int(r.get("course_id") or 0),
-                course_name=r.get("course_name"),
-                user_type=r.get("user_type"),
-            )
-            for r in course_rows
-            if r.get("course_user_id") is not None
-        ]
-        return LoginResponse(user=UserListItem(**_user_public_dict(row, rel)), courses=courses)
+        courses = _courses_for_users(supabase, [int(uid)]).get(int(uid), []) if uid is not None else []
+        college_map = _fetch_colleges_by_ids(supabase, [_normalize_college_id(row.get("college_id"))])
+        user = _user_list_item(row, rel, college_map, courses)
+        return LoginResponse(user=user, courses=courses)
     except HTTPException:
         raise
     except Exception as e:
