@@ -14,6 +14,7 @@ Exam API 模組。對應 public.Exam、public.Exam_Quiz。
 - POST /exam/tab/quiz/llm-generate-followup：接續出題；須請求提供 follow_up_exam_quiz_id（>0）與非空 quiz_history_list，否則視為第一題（回應不含 follow_up）；答不好追問弱點，答好則出新題。
 - POST /exam/tab/quiz/llm-grade：非同步 RAG+LLM 評分；回傳 202 + job_id，輪詢 GET /exam/tab/quiz/grade-result/{job_id}。
 - PUT /exam/tab/delete/{exam_tab_id}：軟刪除 Exam。
+- PUT /exam/tab/quiz/delete/{exam_quiz_id}：軟刪除 Exam_Quiz（deleted=true；須為該列 person_id）。
 - POST /exam/tab/quiz/rate：更新 Exam_Quiz.quiz_rate（僅 -1、0、1）。
 - GET /exam/api_key：讀取 Course_Setting key=exam-api-key（依 query course_id）；僅開發者／管理者。
 - PUT /exam/api_key：寫入 Course_Setting key=exam-api-key（依 query course_id）；僅開發者／管理者。
@@ -833,6 +834,7 @@ def _create_exam_quiz_record(
         "answer_user_prompt_text": None,
         "answer_content": None,
         "answer_critique": None,
+        "deleted": False,
         "created_at": qts,
         "updated_at": qts,
     }
@@ -1026,11 +1028,12 @@ def _exam_llm_generate_quiz_impl(
         )
         .eq("exam_quiz_id", exam_quiz_id)
         .eq("course_id", course_id)
+        .eq("deleted", False)
         .limit(1)
         .execute()
     )
     if not qsel.data or len(qsel.data) == 0:
-        raise HTTPException(status_code=404, detail=f"找不到 exam_quiz_id={exam_quiz_id} 的 Exam_Quiz")
+        raise HTTPException(status_code=404, detail=f"找不到 exam_quiz_id={exam_quiz_id} 的 Exam_Quiz，或已刪除")
     qrow = qsel.data[0]
     person_id = (qrow.get("person_id") or "").strip()
     if person_id != caller_person_id:
@@ -1577,11 +1580,15 @@ async def exam_grade_submission(
         )
         .eq("exam_quiz_id", body.exam_quiz_id)
         .eq("course_id", course_id)
+        .eq("deleted", False)
         .limit(1)
         .execute()
     )
     if not qsel.data or len(qsel.data) == 0:
-        return JSONResponse(status_code=404, content={"error": f"找不到 exam_quiz_id={body.exam_quiz_id} 的 Exam_Quiz"})
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"找不到 exam_quiz_id={body.exam_quiz_id} 的 Exam_Quiz，或已刪除"},
+        )
     qrow = qsel.data[0]
     person_id = (qrow.get("person_id") or "").strip()
     rag_unit_id_val = qrow.get("rag_unit_id")
@@ -1904,11 +1911,12 @@ def update_exam_quiz_rate(
         .select("exam_quiz_id, person_id, course_id")
         .eq("exam_quiz_id", exam_quiz_id)
         .eq("course_id", course_id)
+        .eq("deleted", False)
         .limit(1)
         .execute()
     )
     if not r.data or len(r.data) == 0:
-        raise HTTPException(status_code=404, detail=f"找不到 exam_quiz_id={exam_quiz_id} 的 Exam_Quiz")
+        raise HTTPException(status_code=404, detail=f"找不到 exam_quiz_id={exam_quiz_id} 的 Exam_Quiz，或已刪除")
     qpid = (r.data[0].get("person_id") or "").strip()
     if qpid != caller_person_id:
         raise HTTPException(status_code=403, detail="無權更新該題 quiz_rate")
@@ -1927,6 +1935,70 @@ def update_exam_quiz_rate(
     out = dict(after.data[0])
     out["message"] = "已更新 quiz_rate"
     return to_json_safe(out)
+
+
+# ---------------------------------------------------------------------------
+# PUT /exam/tab/quiz/delete/{exam_quiz_id}
+# ---------------------------------------------------------------------------
+
+@router.put(
+    "/tab/quiz/delete/{exam_quiz_id}",
+    status_code=200,
+    summary="Delete Exam Quiz",
+    operation_id="exam_tab_quiz_delete",
+)
+def delete_exam_quiz(
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    exam_quiz_id: int = PathParam(..., gt=0, description="要軟刪除的 Exam_Quiz 主鍵"),
+):
+    """
+    PUT /exam/tab/quiz/delete/{exam_quiz_id}。
+    軟刪除：將 Exam_Quiz 該列 deleted 設為 true（僅 person_id 與請求者一致且尚未刪除之列）。
+    """
+    try:
+        supabase = get_supabase()
+
+        def build_quiz_delete_sel(with_course_filter: bool):
+            cols = select_without_course_id_if_needed(
+                "Exam_Quiz",
+                "exam_quiz_id, exam_tab_id, person_id, course_id",
+                with_course_filter,
+            )
+            q = (
+                supabase.table("Exam_Quiz")
+                .select(cols)
+                .eq("exam_quiz_id", exam_quiz_id)
+                .eq("deleted", False)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q.limit(1)
+
+        sel = execute_with_course_id_fallback("Exam_Quiz", build_quiz_delete_sel, course_id)
+        if not sel.data:
+            raise HTTPException(status_code=404, detail="找不到該 exam_quiz_id 的 Exam_Quiz 資料，或已刪除")
+        row = sel.data[0]
+        pid = (row.get("person_id") or "").strip()
+        if pid != caller_person_id:
+            raise HTTPException(status_code=403, detail="無權刪除該 Exam_Quiz")
+        ts = now_taipei_iso()
+        supabase.table("Exam_Quiz").update({"deleted": True, "updated_at": ts}).eq(
+            "exam_quiz_id", exam_quiz_id
+        ).eq("deleted", False).execute()
+        return {
+            "message": "已將 Exam_Quiz 標記為刪除",
+            "exam_quiz_id": exam_quiz_id,
+            "exam_tab_id": row.get("exam_tab_id"),
+            "person_id": pid,
+            "exam_quiz_updated": True,
+            "updated_at": ts,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger.exception("PUT /exam/tab/quiz/delete/{exam_quiz_id} 錯誤")
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ---------------------------------------------------------------------------

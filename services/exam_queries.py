@@ -136,7 +136,7 @@ def _select_exam_quiz_rows(
     person_id: str | None = None,
     course_id: int | None = None,
 ) -> list[dict]:
-    """查 Exam_Quiz；回傳列經 exam_quiz_list_row 正規化（含 follow_up）。"""
+    """查 Exam_Quiz（僅 deleted=false）；回傳列經 exam_quiz_list_row 正規化（含 follow_up）。"""
     supabase = get_supabase()
     q = supabase.table("Exam_Quiz").select(columns)
     if exam_tab_ids is not None:
@@ -145,7 +145,14 @@ def _select_exam_quiz_rows(
         q = q.eq("person_id", person_id.strip())
     if course_id is not None:
         q = q.eq("course_id", course_id)
-    rows = q.order("exam_quiz_id", desc=False).execute().data or []
+    try:
+        rows = q.eq("deleted", False).order("exam_quiz_id", desc=False).execute().data or []
+    except APIError as e:
+        msg = (e.message or "").lower()
+        if e.code == "42703" and "deleted" in msg:
+            rows = q.order("exam_quiz_id", desc=False).execute().data or []
+        else:
+            raise
     return [exam_quiz_list_row(r) for r in rows]
 
 

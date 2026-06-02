@@ -528,7 +528,7 @@ HTTP 4xx / 5xx 時統一回傳：
 | GET | [`/rag/tab/unit/youtube-url`](#get-ragtabunityoutube-url) | 取得 YouTube URL（unit_type=4） |
 | POST | [`/rag/tab/unit/quiz/create`](#post-ragtabunitquizcreate) | 新增空白 Rag_Quiz |
 | PUT | [`/rag/tab/unit/quiz/quiz-name`](#put-ragtabunitquizquiz-name) | 更新 Rag_Quiz quiz_name |
-| PUT | [`/rag/tab/quiz/delete/{rag_quiz_id}`](#put-ragtabquizdeleterag_quiz_id) | 軟刪除 Rag_Quiz |
+| PUT | [`/rag/tab/unit/quiz/delete/{rag_quiz_id}`](#put-ragtabunitquizdeleterag_quiz_id) | 軟刪除 Rag_Quiz |
 | **RAG 出題與評分** | | |
 | POST | [`/rag/tab/unit/quiz/llm-generate`](#post-ragtabunitquizllm-generate) | LLM 出題 |
 | POST | [`/rag/tab/unit/quiz/llm-generate-db`](#post-ragtabunitquizllm-generate) | LLM 出題（沿用 DB prompt） |
@@ -562,6 +562,7 @@ HTTP 4xx / 5xx 時統一回傳：
 | POST | [`/exam/tab/quiz/llm-grade`](#post-examtabquizllm-grade) | 非同步評分（202 + job_id） |
 | GET | [`/exam/tab/quiz/grade-result/{job_id}`](#get-examtabquizgrade-resultjob_id) | 輪詢評分結果 |
 | POST | [`/exam/tab/quiz/rate`](#post-examtabquizrate) | 更新 quiz_rate |
+| PUT | [`/exam/tab/quiz/delete/{exam_quiz_id}`](#put-examtabquizdeleteexam_quiz_id) | 軟刪除 Exam_Quiz |
 | GET | [`/exam/api_key`](#get-examapi_key) | 讀取 exam-api-key |
 | PUT | [`/exam/api_key`](#put-examapi_key) | 寫入 exam-api-key |
 | **課程分析** | | |
@@ -1160,7 +1161,7 @@ NDJSON 串流回應（`application/x-ndjson`）。請以 `fetch` 逐行讀取，
 
 ---
 
-#### `PUT /rag/tab/quiz/delete/{rag_quiz_id}`
+#### `PUT /rag/tab/unit/quiz/delete/{rag_quiz_id}`
 
 軟刪除 Rag_Quiz。
 
@@ -1666,6 +1667,23 @@ LLM 出題後更新 Exam_Quiz 並回傳出題結果。
   "updated_at": "2024-01-01T00:00:00+08:00",
   "created_at": "2024-01-01T00:00:00+08:00",
   "message": "已更新 quiz_rate"
+}
+```
+
+---
+
+#### `PUT /exam/tab/quiz/delete/{exam_quiz_id}`
+
+軟刪除 Exam_Quiz。
+
+```json
+{
+  "message": "已將 Exam_Quiz 標記為刪除",
+  "exam_quiz_id": 1,
+  "exam_tab_id": "string",
+  "person_id": "string",
+  "exam_quiz_updated": true,
+  "updated_at": "2024-01-01T00:00:00+08:00"
 }
 ```
 
