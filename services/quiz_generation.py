@@ -36,7 +36,7 @@ from openai import OpenAI
 # 下列數值會直接影響：API 成本、embedding 維度相容、檢索到的 chunk 數與內容。
 # 若調整 DEFAULT_RETRIEVAL_QUERY，歷史產出的題目可能無法與舊 log 對照。
 
-QUIZ_LLM_MODEL = "gpt-4o"
+QUIZ_LLM_MODEL = "gpt-5.4"
 EMBEDDING_MODEL = "text-embedding-3-small"
 RETRIEVAL_K = 5
 # 出題時「固定查詢句」送進向量檢索；與批改 run_grade_job（以題幹當查詢）刻意不同。
