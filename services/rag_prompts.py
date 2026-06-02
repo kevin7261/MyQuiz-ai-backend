@@ -1,5 +1,5 @@
 """
-RAG 向量檢索設定（POST /rag/tab/build-rag-zip 建 FAISS 後，llm-generate／llm-grade unit_type=1 使用）。
+RAG 向量檢索設定（POST /rag/page/build-rag-zip 建 FAISS 後，llm-generate／llm-grade unit_type=1 使用）。
 建庫本身僅 embedding／切分，無 Chat LLM prompt；此模組僅描述 retriever 查詢句與相關常數。
 """
 
@@ -29,7 +29,7 @@ def rag_retrieval_config() -> dict[str, dict[str, int | str]]:
 
 
 def rag_build_defaults() -> dict[str, int | str]:
-    """POST /rag/tab/build-rag-zip 建 FAISS 預設參數（供 prompt API 對照）。"""
+    """POST /rag/page/build-rag-zip 建 FAISS 預設參數（供 prompt API 對照）。"""
     return {
         "embedding_model": EMBEDDING_MODEL,
         "chunk_size_default": GRADE_RAG_CHUNK_SIZE,

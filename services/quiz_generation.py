@@ -572,7 +572,7 @@ def generate_quiz(
     """
     有 FAISS RAG ZIP：解壓 → 載入向量庫 → 檢索 → 組 Markdown user → LLM。
 
-    zip_path 須為 POST /rag/tab/build-rag-zip 產物。prompt 與逐字稿路徑共用 USER_PROMPT_COURSE。
+    zip_path 須為 POST /rag/page/build-rag-zip 產物。prompt 與逐字稿路徑共用 USER_PROMPT_COURSE。
     回傳：quiz_content, quiz_hint, quiz_answer_reference。
 
     Args:
@@ -605,7 +605,7 @@ def generate_quiz(
                 break
         if not db_folder:
             raise ValueError(
-                "此 API 僅支援 RAG ZIP（由 POST /rag/tab/build-rag-zip 產出），請上傳含 FAISS 向量庫的 ZIP"
+                "此 API 僅支援 RAG ZIP（由 POST /rag/page/build-rag-zip 產出），請上傳含 FAISS 向量庫的 ZIP"
             )
 
         embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL, api_key=api_key)
@@ -685,7 +685,7 @@ def generate_quiz_followup(
                 break
         if not db_folder:
             raise ValueError(
-                "此 API 僅支援 RAG ZIP（由 POST /rag/tab/build-rag-zip 產出），請上傳含 FAISS 向量庫的 ZIP"
+                "此 API 僅支援 RAG ZIP（由 POST /rag/page/build-rag-zip 產出），請上傳含 FAISS 向量庫的 ZIP"
             )
 
         embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL, api_key=api_key)

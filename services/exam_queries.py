@@ -402,7 +402,7 @@ def chain_root_exam_quiz_id(root: dict) -> int:
 
 
 def exam_tab_quizzes_response(quizzes: list[dict]) -> list[dict]:
-    """GET /exam/tabs 等每筆 Exam 的 quizzes[]：追問 nest、只留 root、exam_quiz_id 升序。"""
+    """GET /exam/pages 等每筆 Exam 的 quizzes[]：追問 nest、只留 root、exam_quiz_id 升序。"""
     if not quizzes:
         return []
     nest_follow_up_quizzes(quizzes)

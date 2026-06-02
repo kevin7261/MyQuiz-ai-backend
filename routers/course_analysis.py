@@ -3,7 +3,7 @@
 依 course_id 查詢 Exam_Quiz 資料。新 schema 中答案欄位（answer_content／answer_critique）
 直接內嵌於 Exam_Quiz，不再有獨立的 Exam_Answer 表。
 - GET /course-analysis/quizzes：依 course_id 取得已作答的 Exam_Quiz（answer_content 非空），
-  依 exam_page_id 分群對應 Exam；每筆 Exam 的題目結構與 GET /exam/tabs 相同（quizzes[]，Exam_Quiz 含 follow_up 鏈；作答內嵌於各題列）。
+  依 exam_page_id 分群對應 Exam；每筆 Exam 的題目結構與 GET /exam/pages 相同（quizzes[]，Exam_Quiz 含 follow_up 鏈；作答內嵌於各題列）。
   另帶 weakness_report：每次請求皆呼叫 LLM 產生弱點報告（有 LLM API Key 且成功呼叫時為模型回覆原文，否則 null）。
 
 **課程分析 user prompt** 取自 `Course_Setting.key=course_analysis_user_prompt_text`（與 GET/PUT `/rag/course_analysis_user_prompt_text` 同源）。
@@ -43,7 +43,7 @@ ANALYSIS_LABEL_COURSE = "課程分析"
 
 
 class ListQuizzesResponse(BaseModel):
-    """GET /course-analysis/quizzes 回應。exams[] 每筆與 GET /exam/tabs 相同含 quizzes[]；weakness_report 為 LLM 弱點報告（失敗時為 null）。"""
+    """GET /course-analysis/quizzes 回應。exams[] 每筆與 GET /exam/pages 相同含 quizzes[]；weakness_report 為 LLM 弱點報告（失敗時為 null）。"""
     exams: list[dict]
     count: int
     weakness_report: Optional[str] = Field(
@@ -56,7 +56,7 @@ class ListQuizzesResponse(BaseModel):
 def list_exam_quizzes(_person_id: PersonId, course_id: CourseId):
     """
     依 course_id 取得已作答的 Exam_Quiz（answer_content 非空），依 exam_page_id 分群；
-    每筆 Exam 的 quizzes 形狀與 GET /exam/tabs 一致。
+    每筆 Exam 的 quizzes 形狀與 GET /exam/pages 一致。
     weakness_report：每次請求皆嘗試呼叫 LLM 產生；弱點報告 user 訊息會併入 Course_Setting
     `course_analysis_user_prompt_text`（與 `/rag/course_analysis_user_prompt_text` 同源）。
     必填 query course_id。

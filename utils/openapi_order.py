@@ -1,7 +1,7 @@
 """
 RAG / Exam API 路徑在 OpenAPI（Swagger）與文件中的顯示順序。
 
-層級：分頁（tab）→ 單元（unit，僅 RAG）→ 題目（quiz）→ 設定（api_key 等）。
+層級：分頁（page）→ 單元（unit，僅 RAG）→ 題目（quiz）→ 設定（api_key 等）。
 RAG 與 Exam 的 quiz 區塊順序對齊：create → name → delete → 標記 → 出題 → 評分 → 其他。
 """
 
@@ -13,33 +13,33 @@ _METHOD_RANK = {"get": 0, "post": 1, "put": 2, "patch": 3, "delete": 4, "head": 
 # 路徑由前到後；未列者排在同 prefix 群組之後（字母序）
 _API_PATH_ORDER: tuple[str, ...] = (
     # --- RAG：分頁 ---
-    "/rag/tabs",
-    "/rag/tab/units",
-    "/rag/tab/create",
-    "/rag/tab/create-upload-zip",
-    "/rag/tab/tab-name",
-    "/rag/tab/delete/{rag_page_id}",
-    "/rag/tab/upload-zip",
-    "/rag/tab/build-rag-zip",
-    "/rag/tab/build-rag-zip-stream",
+    "/rag/pages",
+    "/rag/page/units",
+    "/rag/page/create",
+    "/rag/page/create-upload-zip",
+    "/rag/page/tab-name",
+    "/rag/page/delete/{rag_page_id}",
+    "/rag/page/upload-zip",
+    "/rag/page/build-rag-zip",
+    "/rag/page/build-rag-zip-stream",
     # --- RAG：單元 ---
-    "/rag/tab/unit/unit-name",
-    "/rag/tab/unit/mp3-file",
-    "/rag/tab/unit/youtube-url",
+    "/rag/page/unit/unit-name",
+    "/rag/page/unit/mp3-file",
+    "/rag/page/unit/youtube-url",
     # --- RAG：題目 CRUD / 標記 ---
-    "/rag/tab/unit/quiz/create",
-    "/rag/tab/unit/quiz/quiz-name",
-    "/rag/tab/unit/quiz/delete/{rag_quiz_id}",
-    "/rag/tab/unit/quiz/followup",
-    "/rag/tab/unit/quiz/for-exam",
+    "/rag/page/unit/quiz/create",
+    "/rag/page/unit/quiz/quiz-name",
+    "/rag/page/unit/quiz/delete/{rag_quiz_id}",
+    "/rag/page/unit/quiz/followup",
+    "/rag/page/unit/quiz/for-exam",
     # --- RAG：題目 LLM ---
-    "/rag/tab/unit/quiz/llm-generate",
-    "/rag/tab/unit/quiz/llm-generate-db",
-    "/rag/tab/unit/quiz/llm-generate-followup",
-    "/rag/tab/unit/quiz/llm-generate-followup-db",
-    "/rag/tab/unit/quiz/llm-grade",
-    "/rag/tab/unit/quiz/llm-grade-db",
-    "/rag/tab/unit/quiz/grade-result/{job_id}",
+    "/rag/page/unit/quiz/llm-generate",
+    "/rag/page/unit/quiz/llm-generate-db",
+    "/rag/page/unit/quiz/llm-generate-followup",
+    "/rag/page/unit/quiz/llm-generate-followup-db",
+    "/rag/page/unit/quiz/llm-grade",
+    "/rag/page/unit/quiz/llm-grade-db",
+    "/rag/page/unit/quiz/grade-result/{job_id}",
     # --- RAG：單元資源（舊路徑）---
     "/rag/unit/text",
     "/rag/unit/mp3-file",
@@ -50,24 +50,24 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/rag/person_analysis_user_prompt_text",
     "/rag/course_analysis_user_prompt_text",
     # --- Exam：分頁 ---
-    "/exam/tabs",
+    "/exam/pages",
     "/exam/rag-for-exams",
-    "/exam/tab/create",
-    "/exam/tab/tab-name",
-    "/exam/tab/delete/{exam_page_id}",
+    "/exam/page/create",
+    "/exam/page/tab-name",
+    "/exam/page/delete/{exam_page_id}",
     # --- Exam：題目 CRUD ---
-    "/exam/tab/quiz/create",
-    "/exam/tab/quiz/delete/{exam_quiz_id}",
+    "/exam/page/quiz/create",
+    "/exam/page/quiz/delete/{exam_quiz_id}",
     # --- Exam：題目 LLM ---
-    "/exam/tab/quiz/llm-generate",
-    "/exam/tab/quiz/llm-generate-followup",
-    "/exam/tab/quiz/create-llm-generate",
-    "/exam/tab/quiz/create-llm-generate-followup",
-    "/exam/tab/quiz/llm-grade",
-    "/exam/tab/quiz/grade",
-    "/exam/tab/quiz/grade-result/{job_id}",
-    "/exam/tab/quiz/quiz-rate",
-    "/exam/tab/quiz/grade-rate",
+    "/exam/page/quiz/llm-generate",
+    "/exam/page/quiz/llm-generate-followup",
+    "/exam/page/quiz/create-llm-generate",
+    "/exam/page/quiz/create-llm-generate-followup",
+    "/exam/page/quiz/llm-grade",
+    "/exam/page/quiz/grade",
+    "/exam/page/quiz/grade-result/{job_id}",
+    "/exam/page/quiz/quiz-rate",
+    "/exam/page/quiz/grade-rate",
     # --- Exam：課程設定 ---
     "/exam/api_key",
 )

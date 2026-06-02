@@ -2,8 +2,8 @@
 RAG 出題、評分、題目標記與課程設定 API（路徑順序見 utils.openapi_order）。
 
 **題目標記**（在 llm-generate 之前，與 Exam 題目 CRUD 區塊對齊）：
-- POST /rag/tab/unit/quiz/followup：更新 follow_up
-- POST /rag/tab/unit/quiz/for-exam：更新 for_exam
+- POST /rag/page/unit/quiz/followup：更新 follow_up
+- POST /rag/page/unit/quiz/for-exam：更新 for_exam
 
 **出題**：POST …/llm-generate(-db) → POST …/llm-generate-followup(-db)
 
@@ -201,7 +201,7 @@ class QuizHistoryPromptFollowup(BaseModel):
 
 
 class GenerateQuizRequest(BaseModel):
-    """POST /rag/tab/unit/quiz/llm-generate；含 quiz_history_list（八欄位物件陣列）。"""
+    """POST /rag/page/unit/quiz/llm-generate；含 quiz_history_list（八欄位物件陣列）。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
@@ -228,7 +228,7 @@ class GenerateQuizRequest(BaseModel):
 
 class QuizGradeRequest(BaseModel):
     """
-    POST /rag/tab/unit/quiz/llm-grade 請求 body。
+    POST /rag/page/unit/quiz/llm-grade 請求 body。
     欄位順序：Rag.rag_id → public.Rag_Quiz（rag_page_id, rag_quiz_id, quiz_content, answer_user_prompt_text, answer_content／quiz_answer）。
     """
 
@@ -254,7 +254,7 @@ class QuizGradeRequest(BaseModel):
 
 
 class GenerateQuizDbOnlyRequest(BaseModel):
-    """POST /rag/tab/unit/quiz/llm-generate-db；含 quiz_history_list（八欄位物件陣列）。"""
+    """POST /rag/page/unit/quiz/llm-generate-db；含 quiz_history_list（八欄位物件陣列）。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
@@ -276,7 +276,7 @@ class GenerateQuizDbOnlyRequest(BaseModel):
 
 
 class GenerateQuizFollowupRequest(BaseModel):
-    """POST /rag/tab/unit/quiz/llm-generate-followup；含 quiz_history_list（先前問答 JSON 陣列，對齊 DB 欄位）。"""
+    """POST /rag/page/unit/quiz/llm-generate-followup；含 quiz_history_list（先前問答 JSON 陣列，對齊 DB 欄位）。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
@@ -304,7 +304,7 @@ class GenerateQuizFollowupRequest(BaseModel):
 
 
 class GenerateQuizFollowupDbOnlyRequest(BaseModel):
-    """POST /rag/tab/unit/quiz/llm-generate-followup-db；不含 quiz_user_prompt_text。"""
+    """POST /rag/page/unit/quiz/llm-generate-followup-db；不含 quiz_user_prompt_text。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
@@ -329,7 +329,7 @@ class GenerateQuizFollowupDbOnlyRequest(BaseModel):
 
 class QuizGradeDbOnlyRequest(BaseModel):
     """
-    POST /rag/tab/unit/quiz/llm-grade-db。
+    POST /rag/page/unit/quiz/llm-grade-db。
     欄位順序：Rag.rag_id → Rag_Quiz（rag_page_id, rag_quiz_id, quiz_content, answer_content／quiz_answer）；不含 answer_user_prompt_text。
     """
 
@@ -352,7 +352,7 @@ class QuizGradeDbOnlyRequest(BaseModel):
 
 class RagQuizForExamRequest(BaseModel):
     """
-    POST /rag/tab/unit/quiz/for-exam：欄位順序同 public.Rag_Quiz（rag_quiz_id, rag_page_id, rag_unit_id, for_exam）。
+    POST /rag/page/unit/quiz/for-exam：欄位順序同 public.Rag_Quiz（rag_quiz_id, rag_page_id, rag_unit_id, for_exam）。
     以 rag_quiz_id 更新 Rag_Quiz.for_exam；若一併傳入 rag_page_id／rag_unit_id（>0），須與該列一致。
     """
 
@@ -364,7 +364,7 @@ class RagQuizForExamRequest(BaseModel):
 
 class RagQuizFollowupRequest(BaseModel):
     """
-    POST /rag/tab/unit/quiz/followup：欄位順序同 public.Rag_Quiz（rag_quiz_id, rag_page_id, rag_unit_id, follow_up）。
+    POST /rag/page/unit/quiz/followup：欄位順序同 public.Rag_Quiz（rag_quiz_id, rag_page_id, rag_unit_id, follow_up）。
     以 rag_quiz_id 更新 Rag_Quiz.follow_up；若一併傳入 rag_page_id／rag_unit_id（>0），須與該列一致。
     """
 
@@ -411,11 +411,11 @@ class RagUnitYoutubeUrlFromZipResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# POST /rag/tab/unit/quiz/followup
+# POST /rag/page/unit/quiz/followup
 # ---------------------------------------------------------------------------
 
 
-@router.post("/tab/unit/quiz/followup", summary="Set Rag Quiz follow_up flag", operation_id="rag_quiz_followup")
+@router.post("/page/unit/quiz/followup", summary="Set Rag Quiz follow_up flag", operation_id="rag_quiz_followup")
 def mark_rag_quiz_followup(
     body: openapi_body(
         RagQuizFollowupRequest,
@@ -496,12 +496,12 @@ def mark_rag_quiz_followup(
     except HTTPException:
         raise
     except Exception as e:
-        _logger.exception("POST /rag/tab/unit/quiz/followup 錯誤")
+        _logger.exception("POST /rag/page/unit/quiz/followup 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
-# POST /rag/tab/unit/quiz/llm-generate
+# POST /rag/page/unit/quiz/llm-generate
 # ---------------------------------------------------------------------------
 
 _RAG_QUIZ_HISTORY_PROMPT_STEM_EXAMPLE = list(QUIZ_HISTORY_PROMPT_STEM_OPENAPI_LIST)
@@ -830,7 +830,7 @@ def _rag_llm_generate_quiz_impl(
     if unit_type_val in (2, 3, 4) and not transcript_text:
         raise HTTPException(
             status_code=400,
-            detail="單元類型 2／3／4 需有逐字稿：請於 Rag_Unit 或 Rag 設定 transcript，或經 POST /rag/tab/build-rag-zip 寫入 Rag_Unit.transcript",
+            detail="單元類型 2／3／4 需有逐字稿：請於 Rag_Unit 或 Rag 設定 transcript，或經 POST /rag/page/build-rag-zip 寫入 Rag_Unit.transcript",
         )
 
     path: Path | None = None
@@ -946,7 +946,7 @@ def _rag_llm_generate_quiz_impl(
             _safe_unlink(path)
 
 
-@router.post("/tab/unit/quiz/llm-generate", summary="Rag LLM Generate Quiz", operation_id="rag_llm_generate_quiz")
+@router.post("/page/unit/quiz/llm-generate", summary="Rag LLM Generate Quiz", operation_id="rag_llm_generate_quiz")
 @router.post("/generate-quiz", include_in_schema=False)
 def rag_llm_generate_quiz(
     body: openapi_body(GenerateQuizRequest, _RAG_LLM_GENERATE_OPENAPI_EXAMPLE),
@@ -978,12 +978,12 @@ def rag_llm_generate_quiz(
 
 
 # ---------------------------------------------------------------------------
-# POST /rag/tab/unit/quiz/llm-generate-followup
+# POST /rag/page/unit/quiz/llm-generate-followup
 # ---------------------------------------------------------------------------
 
 
 @router.post(
-    "/tab/unit/quiz/llm-generate-followup",
+    "/page/unit/quiz/llm-generate-followup",
     summary="Rag LLM Generate Follow-up Quiz",
     operation_id="rag_llm_generate_quiz_followup",
 )
@@ -1015,12 +1015,12 @@ def rag_llm_generate_quiz_followup(
 
 
 # ---------------------------------------------------------------------------
-# POST /rag/tab/unit/quiz/llm-generate-db
+# POST /rag/page/unit/quiz/llm-generate-db
 # ---------------------------------------------------------------------------
 
 
 @router.post(
-    "/tab/unit/quiz/llm-generate-db",
+    "/page/unit/quiz/llm-generate-db",
     summary="Rag LLM Generate Quiz (stored quiz_user_prompt_text)",
     operation_id="rag_llm_generate_quiz_db_prompt",
 )
@@ -1050,12 +1050,12 @@ def rag_llm_generate_quiz_db_prompt(
 
 
 # ---------------------------------------------------------------------------
-# POST /rag/tab/unit/quiz/llm-generate-followup-db
+# POST /rag/page/unit/quiz/llm-generate-followup-db
 # ---------------------------------------------------------------------------
 
 
 @router.post(
-    "/tab/unit/quiz/llm-generate-followup-db",
+    "/page/unit/quiz/llm-generate-followup-db",
     summary="Rag LLM Generate Follow-up Quiz (stored quiz_user_prompt_text)",
     operation_id="rag_llm_generate_quiz_followup_db_prompt",
 )
@@ -1085,7 +1085,7 @@ def rag_llm_generate_quiz_followup_db_prompt(
 
 
 # ---------------------------------------------------------------------------
-# POST /rag/tab/unit/quiz/llm-grade
+# POST /rag/page/unit/quiz/llm-grade
 # ---------------------------------------------------------------------------
 
 
@@ -1275,7 +1275,7 @@ async def _enqueue_rag_llm_grade_job(
     return JSONResponse(status_code=202, content={"job_id": job_id, "grade_llm_model": llm_model})
 
 
-@router.post("/tab/unit/quiz/llm-grade", summary="Rag Grade Quiz")
+@router.post("/page/unit/quiz/llm-grade", summary="Rag Grade Quiz")
 async def grade_submission(
     background_tasks: BackgroundTasks,
     body: openapi_body(
@@ -1296,7 +1296,7 @@ async def grade_submission(
     非同步評分：Body 以 rag_id、rag_quiz_id 為核心；quiz_content 可省略（自 Rag_Quiz 讀）。
     `answer_user_prompt_text` 以請求為準（可空；空字串會寫入並覆蓋 Rag_Quiz 該列）。
     unit_type 2／3／4 時以 transcript 純 LLM 批改；其餘依 rag_id 載入 RAG ZIP。
-    回傳 202 + job_id；輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
+    回傳 202 + job_id；輪詢 GET /rag/page/unit/quiz/grade-result/{job_id}。
     """
     return await _enqueue_rag_llm_grade_job(
         background_tasks,
@@ -1312,7 +1312,7 @@ async def grade_submission(
 
 
 @router.post(
-    "/tab/unit/quiz/llm-grade-db",
+    "/page/unit/quiz/llm-grade-db",
     summary="Rag Grade Quiz (stored answer_user_prompt_text)",
     operation_id="rag_llm_grade_quiz_db_prompt",
 )
@@ -1348,10 +1348,10 @@ async def grade_submission_stored_answer_prompt(
 
 
 # ---------------------------------------------------------------------------
-# POST /rag/tab/unit/quiz/for-exam
+# POST /rag/page/unit/quiz/for-exam
 # ---------------------------------------------------------------------------
 
-@router.post("/tab/unit/quiz/for-exam", summary="Set Rag Quiz for_exam flag")
+@router.post("/page/unit/quiz/for-exam", summary="Set Rag Quiz for_exam flag")
 def mark_rag_quiz_for_exam(
     body: openapi_body(
         RagQuizForExamRequest,
@@ -1429,15 +1429,15 @@ def mark_rag_quiz_for_exam(
     except HTTPException:
         raise
     except Exception as e:
-        _logger.exception("POST /rag/tab/unit/quiz/for-exam 錯誤")
+        _logger.exception("POST /rag/page/unit/quiz/for-exam 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
-# GET /rag/tab/unit/quiz/grade-result/{job_id}
+# GET /rag/page/unit/quiz/grade-result/{job_id}
 # ---------------------------------------------------------------------------
 
-@router.get("/tab/unit/quiz/grade-result/{job_id}", summary="Get Grade Result", tags=["rag"])
+@router.get("/page/unit/quiz/grade-result/{job_id}", summary="Get Grade Result", tags=["rag"])
 async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseId):
     """
     輪詢評分結果。status: pending | ready | error；

@@ -1,17 +1,17 @@
 """
 ZIP 與 RAG 相關 API 模組。路徑層級與排序與 Exam 對齊（見 utils.openapi_order、README API 目錄）。
 
-**分頁**：GET /rag/tabs → GET /rag/tab/units → POST tab/create → POST tab/create-upload-zip
-→ PUT tab/tab-name → PUT tab/delete/{rag_page_id} → POST tab/upload-zip → POST tab/build-rag-zip（-stream 別名）
+**分頁**：GET /rag/pages → GET /rag/page/units → POST /rag/page/create → POST /rag/page/create-upload-zip
+→ PUT /rag/page/tab-name → PUT /rag/page/delete/{rag_page_id} → POST /rag/page/upload-zip → POST /rag/page/build-rag-zip（-stream 別名）
 
-**單元**：PUT tab/unit/unit-name → GET tab/unit/mp3-file → GET tab/unit/youtube-url
+**單元**：PUT /rag/page/unit/unit-name → GET /rag/page/unit/mp3-file → GET /rag/page/unit/youtube-url
 
-**題目**：POST tab/unit/quiz/create → PUT quiz/quiz-name → PUT quiz/delete/{rag_quiz_id}
+**題目**：POST /rag/page/unit/quiz/create → PUT /rag/page/unit/quiz/quiz-name → PUT /rag/page/unit/quiz/delete/{rag_quiz_id}
 →（followup／for-exam／llm-* 見 routers/grade.py）
 
 **舊路徑**：GET /rag/unit/text、/rag/unit/mp3-file、/rag/unit/youtube-url
 
-GET /rag/tabs 須 course_id、person_id；`local` 未傳時依連線判定。build-rag-zip 見路由 docstring。
+GET /rag/pages 須 course_id、person_id；`local` 未傳時依連線判定。build-rag-zip 見路由 docstring。
 """
 
 import base64
@@ -418,13 +418,13 @@ def _quizzes_by_rag_unit_ids(
 
 
 class ListRagResponse(BaseModel):
-    """GET /rag/tabs 回應：每筆 Rag 含 units（Rag_Unit），每個 unit 含 quizzes（Rag_Quiz，含 follow_up、quiz_history_list）；皆已依 query course_id 篩選。"""
+    """GET /rag/pages 回應：每筆 Rag 含 units（Rag_Unit），每個 unit 含 quizzes（Rag_Quiz，含 follow_up、quiz_history_list）；皆已依 query course_id 篩選。"""
     rags: list[dict]
     count: int
 
 
 class RagUnitMp3FileResponse(BaseModel):
-    """GET /rag/tab/unit/mp3-file 回應。"""
+    """GET /rag/page/unit/mp3-file 回應。"""
     rag_unit_id: int
     rag_page_id: str
     audio_base64: str
@@ -434,7 +434,7 @@ class RagUnitMp3FileResponse(BaseModel):
 
 
 class RagUnitYoutubeUrlResponse(BaseModel):
-    """GET /rag/tab/unit/youtube-url 回應。"""
+    """GET /rag/page/unit/youtube-url 回應。"""
     rag_unit_id: int
     rag_page_id: str
     youtube_url: str
@@ -442,7 +442,7 @@ class RagUnitYoutubeUrlResponse(BaseModel):
 
 
 class CreateRagRequest(BaseModel):
-    """POST /rag/tab/create：欄位順序同 public.Rag（rag_page_id, person_id, tab_name, local；不含 rag_id／course_id／deleted／時間戳）。"""
+    """POST /rag/page/create：欄位順序同 public.Rag（rag_page_id, person_id, tab_name, local；不含 rag_id／course_id／deleted／時間戳）。"""
     rag_page_id: str = Field(..., description="Rag 的 tab 識別，對應 Rag 表 rag_page_id 欄位")
     person_id: str = Field(..., description="使用者/路徑識別")
     tab_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 tab_name 欄位")
@@ -450,7 +450,7 @@ class CreateRagRequest(BaseModel):
 
 
 class UpdateRagUnitNameRequest(BaseModel):
-    """PUT /rag/tab/tab-name：請求僅含 rag_id（主鍵）、tab_name；勿傳 rag_page_id。"""
+    """PUT /rag/page/tab-name：請求僅含 rag_id（主鍵）、tab_name；勿傳 rag_page_id。"""
     rag_id: int = Field(..., description="Rag 表主鍵（整數）；辨識請用 rag_id，非 rag_page_id")
     tab_name: str = Field(..., description="新的顯示名稱，寫入 Rag 表 tab_name 欄位")
 
@@ -521,14 +521,14 @@ class PackRequest(BaseModel):
 
 
 class UpdateRagUnitUnitNameRequest(BaseModel):
-    """PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name。"""
+    """PUT /rag/page/unit/unit-name：更新 Rag_Unit 的 unit_name。"""
     rag_unit_id: int = Field(..., description="Rag_Unit 表主鍵")
     unit_name: str = Field(..., description="新的 unit_name")
 
 
 class InsertRagQuizRowRequest(BaseModel):
     """
-    POST /rag/tab/unit/quiz/create：欄位順序對齊 public.Rag_Quiz 之關聯欄（rag_page_id、rag_unit_id）。
+    POST /rag/page/unit/quiz/create：欄位順序對齊 public.Rag_Quiz 之關聯欄（rag_page_id、rag_unit_id）。
     `rag_page_id` 與 `rag_unit_id` 二擇一定位 Rag_Unit：
     - `rag_unit_id > 0`：以主鍵載入；若同傳 `rag_page_id`（非空）則須與該列一致。
     - `rag_unit_id == 0`：`rag_page_id`（非空）須在該名下**唯一**一筆未刪除之 Rag_Unit，否則 400。
@@ -539,7 +539,7 @@ class InsertRagQuizRowRequest(BaseModel):
 
 
 class UpdateRagQuizQuizNameRequest(BaseModel):
-    """PUT /rag/tab/unit/quiz/quiz-name：更新 Rag_Quiz 的 quiz_name。"""
+    """PUT /rag/page/unit/quiz/quiz-name：更新 Rag_Quiz 的 quiz_name。"""
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 表主鍵")
     quiz_name: str = Field(..., description="新的 quiz_name")
 
@@ -944,7 +944,7 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, course_id: int, res
             pass
 
 
-@router.get("/tabs", response_model=ListRagResponse)
+@router.get("/pages", response_model=ListRagResponse)
 def list_rag(
     request: Request,
     person_id: PersonId,
@@ -959,8 +959,8 @@ def list_rag(
     且僅回傳與 query person_id 相符之列，Rag.local 須與 query local 相符（未傳 local 時依連線自動判定）。
     回傳列依 created_at 由舊到新排序。
     每筆 Rag 含 units（Rag_Unit 列表），每個 unit 含 quizzes（Rag_Quiz 列表，含 follow_up、quiz_history_list）。
-    音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /rag/tab/unit/mp3-file 查詢字串（`rag_page_id`、`rag_unit_id`，不需 person_id），可接在後端 origin 後作為 `<audio src>`。
-    YouTube 單元（unit_type=4）且 youtube_url 非空時，另含 youtube_url_api：相對於 API 根路徑的 GET /rag/tab/unit/youtube-url 查詢字串（同上，不需 person_id）。
+    音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /rag/page/unit/mp3-file 查詢字串（`rag_page_id`、`rag_unit_id`，不需 person_id），可接在後端 origin 後作為 `<audio src>`。
+    YouTube 單元（unit_type=4）且 youtube_url 非空時，另含 youtube_url_api：相對於 API 根路徑的 GET /rag/page/unit/youtube-url 查詢字串（同上，不需 person_id）。
     """
     try:
         local_filter = local if local is not None else is_localhost_request(request)
@@ -1011,7 +1011,7 @@ def list_rag(
                     and uid_int is not None
                 ):
                     unit["mp3_audio_url"] = (
-                        "/rag/tab/unit/mp3-file?"
+                        "/rag/page/unit/mp3-file?"
                         + urlencode(
                             {
                                 "rag_page_id": str(page_id).strip(),
@@ -1027,7 +1027,7 @@ def list_rag(
                     and uid_int is not None
                 ):
                     unit["youtube_url_api"] = (
-                        "/rag/tab/unit/youtube-url?"
+                        "/rag/page/unit/youtube-url?"
                         + urlencode(
                             {
                                 "rag_page_id": str(page_id).strip(),
@@ -1041,7 +1041,7 @@ def list_rag(
         data = to_json_safe(data)
         return ListRagResponse(rags=data, count=len(data))
     except Exception as e:
-        _logger.exception("GET /rag/tabs 錯誤")
+        _logger.exception("GET /rag/pages 錯誤")
         raise HTTPException(status_code=500, detail=f"列出 Rag 失敗: {e!s}")
 
 
@@ -1090,7 +1090,7 @@ def _validate_rag_tab_create_fields(
     tab_name: str,
     caller_person_id: str,
 ) -> tuple[str, str, str]:
-    """驗證 tab/create 與 tab/create-upload-zip 共用欄位；回傳 strip 後 (rag_page_id, person_id, tab_name)。"""
+    """驗證 page/create 與 page/create-upload-zip 共用欄位；回傳 strip 後 (rag_page_id, person_id, tab_name)。"""
     fid = (rag_page_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
         raise HTTPException(status_code=400, detail="無效的 rag_page_id")
@@ -1132,7 +1132,7 @@ def _upload_rag_zip_contents(
     if not r.data or len(r.data) == 0:
         raise HTTPException(
             status_code=404,
-            detail="找不到該 rag_page_id 的 Rag 資料，請先呼叫 POST /rag/tab/create 建立",
+            detail="找不到該 rag_page_id 的 Rag 資料，請先呼叫 POST /rag/page/create 建立",
         )
     row = r.data[0]
 
@@ -1178,7 +1178,7 @@ def _upload_rag_zip_contents(
     return file_metadata
 
 
-@router.post("/tab/create")
+@router.post("/page/create")
 def create_unit(
     body: openapi_body(
         CreateRagRequest,
@@ -1212,7 +1212,7 @@ def create_unit(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/tab/tab-name")
+@router.put("/page/tab-name")
 def update_unit_tab_name(
     body: openapi_body(UpdateRagUnitNameRequest, {"rag_id": 1, "tab_name": "新名稱"}),
     caller_person_id: PersonId,
@@ -1318,14 +1318,14 @@ def _do_delete_rag_file_by_page_id(fid: str, course_id: int) -> tuple[bool, str]
     return folder_deleted, primary_pid
 
 
-@router.put("/tab/delete/{rag_page_id}", status_code=200, summary="Delete Rag File", operation_id="rag_tab_delete")
+@router.put("/page/delete/{rag_page_id}", status_code=200, summary="Delete Rag File", operation_id="rag_tab_delete")
 def delete_rag_file(
     _person_id: PersonId,
     course_id: CourseId,
     rag_page_id: str = PathParam(..., description="要刪除的 rag_page_id"),
 ):
     """
-    PUT /rag/tab/delete/{rag_page_id}。
+    PUT /rag/page/delete/{rag_page_id}。
     軟刪除：將 Rag 表該 rag_page_id 之未刪除列 deleted 設為 true，同時軟刪除所有對應 Rag_Unit，並刪除 storage 資料夾。
     """
     fid = (rag_page_id or "").strip()
@@ -1341,7 +1341,7 @@ def delete_rag_file(
     }
 
 
-@router.post("/tab/create-upload-zip")
+@router.post("/page/create-upload-zip")
 async def create_upload_zip(
     caller_person_id: PersonId,
     course_id: CourseId,
@@ -1352,7 +1352,7 @@ async def create_upload_zip(
     local: bool = Form(False, description="是否為本機 RAG，寫入 Rag 表 local 欄位"),
 ):
     """
-    建立 Rag 並上傳 ZIP（先 tab/create，再 tab/upload-zip）。
+    建立 Rag 並上傳 ZIP（先 page/create，再 page/upload-zip）。
     multipart/form-data：file、rag_page_id、person_id、tab_name、local（選填，預設 false）。
     須傳 query course_id、person_id。
     回傳 create 欄位與 file_metadata。
@@ -1394,17 +1394,17 @@ async def create_upload_zip(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/tab/upload-zip")
+@router.post("/page/upload-zip")
 async def upload_zip(
     caller_person_id: PersonId,
     course_id: CourseId,
     file: UploadFile = File(...),
-    rag_page_id: str = Form(..., description="對應 tab/create 建立的 rag_page_id，ZIP 會存於此路徑"),
-    person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 tab/create 一致"),
+    rag_page_id: str = Form(..., description="對應 page/create 建立的 rag_page_id，ZIP 會存於此路徑"),
+    person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 page/create 一致"),
 ):
     """
-    Upload Zip：只做上傳並寫入資料庫。需先以 tab/create 建立該 rag_page_id 的 Rag 資料。
-    亦可改用 POST /rag/tab/create-upload-zip 一次完成建立與上傳。
+    Upload Zip：只做上傳並寫入資料庫。需先以 page/create 建立該 rag_page_id 的 Rag 資料。
+    亦可改用 POST /rag/page/create-upload-zip 一次完成建立與上傳。
     會更新該筆 Rag 的 file_metadata（filename、second_folders、file_size 等）與 file_size 欄位（皆為 MB）。
     回傳 file_metadata。
     """
@@ -1440,8 +1440,8 @@ async def upload_zip(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/tab/build-rag-zip-stream", include_in_schema=False)
-@router.post("/tab/build-rag-zip")
+@router.post("/page/build-rag-zip-stream", include_in_schema=False)
+@router.post("/page/build-rag-zip")
 def build_rag_zip(
     body: openapi_body(
         PackRequest,
@@ -1488,7 +1488,7 @@ def build_rag_zip(
     - `{"type":"complete","success":bool,"total","built_ok","built_failed","source_rag_page_id","unit_list","outputs"}`
 
     串流階段 HTTP 狀態碼固定 **200**；請以最後一則 `type===complete` 的 `success` 判斷整批成敗。
-    `POST /rag/tab/build-rag-zip-stream` 與本端點相同，僅自 OpenAPI 隱藏，供舊客戶端相容。
+    `POST /rag/page/build-rag-zip-stream` 與本端點相同，僅自 OpenAPI 隱藏，供舊客戶端相容。
     """
     pid = (body.person_id or "").strip()
     if not pid:
@@ -1634,7 +1634,7 @@ def build_rag_zip(
     )
 
 
-@router.get("/tab/units")
+@router.get("/page/units")
 def list_rag_units(
     _caller_person_id: PersonId,
     course_id: CourseId,
@@ -1689,7 +1689,7 @@ def list_rag_units(
         raise HTTPException(status_code=500, detail=f"列出 Rag_Unit 失敗: {e!s}")
 
 
-@router.put("/tab/unit/unit-name")
+@router.put("/page/unit/unit-name")
 def update_rag_unit_name(
     body: openapi_body(UpdateRagUnitUnitNameRequest, {"rag_unit_id": 1, "unit_name": "新名稱"}),
     caller_person_id: PersonId,
@@ -1746,7 +1746,7 @@ def update_rag_unit_name(
 
 
 @router.get(
-    "/tab/unit/mp3-file",
+    "/page/unit/mp3-file",
     summary="Rag Tab Unit Mp3 File",
     operation_id="rag_tab_unit_mp3_file",
     response_model=RagUnitMp3FileResponse,
@@ -1906,12 +1906,12 @@ def rag_tab_unit_mp3_file(
 
 
 # ---------------------------------------------------------------------------
-# GET /rag/tab/unit/youtube-url
+# GET /rag/page/unit/youtube-url
 # ---------------------------------------------------------------------------
 
 
 @router.get(
-    "/tab/unit/youtube-url",
+    "/page/unit/youtube-url",
     summary="Rag Tab Unit Youtube Url",
     operation_id="rag_tab_unit_youtube_url",
     response_model=RagUnitYoutubeUrlResponse,
@@ -1949,7 +1949,7 @@ def rag_tab_unit_youtube_url(
     try:
         sel = execute_with_course_id_fallback("Rag_Unit", build_youtube_sel, course_id)
     except Exception as e:
-        _logger.exception("GET /rag/tab/unit/youtube-url 查詢 Rag_Unit 失敗")
+        _logger.exception("GET /rag/page/unit/youtube-url 查詢 Rag_Unit 失敗")
         raise HTTPException(status_code=500, detail=f"查詢失敗: {e!s}") from e
 
     if not sel.data:
@@ -1986,7 +1986,7 @@ def rag_tab_unit_youtube_url(
     )
 
 
-@router.post("/tab/unit/quiz/create", summary="Rag Create Quiz (no LLM)", operation_id="rag_create_quiz")
+@router.post("/page/unit/quiz/create", summary="Rag Create Quiz (no LLM)", operation_id="rag_create_quiz")
 def insert_rag_quiz_row(
     body: openapi_body(InsertRagQuizRowRequest, {"rag_page_id": "string", "rag_unit_id": 1}),
     caller_person_id: PersonId,
@@ -1994,7 +1994,7 @@ def insert_rag_quiz_row(
 ):
     """
     依 `rag_page_id`／`rag_unit_id` 解析 Rag_Unit 後新增一筆空白 `Rag_Quiz`，**不呼叫 LLM**。`rag_quiz_id` 由資料庫自動產生並於回傳中帶出。
-    LLM 出題請用 `POST /rag/tab/unit/quiz/llm-generate`。
+    LLM 出題請用 `POST /rag/page/unit/quiz/llm-generate`。
     """
     try:
         supabase = get_supabase()
@@ -2108,11 +2108,11 @@ def insert_rag_quiz_row(
     except HTTPException:
         raise
     except Exception as e:
-        _logger.exception("POST /rag/tab/unit/quiz/create 錯誤")
+        _logger.exception("POST /rag/page/unit/quiz/create 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/tab/unit/quiz/quiz-name", summary="Update Rag Quiz Name", operation_id="rag_tab_unit_quiz_quiz_name")
+@router.put("/page/unit/quiz/quiz-name", summary="Update Rag Quiz Name", operation_id="rag_tab_unit_quiz_quiz_name")
 def update_rag_quiz_name(
     body: openapi_body(UpdateRagQuizQuizNameRequest, {"rag_quiz_id": 1, "quiz_name": "新名稱"}),
     caller_person_id: PersonId,
@@ -2164,12 +2164,12 @@ def update_rag_quiz_name(
     except HTTPException:
         raise
     except Exception as e:
-        _logger.exception("PUT /rag/tab/unit/quiz/quiz-name 錯誤")
+        _logger.exception("PUT /rag/page/unit/quiz/quiz-name 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put(
-    "/tab/unit/quiz/delete/{rag_quiz_id}",
+    "/page/unit/quiz/delete/{rag_quiz_id}",
     status_code=200,
     summary="Delete Rag Quiz",
     operation_id="rag_tab_unit_quiz_delete",
@@ -2180,7 +2180,7 @@ def delete_rag_quiz(
     rag_quiz_id: int = PathParam(..., gt=0, description="要軟刪除的 Rag_Quiz 主鍵"),
 ):
     """
-    PUT /rag/tab/unit/quiz/delete/{rag_quiz_id}。
+    PUT /rag/page/unit/quiz/delete/{rag_quiz_id}。
     軟刪除：將 Rag_Quiz 該列 deleted 設為 true（僅 person_id 與請求者一致且尚未刪除之列）。
     """
     try:
@@ -2223,6 +2223,6 @@ def delete_rag_quiz(
     except HTTPException:
         raise
     except Exception as e:
-        _logger.exception("PUT /rag/tab/unit/quiz/delete/{rag_quiz_id} 錯誤")
+        _logger.exception("PUT /rag/page/unit/quiz/delete/{rag_quiz_id} 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -249,7 +249,7 @@ def get_rag_stem_from_rag_id(
     if not outputs:
         raise HTTPException(
             status_code=400,
-            detail=f"該筆 Rag（rag_id={rag_id}）尚無 Rag_Unit 資料，請先執行 POST /rag/tab/build-rag-zip",
+            detail=f"該筆 Rag（rag_id={rag_id}）尚無 Rag_Unit 資料，請先執行 POST /rag/page/build-rag-zip",
         )
 
     wanted = (unit_name or "").strip()
