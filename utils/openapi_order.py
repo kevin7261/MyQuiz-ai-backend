@@ -45,7 +45,7 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/rag/unit/mp3-file",
     "/rag/unit/youtube-url",
     # --- RAG：課程設定 ---
-    "/rag/members",
+    "/rag/course-members",
     "/rag/llm_api_key",
     "/rag/llm_model",
     "/rag/person_analysis_user_prompt_text",

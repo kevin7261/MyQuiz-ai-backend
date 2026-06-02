@@ -1,6 +1,6 @@
 """
 課程設定（Course_Setting）API 模組，掛載於 /rag。
-- GET /rag/members：依 course_id 列出該課程所有使用者；須為有效登入使用者；必填 query course_id。
+- GET /rag/course-members：依 course_id 列出該課程所有使用者；須為有效登入使用者；必填 query course_id。
 - GET /rag/person_analysis_user_prompt_text：取得 person_analysis_user_prompt_text；須為有效登入使用者；必填 query course_id。
 - PUT /rag/person_analysis_user_prompt_text：寫入；僅 user_type 1／2。
 - GET /rag/course_analysis_user_prompt_text：取得 course_analysis_user_prompt_text；須為有效登入使用者；必填 query course_id。
@@ -127,7 +127,7 @@ class PutCourseAnalysisUserPromptTextRequest(BaseModel):
 
 
 class CourseMemberItem(BaseModel):
-    """GET /rag/members 單筆成員。"""
+    """GET /rag/course-members 單筆成員。"""
 
     course_user_id: int
     user_id: int
@@ -139,7 +139,7 @@ class CourseMemberItem(BaseModel):
 
 
 class ListCourseMembersResponse(BaseModel):
-    """GET /rag/members 回應。"""
+    """GET /rag/course-members 回應。"""
 
     course_id: int
     members: list[CourseMemberItem]
@@ -202,9 +202,9 @@ def _fetch_course_members(supabase, course_id: int) -> list[CourseMemberItem]:
     return members
 
 
-@router.get("/members", response_model=ListCourseMembersResponse)
+@router.get("/course-members", response_model=ListCourseMembersResponse)
 def list_course_members(person_id: PersonId, course_id: CourseId):
-    """依 course_id 列出該課程所有使用者（User_Course_Relation + User，不含已刪除）。"""
+    """List course members：依 course_id 列出該課程所有使用者（User_Course_Relation + User，不含已刪除）。"""
     _require_active_person(person_id)
     try:
         supabase = get_supabase()
