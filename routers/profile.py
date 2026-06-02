@@ -1,12 +1,12 @@
 """
 使用者相關 API 模組。
 提供：
-- GET /user/users：列出 User 表（不含 password），含各使用者選課 courses 列表
-- POST /user/users：新增單一使用者（person_id、name、course_id、user_type；college_id 自 Course 帶入）
-- POST /user/users/batch：批次新增使用者（每筆僅 person_id、name；user_type 固定為 3；password 預設 0000）
-- PUT /user/users/delete：軟刪除（body.person_id 指定對象，將 deleted 設為 true）
-- POST /user/login：以 person_id + password 登入（成功時另回傳該帳號之 User_Course_Relation 課程列表）
-- PATCH /user/profile：更新個人資料（name、user_type）
+- GET /profile/users：列出 User 表（含 password），含各使用者選課 courses 列表
+- POST /profile/users：新增單一使用者（person_id、name、course_id、user_type；college_id 自 Course 帶入）
+- POST /profile/users/batch：批次新增使用者（每筆僅 person_id、name；user_type 固定為 3；password 預設 0000）
+- PUT /profile/users/delete：軟刪除（body.person_id 指定對象，將 deleted 設為 true）
+- POST /profile/login：以 person_id + password 登入（成功時另回傳該帳號之 User_Course_Relation 課程列表）
+- PATCH /profile：更新個人資料（name、user_type）
 """
 
 from typing import Annotated, Any, Optional
@@ -27,7 +27,7 @@ from utils.db_schema import (
 from utils.openapi import openapi_body
 from utils.supabase import get_supabase
 
-router = APIRouter(prefix="/user", tags=["user"])
+router = APIRouter(prefix="/profile", tags=["profile"])
 
 # User 表實體欄位（user_type 隨 User_Course_Relation 各列；college_name 可自 College 串接）
 USER_TABLE_COLUMNS = "user_id, person_id, college_id, college_name, name, deleted, updated_at, created_at"
@@ -152,6 +152,8 @@ def _user_public_dict(
     user_row: dict,
     college_by_id: dict[str, str] | None = None,
     courses: list[dict] | None = None,
+    *,
+    include_password: bool = False,
 ) -> dict:
     """組出對外使用者 dict；user_type 見 courses 各項。"""
     cid = _normalize_college_id(user_row.get("college_id"))
@@ -160,6 +162,8 @@ def _user_public_dict(
     out["college_name"] = _college_name_for_user(user_row, college_by_id)
     out["courses"] = courses if courses is not None else []
     out["user_metadata"] = None
+    if include_password:
+        out["password"] = user_row.get("password")
     out["updated_at"] = to_taipei_iso(out.get("updated_at"))
     out["created_at"] = to_taipei_iso(out.get("created_at"))
     return out
@@ -190,12 +194,13 @@ def _insert_user_course_relation(
 
 
 class UserListItem(BaseModel):
-    """單筆使用者（不含 password）；user_type 見 courses 各項。"""
+    """單筆使用者；user_type 見 courses 各項。password 僅 GET /profile/users 回傳。"""
     user_id: int
     person_id: Optional[str] = None
     college_id: Optional[str] = None
     college_name: Optional[str] = None
     name: Optional[str] = None
+    password: Optional[str] = None
     courses: list["UserCourseItem"] = Field(default_factory=list)
     user_metadata: Optional[Any] = None
     updated_at: Optional[str] = None
@@ -203,13 +208,13 @@ class UserListItem(BaseModel):
 
 
 class ListUsersResponse(BaseModel):
-    """GET /user/users 回應。"""
+    """GET /profile/users 回應。"""
     users: list[UserListItem]
     count: int
 
 
 class LoginRequest(BaseModel):
-    """POST /user/login 請求：person_id + password。"""
+    """POST /profile/login 請求：person_id + password。"""
     person_id: str
     password: str
 
@@ -233,14 +238,14 @@ class LoginResponse(BaseModel):
 
 
 class UpdateProfileRequest(BaseModel):
-    """PATCH /user/profile 請求：身分以 query person_id 為準；可選 body.person_id 須與之一致；可更新 name、user_type。"""
+    """PATCH /profile 請求：身分以 query person_id 為準；可選 body.person_id 須與之一致；可更新 name、user_type。"""
     person_id: Optional[str] = None
     name: Optional[str] = None
     user_type: Optional[int] = None
 
 
 class UploadUserRequest(BaseModel):
-    """POST /user/users 請求：新增使用者並建立一筆選課；query person_id 須與 body.person_id 一致。"""
+    """POST /profile/users 請求：新增使用者並建立一筆選課；query person_id 須與 body.person_id 一致。"""
     person_id: str
     name: str
     course_id: int
@@ -263,7 +268,7 @@ class BatchUserFailure(BaseModel):
 
 
 class BatchCreateUsersResponse(BaseModel):
-    """POST /user/users/batch 回應。"""
+    """POST /profile/users/batch 回應。"""
     created: list[UserListItem]
     failed: list[BatchUserFailure]
     created_count: int
@@ -271,7 +276,7 @@ class BatchCreateUsersResponse(BaseModel):
 
 
 class DeleteUserRequest(BaseModel):
-    """PUT /user/users/delete：要軟刪除的使用者 person_id。"""
+    """PUT /profile/users/delete：要軟刪除的使用者 person_id。"""
     person_id: str
 
 
@@ -299,9 +304,13 @@ def _user_list_item(
     user_row: dict,
     college_by_id: dict[str, str] | None,
     courses: list[UserCourseItem] | None = None,
+    *,
+    include_password: bool = False,
 ) -> UserListItem:
     course_dicts = [c.model_dump() for c in (courses or [])]
-    return UserListItem(**_user_public_dict(user_row, college_by_id, course_dicts))
+    return UserListItem(
+        **_user_public_dict(user_row, college_by_id, course_dicts, include_password=include_password)
+    )
 
 
 def _insert_user_upload(
@@ -367,13 +376,13 @@ def _insert_user_upload(
 @router.get("/users", response_model=ListUsersResponse)
 def list_users(_person_id: PersonId):
     """
-    列出 User 表內容（不含 password）；僅 deleted = false。新增請用 POST /user/users 或 POST /user/users/batch。
+    列出 User 表內容（含 password）；僅 deleted = false。新增請用 POST /profile/users 或 POST /profile/users/batch。
     """
     try:
         supabase = get_supabase()
         resp = (
             supabase.table(USER_TABLE)
-            .select(USER_TABLE_COLUMNS)
+            .select(f"{USER_TABLE_COLUMNS}, password")
             .eq("deleted", False)
             .execute()
         )
@@ -390,6 +399,7 @@ def list_users(_person_id: PersonId):
                     r,
                     college_map,
                     courses_by_uid.get(r["user_id"], []),
+                    include_password=True,
                 )
                 for r in rows
             ],
@@ -428,13 +438,13 @@ def _soft_delete_user(supabase, target_person_id: str) -> LoginResponse:
     return LoginResponse(user=_user_list_item(row_out, college_map, courses), courses=courses)
 
 
-@router.put("/users/delete", response_model=LoginResponse, summary="Soft delete user", operation_id="user_users_delete")
+@router.put("/users/delete", response_model=LoginResponse, summary="Soft delete user", operation_id="profile_users_delete")
 def soft_delete_user(
     body: openapi_body(DeleteUserRequest, {"person_id": "string"}),
     _person_id: PersonId,
 ):
     """
-    PUT /user/users/delete。軟刪除：將指定 person_id 之使用者 deleted 設為 true（需帶 query person_id）。
+    PUT /profile/users/delete。軟刪除：將指定 person_id 之使用者 deleted 設為 true（需帶 query person_id）。
     """
     target = (body.person_id or "").strip()
     if not target:
@@ -554,7 +564,7 @@ def batch_upload_users(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.patch("/profile", response_model=LoginResponse)
+@router.patch("", response_model=LoginResponse)
 def update_profile(
     body: openapi_body(
         UpdateProfileRequest,

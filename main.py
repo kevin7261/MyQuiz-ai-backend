@@ -32,7 +32,7 @@ from routers.log import router as log_router
 from routers.person_analysis import router as person_analysis_router
 from routers.prompt import router as prompt_router
 from routers.course_settings import router as course_settings_router
-from routers.users import router as users_router
+from routers.profile import router as profile_router
 from routers.zip import router as zip_router
 from utils.openapi_order import sort_openapi_paths
 
@@ -99,7 +99,7 @@ app.include_router(grade_router)
 app.include_router(exam_router)
 app.include_router(person_analysis_router)
 app.include_router(course_analysis_router)
-app.include_router(users_router)
+app.include_router(profile_router)
 app.include_router(college_router)
 app.include_router(course_router)
 app.include_router(course_settings_router)
