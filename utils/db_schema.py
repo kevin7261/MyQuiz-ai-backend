@@ -54,13 +54,13 @@ RAG_QUIZ_SELECT_COLUMNS = (
     "rag_quiz_id, rag_page_id, rag_unit_id, person_id, course_id, follow_up, quiz_name, "
     "quiz_user_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, "
     "answer_user_prompt_text, answer_content, answer_critique, quiz_history_list, "
-    "for_exam, deleted, updated_at, created_at"
+    "quiz_history_list_prompt_text, for_exam, deleted, updated_at, created_at"
 )
 RAG_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP = (
     "rag_quiz_id, rag_page_id, rag_unit_id, person_id, course_id, quiz_name, "
     "quiz_user_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, "
     "answer_user_prompt_text, answer_content, answer_critique, quiz_history_list, "
-    "for_exam, deleted, updated_at, created_at"
+    "quiz_history_list_prompt_text, for_exam, deleted, updated_at, created_at"
 )
 RAG_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY_LIST = (
     "rag_quiz_id, rag_page_id, rag_unit_id, person_id, course_id, follow_up, quiz_name, "
@@ -147,6 +147,107 @@ QUIZ_HISTORY_OPENAPI_ITEM: dict[str, Any] = {
 }
 
 QUIZ_HISTORY_OPENAPI_LIST: list[dict[str, Any]] = [dict(QUIZ_HISTORY_OPENAPI_ITEM)]
+
+QUIZ_HISTORY_PROMPT_STEM_OPENAPI_ITEM: dict[str, str] = {
+    "quiz_content": "先前題目題幹",
+}
+QUIZ_HISTORY_PROMPT_FOLLOWUP_OPENAPI_ITEM: dict[str, str] = {
+    "quiz_content": "先前題目題幹",
+    "quiz_answer_reference": "參考答案全文",
+    "answer_content": "學生先前作答",
+    "answer_critique": "批改評語",
+}
+QUIZ_HISTORY_PROMPT_STEM_OPENAPI_LIST: list[dict[str, str]] = [
+    dict(QUIZ_HISTORY_PROMPT_STEM_OPENAPI_ITEM)
+]
+QUIZ_HISTORY_PROMPT_FOLLOWUP_OPENAPI_LIST: list[dict[str, str]] = [
+    dict(QUIZ_HISTORY_PROMPT_FOLLOWUP_OPENAPI_ITEM)
+]
+
+
+def _normalize_prompt_stem_item(item: Any) -> dict[str, str] | None:
+    """正規化 quiz_history_list_prompt_text 單筆（一般出題：僅 quiz_content）。"""
+    if isinstance(item, str):
+        qc = item.strip()
+        if not qc:
+            return None
+        return {"quiz_content": qc}
+    if not isinstance(item, dict):
+        return None
+    qc = (item.get("quiz_content") or "").strip()
+    if not qc:
+        return None
+    return {"quiz_content": qc}
+
+
+def _normalize_prompt_followup_item(item: Any) -> dict[str, str] | None:
+    """正規化 quiz_history_list_prompt_text 單筆（追問：四欄位）。"""
+    if isinstance(item, str):
+        qc = item.strip()
+        if not qc:
+            return None
+        return {
+            "quiz_content": qc,
+            "quiz_answer_reference": "",
+            "answer_content": "",
+            "answer_critique": "",
+        }
+    if not isinstance(item, dict):
+        return None
+    qc = (item.get("quiz_content") or "").strip()
+    if not qc:
+        return None
+    ans = item.get("answer_content")
+    if ans is None:
+        ans = item.get("quiz_answer") or item.get("answer")
+    return {
+        "quiz_content": qc,
+        "quiz_answer_reference": (item.get("quiz_answer_reference") or "").strip(),
+        "answer_content": (ans or "") if ans is not None else "",
+        "answer_critique": (item.get("answer_critique") or "").strip(),
+    }
+
+
+def parse_quiz_history_prompt_text(raw: Any, *, followup: bool) -> list[dict[str, str]]:
+    """解析 Rag_Quiz.quiz_history_list_prompt_text（text JSON 或已解析 list）。"""
+    if raw is None or raw == "":
+        return []
+    data: Any = raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(data, list):
+        return []
+    normalize = _normalize_prompt_followup_item if followup else _normalize_prompt_stem_item
+    out: list[dict[str, str]] = []
+    for item in data:
+        normalized = normalize(item)
+        if normalized is not None:
+            out.append(normalized)
+    return out
+
+
+def serialize_quiz_history_prompt_text(
+    items: list[dict[str, Any]] | None,
+    *,
+    followup: bool,
+) -> str:
+    """寫入 Rag_Quiz.quiz_history_list_prompt_text（text 欄位用 JSON 字串）。"""
+    if not items:
+        return "[]"
+    normalize = _normalize_prompt_followup_item if followup else _normalize_prompt_stem_item
+    cleaned = [normalize(item) for item in items]
+    cleaned = [item for item in cleaned if item is not None]
+    if not cleaned:
+        return "[]"
+    return json.dumps(cleaned, ensure_ascii=False)
+
+
+def coerce_quiz_history_prompt_text_request(raw: Any, *, followup: bool) -> list[dict[str, str]]:
+    """請求 body 之 quiz_history_list_prompt_text：接受 JSON 字串或物件陣列。"""
+    return parse_quiz_history_prompt_text(raw, followup=followup)
 
 
 def parse_rag_quiz_history_list(raw: Any) -> list[dict[str, Any]]:
@@ -255,6 +356,10 @@ def rag_quiz_list_row(row: dict[str, Any]) -> dict[str, Any]:
         "quiz_answer": ans_s,
         "answer_critique": row.get("answer_critique"),
         "quiz_history_list": parse_rag_quiz_history_list(row.get("quiz_history_list")),
+        "quiz_history_list_prompt_text": parse_quiz_history_prompt_text(
+            row.get("quiz_history_list_prompt_text"),
+            followup=bool(row.get("follow_up")),
+        ),
         "for_exam": row.get("for_exam"),
         "deleted": row.get("deleted"),
         "updated_at": row.get("updated_at"),

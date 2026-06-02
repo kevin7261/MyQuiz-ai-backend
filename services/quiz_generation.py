@@ -23,6 +23,7 @@ import sys
 import tempfile
 import textwrap
 import zipfile
+from typing import Any
 from pathlib import Path
 
 from langchain_community.vectorstores import FAISS
@@ -246,7 +247,7 @@ def _format_quiz_history_body(quiz_history_list: list[str] | None) -> str:
     """產出 USER_PROMPT_* 占位 {quiz_history_body}（標題 `## 已出過題目` 在模板內）。"""
     items = _normalize_quiz_history_list(quiz_history_list)
     if not items:
-        return "（本次請求未提供已出過題目列表；請忽略本節之勿重複限制，依出題 user prompt 與課程內容出題。）"
+        return _empty_quiz_history_body()
     lines = "\n".join(f"{i}. {q}" for i, q in enumerate(items, start=1))
     return textwrap.dedent(f"""
         **重要：下列題目已經出過，請勿重複出題。** 你本次產生的 `quiz_content` 不得與任一下列題幹相同、近乎相同，或僅做輕微改寫（換句話說、調整選項順序、替換同義詞等）。請改變考查重點、情境或問法，出**一道全新的題目**。
@@ -257,17 +258,37 @@ def _format_quiz_history_body(quiz_history_list: list[str] | None) -> str:
         """).strip()
 
 
+def _empty_quiz_history_body() -> str:
+    return "（本次請求未提供已出過題目列表；請忽略本節之勿重複限制，依出題 user prompt 與課程內容出題。）"
+
+
+def _quiz_history_body_for_prompt(
+    *,
+    quiz_history_list_prompt_text: str = "",
+    quiz_history_list: list[str] | None = None,
+) -> str:
+    """優先使用 API 傳入之 quiz_history_list_prompt_text；否則由題幹陣列格式化（Exam 等相容）。"""
+    pt = (quiz_history_list_prompt_text or "").strip()
+    if pt:
+        return pt
+    return _format_quiz_history_body(quiz_history_list)
+
+
 def _format_quiz_user_message(
     template: str,
     *,
     quiz_user_prompt_text: str,
     context_md: str,
     quiz_history_list: list[str] | None = None,
+    quiz_history_list_prompt_text: str = "",
 ) -> str:
     """組 user 訊息：出題 user prompt（獨立區塊）→ 已出過題目（獨立區塊，可空）→ 課程內容。"""
     return template.format(
         quiz_user_prompt_text=(quiz_user_prompt_text or "").strip(),
-        quiz_history_body=_format_quiz_history_body(quiz_history_list),
+        quiz_history_body=_quiz_history_body_for_prompt(
+            quiz_history_list_prompt_text=quiz_history_list_prompt_text,
+            quiz_history_list=quiz_history_list,
+        ),
         context_md=context_md,
     )
 
@@ -311,10 +332,7 @@ def _format_quiz_history_qa_body(quiz_history_list: list[dict[str, str]] | None)
     """產出 USER_PROMPT_COURSE_FOLLOWUP 占位 {quiz_history_qa_body}。"""
     pairs = _normalize_quiz_history_qa_list(quiz_history_list)
     if not pairs:
-        return (
-            "（本次請求未提供先前問答紀錄；請依出題 user prompt 與課程內容出題，"
-            "但仍須產出一道完整新題。）"
-        )
+        return _empty_quiz_history_qa_body()
     blocks: list[str] = []
     for i, (q, a, ref, critique) in enumerate(pairs, start=1):
         blocks.append(
@@ -338,15 +356,54 @@ def _format_quiz_history_qa_body(quiz_history_list: list[dict[str, str]] | None)
         """).strip()
 
 
+def _empty_quiz_history_qa_body() -> str:
+    return (
+        "（本次請求未提供先前問答紀錄；請依出題 user prompt 與課程內容出題，"
+        "但仍須產出一道完整新題。）"
+    )
+
+
+def format_quiz_history_prompt_for_llm(
+    items: list[dict[str, Any]] | None,
+    *,
+    followup: bool,
+) -> str:
+    """將 quiz_history_list_prompt_text 物件陣列格式化為 LLM prompt 正文。"""
+    if followup:
+        return _format_quiz_history_qa_body(items)
+    stems = [
+        (item.get("quiz_content") or "").strip()
+        for item in (items or [])
+        if isinstance(item, dict) and (item.get("quiz_content") or "").strip()
+    ]
+    return _format_quiz_history_body(stems)
+
+
+def _quiz_history_qa_body_for_prompt(
+    *,
+    quiz_history_list_prompt_text: str = "",
+    quiz_history_list: list[dict[str, str]] | None = None,
+) -> str:
+    """優先使用 API 傳入之 quiz_history_list_prompt_text；否則由物件陣列格式化（Exam 等相容）。"""
+    pt = (quiz_history_list_prompt_text or "").strip()
+    if pt:
+        return pt
+    return _format_quiz_history_qa_body(quiz_history_list)
+
+
 def _format_quiz_followup_user_message(
     *,
     quiz_user_prompt_text: str,
     context_md: str,
     quiz_history_list: list[dict[str, str]] | None = None,
+    quiz_history_list_prompt_text: str = "",
 ) -> str:
     return USER_PROMPT_COURSE_FOLLOWUP.format(
         quiz_user_prompt_text=(quiz_user_prompt_text or "").strip(),
-        quiz_history_qa_body=_format_quiz_history_qa_body(quiz_history_list),
+        quiz_history_qa_body=_quiz_history_qa_body_for_prompt(
+            quiz_history_list_prompt_text=quiz_history_list_prompt_text,
+            quiz_history_list=quiz_history_list,
+        ),
         context_md=context_md,
     )
 
@@ -407,6 +464,7 @@ def _generate_quiz_from_context(
     *,
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[str] | None = None,
+    quiz_history_list_prompt_text: str = "",
 ) -> dict:
     """FAISS 與逐字稿共用：組 USER_PROMPT_COURSE → 呼叫 LLM。"""
     if not api_key or not api_key.strip():
@@ -419,6 +477,7 @@ def _generate_quiz_from_context(
         quiz_user_prompt_text=quiz_user_prompt_text,
         context_md=context_md,
         quiz_history_list=quiz_history_list,
+        quiz_history_list_prompt_text=quiz_history_list_prompt_text,
     )
     client = OpenAI(api_key=api_key)
     return _invoke_quiz_json_llm(
@@ -436,6 +495,7 @@ def _generate_quiz_followup_from_context(
     *,
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[dict[str, str]] | None = None,
+    quiz_history_list_prompt_text: str = "",
 ) -> dict:
     """追問出題：組 USER_PROMPT_COURSE_FOLLOWUP → 呼叫 LLM。"""
     if not api_key or not api_key.strip():
@@ -447,6 +507,7 @@ def _generate_quiz_followup_from_context(
         quiz_user_prompt_text=quiz_user_prompt_text,
         context_md=context_md,
         quiz_history_list=quiz_history_list,
+        quiz_history_list_prompt_text=quiz_history_list_prompt_text,
     )
     client = OpenAI(api_key=api_key)
     return _invoke_quiz_json_llm(
@@ -467,6 +528,7 @@ def generate_quiz_transcript_only(
     transcript: str,
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[str] | None = None,
+    quiz_history_list_prompt_text: str = "",
 ) -> dict:
     """
     無 FAISS：與 generate_quiz 相同訊息結構——system 為出題規範；逐字稿置於 user「課程內容」。
@@ -478,7 +540,8 @@ def generate_quiz_transcript_only(
         api_key: OpenAI API Key（與 embeddings 無關，本路徑不建向量）。
         transcript: 課程全文或逐字稿，填入 user 課程內容區塊；不可空。
         quiz_user_prompt_text: 填入 USER_PROMPT_* 之「出題 user prompt」占位；空字串時依 system 指示略過該節。
-        quiz_history_list: 已出過題目題幹；併入「已出過題目（quiz_history_list）」區塊，避免重複出題。
+        quiz_history_list: 已出過題目題幹（Exam 等相容；Rag 請改傳 quiz_history_list_prompt_text）。
+        quiz_history_list_prompt_text: 併入 prompt 的先前問答正文（Rag llm-generate 使用）。
     """
     raw_tc = transcript if transcript is not None else ""
     if not raw_tc.strip():
@@ -488,6 +551,7 @@ def generate_quiz_transcript_only(
         raw_tc,
         quiz_user_prompt_text=quiz_user_prompt_text,
         quiz_history_list=quiz_history_list,
+        quiz_history_list_prompt_text=quiz_history_list_prompt_text,
     )
 
 
@@ -496,6 +560,7 @@ def generate_quiz(
     api_key: str,
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[str] | None = None,
+    quiz_history_list_prompt_text: str = "",
 ) -> dict:
     """
     有 FAISS RAG ZIP：解壓 → 載入向量庫 → 檢索 → 組 Markdown user → LLM。
@@ -507,7 +572,8 @@ def generate_quiz(
         zip_path: 本機路徑，指向已下載之 RAG ZIP（內含 index.faiss / index.pkl）。
         api_key: 同時用於 OpenAIEmbeddings 與 Chat Completions。
         quiz_user_prompt_text: 填入 USER_PROMPT_COURSE 之「出題 user prompt」占位；空字串時依 system 指示略過該節。
-        quiz_history_list: 已出過題目題幹；併入「已出過題目（quiz_history_list）」區塊，避免重複出題。
+        quiz_history_list: 已出過題目題幹（Exam 等相容；Rag 請改傳 quiz_history_list_prompt_text）。
+        quiz_history_list_prompt_text: 併入 prompt 的先前問答正文（Rag llm-generate 使用）。
     """
     if not api_key or not api_key.strip():
         raise ValueError("請傳入 api_key")
@@ -550,6 +616,7 @@ def generate_quiz(
             context_text,
             quiz_user_prompt_text=quiz_user_prompt_text,
             quiz_history_list=quiz_history_list,
+            quiz_history_list_prompt_text=quiz_history_list_prompt_text,
         )
     finally:
         # 暫存目錄必清，避免磁碟堆積與路徑外洩。
@@ -561,6 +628,7 @@ def generate_quiz_followup_transcript_only(
     transcript: str,
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[dict[str, str]] | None = None,
+    quiz_history_list_prompt_text: str = "",
 ) -> dict:
     """
     追問出題（無 FAISS）：答不好追問弱點，答好出新題；quiz_history_list 為先前問答（題幹＋作答）列表。
@@ -573,6 +641,7 @@ def generate_quiz_followup_transcript_only(
         raw_tc,
         quiz_user_prompt_text=quiz_user_prompt_text,
         quiz_history_list=quiz_history_list,
+        quiz_history_list_prompt_text=quiz_history_list_prompt_text,
     )
 
 
@@ -581,6 +650,7 @@ def generate_quiz_followup(
     api_key: str,
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[dict[str, str]] | None = None,
+    quiz_history_list_prompt_text: str = "",
 ) -> dict:
     """追問出題（有 FAISS RAG ZIP）：答不好追問弱點，答好出新題。"""
     if not api_key or not api_key.strip():
@@ -620,6 +690,7 @@ def generate_quiz_followup(
             context_text,
             quiz_user_prompt_text=quiz_user_prompt_text,
             quiz_history_list=quiz_history_list,
+            quiz_history_list_prompt_text=quiz_history_list_prompt_text,
         )
     finally:
         shutil.rmtree(extract_folder, ignore_errors=True)
