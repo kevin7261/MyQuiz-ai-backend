@@ -586,6 +586,7 @@ def update_rag_quiz_with_grade(
     rag_quiz_id: int,
     answer_user_prompt_text: str = "",
     quiz_content: str = "",
+    grade_llm_model: str = "",
 ) -> tuple[str, int] | None:
     """更新 public.Rag_Quiz；`answer_critique` 存評語純文字（與 Exam_Quiz 一致）；成功後讀回驗證（舊表無該欄時走降級路徑）。"""
     if rag_quiz_id <= 0:
@@ -599,6 +600,8 @@ def update_rag_quiz_with_grade(
         "answer_critique": critique_text,
         "updated_at": ts,
     }
+    if (grade_llm_model or "").strip():
+        row["grade_llm_model"] = (grade_llm_model or "").strip()
     # 僅在呼叫端傳入非空 quiz_content 時一併更新題幹（避免空字串蓋掉既有題目）。
     if qc_persist:
         row = {"quiz_content": qc_persist, **row}
@@ -652,7 +655,7 @@ def update_rag_quiz_with_grade(
         )
         update_payload = dict(row)
         skipped_critique = False
-        for _ in range(3):
+        for _ in range(4):
             try:
                 supabase.table("Rag_Quiz").update(update_payload).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
                 break
@@ -663,6 +666,9 @@ def update_rag_quiz_with_grade(
                 if _rag_quiz_missing_column_error(upd_err, "answer_critique") and "answer_critique" in update_payload:
                     update_payload.pop("answer_critique")
                     skipped_critique = True
+                    continue
+                if _rag_quiz_missing_column_error(upd_err, "grade_llm_model") and "grade_llm_model" in update_payload:
+                    update_payload.pop("grade_llm_model")
                     continue
                 raise
         if skipped_critique:
@@ -731,6 +737,7 @@ def update_exam_quiz_with_grade(
     quiz_answer: str,
     *,
     exam_quiz_id: int,
+    grade_llm_model: str = "",
 ) -> tuple[str, int] | None:
     """更新 public.Exam_Quiz；answer_critique 存評語純文字；成功後讀回驗證。"""
     if exam_quiz_id <= 0:
@@ -742,6 +749,8 @@ def update_exam_quiz_with_grade(
         "answer_critique": critique,
         "updated_at": ts,
     }
+    if (grade_llm_model or "").strip():
+        row["grade_llm_model"] = (grade_llm_model or "").strip()
     try:
         supabase = get_supabase()
         history_qc = ""
@@ -793,13 +802,16 @@ def update_exam_quiz_with_grade(
             answer_critique=critique,
         )
         update_payload = dict(row)
-        for _ in range(2):
+        for _ in range(3):
             try:
                 supabase.table("Exam_Quiz").update(update_payload).eq("exam_quiz_id", exam_quiz_id).execute()
                 break
             except Exception as upd_err:
                 if _rag_quiz_missing_column_error(upd_err, "quiz_history_list") and "quiz_history_list" in update_payload:
                     update_payload.pop("quiz_history_list")
+                    continue
+                if _rag_quiz_missing_column_error(upd_err, "grade_llm_model") and "grade_llm_model" in update_payload:
+                    update_payload.pop("grade_llm_model")
                     continue
                 raise
         chk = (

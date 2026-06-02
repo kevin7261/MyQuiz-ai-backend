@@ -622,7 +622,7 @@ def _persist_and_verify_rag_quiz(
     """更新 Rag_Quiz 出題結果並讀回驗證；任何失敗或讀回不一致皆拋 500 HTTPException。"""
     update_payload = dict(quiz_update)
     try:
-        for _ in range(2):
+        for _ in range(4):
             try:
                 supabase.table("Rag_Quiz").update(update_payload).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
                 break
@@ -632,6 +632,9 @@ def _persist_and_verify_rag_quiz(
                     continue
                 if _rag_quiz_missing_column_error(upd_err, "quiz_history_list_prompt_text") and "quiz_history_list_prompt_text" in update_payload:
                     update_payload.pop("quiz_history_list_prompt_text")
+                    continue
+                if _rag_quiz_missing_column_error(upd_err, "quiz_llm_model") and "quiz_llm_model" in update_payload:
+                    update_payload.pop("quiz_llm_model")
                     continue
                 raise
     except Exception as e:
@@ -922,6 +925,7 @@ def _rag_llm_generate_quiz_impl(
             "follow_up": followup,
             "quiz_history_list": serialize_rag_quiz_history_list(qa_dicts),
             "quiz_history_list_prompt_text": prompt_db_str,
+            "quiz_llm_model": llm_model,
             "updated_at": qts,
         }
         _persist_and_verify_rag_quiz(
@@ -1250,6 +1254,7 @@ async def _enqueue_rag_llm_grade_job(
             rag_quiz_id=rag_quiz_id_int,
             answer_user_prompt_text=aup,
             quiz_content=qc_from_body,
+            grade_llm_model=llm_model,
         )
     background_tasks.add_task(
         run_grade_job_background,

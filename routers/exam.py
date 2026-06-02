@@ -1537,6 +1537,7 @@ def _exam_llm_generate_quiz_impl(
             "answer_critique": None,
             "quiz_history_list": serialize_rag_quiz_history_list(qa_dicts),
             "quiz_history_list_prompt_text": prompt_db_str,
+            "quiz_llm_model": llm_model,
             "updated_at": qts,
         }
         if mark_follow_up:
@@ -1572,6 +1573,9 @@ def _exam_llm_generate_quiz_impl(
                         continue
                     if _rag_quiz_missing_column_error(upd_err, "quiz_history_list_prompt_text") and "quiz_history_list_prompt_text" in update_payload:
                         update_payload.pop("quiz_history_list_prompt_text")
+                        continue
+                    if _rag_quiz_missing_column_error(upd_err, "quiz_llm_model") and "quiz_llm_model" in update_payload:
+                        update_payload.pop("quiz_llm_model")
                         continue
                     raise
         except Exception as e:
@@ -2068,7 +2072,9 @@ async def exam_grade_submission(
     _exam_grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
     exam_quiz_id_int = int(body.exam_quiz_id)
     def insert_fn(rd, qa):
-        return update_exam_quiz_with_grade(rd, qa, exam_quiz_id=exam_quiz_id_int)
+        return update_exam_quiz_with_grade(
+            rd, qa, exam_quiz_id=exam_quiz_id_int, grade_llm_model=llm_model
+        )
     background_tasks.add_task(
         run_grade_job_background,
         job_id,
