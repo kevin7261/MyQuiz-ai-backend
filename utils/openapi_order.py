@@ -69,7 +69,10 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/exam/page/quiz/quiz-rate",
     "/exam/page/quiz/grade-rate",
     # --- Exam：課程設定 ---
-    "/exam/api_key",
+    "/exam/llm_api_key",
+    # --- 弱點分析 ---
+    "/person-analysis/quizzes/{person_id}",
+    "/course-analysis/quizzes",
 )
 
 _PATH_RANK = {p: i for i, p in enumerate(_API_PATH_ORDER)}
@@ -83,6 +86,8 @@ def _path_group_rank(path: str) -> tuple:
         return (1, 0, path)
     if path.startswith("/exam/"):
         return (1, 1, path)
+    if path.startswith("/person-analysis/") or path.startswith("/course-analysis/"):
+        return (1, 2, path)
     return (2, 0, path)
 
 

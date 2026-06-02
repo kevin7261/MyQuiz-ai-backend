@@ -2,7 +2,7 @@
 LLM API Key／出題模型：依 course_id 自 Course_Setting 讀取。
 - RAG Key：key=rag-api-key（GET/PUT /rag/llm_api_key）
 - LLM 模型（出題、批改、弱點分析共用）：key=llm-model（GET/PUT /rag/llm_model；未設定時 fallback `QUIZ_LLM_MODEL`）
-- Exam Key：key=exam-api-key（GET/PUT /exam/api_key）
+- Exam Key：key=exam-api-key（GET/PUT /exam/llm_api_key）
 """
 
 from typing import Any, Optional

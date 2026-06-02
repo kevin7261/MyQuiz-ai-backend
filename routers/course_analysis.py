@@ -50,6 +50,10 @@ class ListQuizzesResponse(BaseModel):
         default=None,
         description="弱點報告：LLM `message.content` 原文 Markdown；未設定 API Key、呼叫失敗或無內容時為 null",
     )
+    analysis_llm_model: str = Field(
+        ...,
+        description="本次弱點分析實際使用的 LLM 模型（Course_Setting key=llm-model；未設定時為程式預設 gpt-5.4）",
+    )
 
 
 @router.get("/quizzes", response_model=ListQuizzesResponse)
@@ -85,6 +89,7 @@ def list_exam_quizzes(_person_id: PersonId, course_id: CourseId):
             row["quizzes"] = exam_tab_quizzes_response(quizzes_by_tab.get(tid, []))
 
         data = to_json_safe(exam_rows)
+        analysis_llm_model = get_rag_llm_model(course_id)
         weakness_report: Optional[str] = None
         api_key = get_exam_api_key(course_id)
         if api_key:
@@ -96,8 +101,13 @@ def list_exam_quizzes(_person_id: PersonId, course_id: CourseId):
                 api_key,
                 setting_prompt,
                 analysis_label=ANALYSIS_LABEL_COURSE,
-                llm_model=get_rag_llm_model(course_id),
+                llm_model=analysis_llm_model,
             )
-        return ListQuizzesResponse(exams=data, count=len(data), weakness_report=weakness_report)
+        return ListQuizzesResponse(
+            exams=data,
+            count=len(data),
+            weakness_report=weakness_report,
+            analysis_llm_model=analysis_llm_model,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
