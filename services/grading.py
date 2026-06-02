@@ -31,6 +31,7 @@ from postgrest.exceptions import APIError
 
 from utils.taipei_time import now_taipei_iso
 from services.quiz_generation import _context_as_markdown_fenced
+from utils.db_schema import parse_rag_quiz_history_list, serialize_rag_quiz_history_list
 from utils.rag_faiss import process_zip_to_docs
 from utils.supabase import get_supabase
 
@@ -540,6 +541,31 @@ def _rag_quiz_missing_column_error(exc: BaseException, column: str) -> bool:
     return "PGRST204" in text and col in text
 
 
+def _append_rag_quiz_history(
+    existing_raw: Any,
+    *,
+    quiz_content: str,
+    answer_content: str,
+    quiz_answer_reference: str,
+    answer_critique: str,
+) -> str | None:
+    qc = (quiz_content or "").strip()
+    if not qc:
+        return serialize_rag_quiz_history_list(parse_rag_quiz_history_list(existing_raw))
+    history = parse_rag_quiz_history_list(existing_raw)
+    entry = {
+        "quiz_content": qc,
+        "answer_content": answer_content or "",
+        "quiz_answer_reference": (quiz_answer_reference or "").strip(),
+        "answer_critique": (answer_critique or "").strip(),
+    }
+    if history and (history[-1].get("quiz_content") or "").strip() == qc:
+        history[-1] = entry
+    else:
+        history.append(entry)
+    return serialize_rag_quiz_history_list(history)
+
+
 def update_rag_quiz_with_grade(
     result_dict: dict,
     quiz_answer: str,
@@ -553,10 +579,11 @@ def update_rag_quiz_with_grade(
         return None
     ts = now_taipei_iso()
     qc_persist = (quiz_content or "").strip()
+    critique_text = answer_critique_plain_text_from_result(result_dict)
     row: dict[str, Any] = {
         "answer_user_prompt_text": (answer_user_prompt_text or "").strip(),
         "answer_content": quiz_answer or "",
-        "answer_critique": answer_critique_plain_text_from_result(result_dict),
+        "answer_critique": critique_text,
         "updated_at": ts,
     }
     # 僅在呼叫端傳入非空 quiz_content 時一併更新題幹（避免空字串蓋掉既有題目）。
@@ -564,14 +591,50 @@ def update_rag_quiz_with_grade(
         row = {"quiz_content": qc_persist, **row}
     try:
         supabase = get_supabase()
+        history_qc = qc_persist
+        history_ref = ""
+        existing_history_raw: Any = None
         try:
-            supabase.table("Rag_Quiz").update(row).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
-        except Exception as first_err:
-            # 部分環境尚無 answer_critique 欄位（PGRST204）：略過該欄仍回傳 rag_quiz_id。
-            if not _rag_quiz_missing_column_error(first_err, "answer_critique"):
+            hist_sel = (
+                supabase.table("Rag_Quiz")
+                .select("quiz_content, quiz_answer_reference, quiz_history_list")
+                .eq("rag_quiz_id", rag_quiz_id)
+                .eq("deleted", False)
+                .limit(1)
+                .execute()
+            )
+            if hist_sel.data:
+                h0 = hist_sel.data[0]
+                if not history_qc:
+                    history_qc = (h0.get("quiz_content") or "").strip()
+                history_ref = (h0.get("quiz_answer_reference") or "").strip()
+                existing_history_raw = h0.get("quiz_history_list")
+        except Exception as hist_err:
+            if not _rag_quiz_missing_column_error(hist_err, "quiz_history_list"):
+                _logger.debug("讀取 Rag_Quiz quiz_history_list 略過 rag_quiz_id=%s: %s", rag_quiz_id, hist_err)
+        row["quiz_history_list"] = _append_rag_quiz_history(
+            existing_history_raw,
+            quiz_content=history_qc,
+            answer_content=quiz_answer or "",
+            quiz_answer_reference=history_ref,
+            answer_critique=critique_text,
+        )
+        update_payload = dict(row)
+        skipped_critique = False
+        for _ in range(3):
+            try:
+                supabase.table("Rag_Quiz").update(update_payload).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
+                break
+            except Exception as upd_err:
+                if _rag_quiz_missing_column_error(upd_err, "quiz_history_list") and "quiz_history_list" in update_payload:
+                    update_payload.pop("quiz_history_list")
+                    continue
+                if _rag_quiz_missing_column_error(upd_err, "answer_critique") and "answer_critique" in update_payload:
+                    update_payload.pop("answer_critique")
+                    skipped_critique = True
+                    continue
                 raise
-            row_lean = {k: v for k, v in row.items() if k != "answer_critique"}
-            supabase.table("Rag_Quiz").update(row_lean).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
+        if skipped_critique:
             _logger.warning(
                 "Rag_Quiz 無 answer_critique 欄位，已略過評語寫入（rag_quiz_id=%s）",
                 rag_quiz_id,
@@ -638,18 +701,58 @@ def update_exam_quiz_with_grade(
     *,
     exam_quiz_id: int,
 ) -> tuple[str, int] | None:
-    """更新 public.Exam_Quiz；answer_critique 存評語純文字（`quiz_comments` 合併，非 JSON），成功後讀回驗證。"""
+    """更新 public.Exam_Quiz；answer_critique 存評語純文字；成功後讀回驗證。"""
     if exam_quiz_id <= 0:
         return None
     critique = answer_critique_plain_text_from_result(result_dict)
     ts = now_taipei_iso()
+    row: dict[str, Any] = {
+        "answer_content": quiz_answer or "",
+        "answer_critique": critique,
+        "updated_at": ts,
+    }
     try:
         supabase = get_supabase()
-        supabase.table("Exam_Quiz").update({
-            "answer_content": quiz_answer or "",
-            "answer_critique": critique,
-            "updated_at": ts,
-        }).eq("exam_quiz_id", exam_quiz_id).execute()
+        history_qc = ""
+        history_ref = ""
+        existing_history_raw: Any = None
+        try:
+            hist_sel = (
+                supabase.table("Exam_Quiz")
+                .select("quiz_content, quiz_answer_reference, quiz_history_list")
+                .eq("exam_quiz_id", exam_quiz_id)
+                .limit(1)
+                .execute()
+            )
+            if hist_sel.data:
+                h0 = hist_sel.data[0]
+                history_qc = (h0.get("quiz_content") or "").strip()
+                history_ref = (h0.get("quiz_answer_reference") or "").strip()
+                existing_history_raw = h0.get("quiz_history_list")
+        except Exception as hist_err:
+            if not _rag_quiz_missing_column_error(hist_err, "quiz_history_list"):
+                _logger.debug(
+                    "讀取 Exam_Quiz quiz_history_list 略過 exam_quiz_id=%s: %s",
+                    exam_quiz_id,
+                    hist_err,
+                )
+        row["quiz_history_list"] = _append_rag_quiz_history(
+            existing_history_raw,
+            quiz_content=history_qc,
+            answer_content=quiz_answer or "",
+            quiz_answer_reference=history_ref,
+            answer_critique=critique,
+        )
+        update_payload = dict(row)
+        for _ in range(2):
+            try:
+                supabase.table("Exam_Quiz").update(update_payload).eq("exam_quiz_id", exam_quiz_id).execute()
+                break
+            except Exception as upd_err:
+                if _rag_quiz_missing_column_error(upd_err, "quiz_history_list") and "quiz_history_list" in update_payload:
+                    update_payload.pop("quiz_history_list")
+                    continue
+                raise
         chk = (
             supabase.table("Exam_Quiz")
             .select("answer_critique")

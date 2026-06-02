@@ -14,10 +14,14 @@ from utils.db_schema import (
     EXAM_QUIZ_SELECT_COLUMNS,
     EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP,
     EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID,
+    EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID_NO_QUIZ_HISTORY_LIST,
+    EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_NO_QUIZ_HISTORY_LIST,
+    EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY_LIST,
     RAG_SELECT_COLUMNS,
     RAG_SELECT_COLUMNS_LEGACY,
     RAG_SELECT_COLUMNS_LEGACY_NO_FILE_METADATA,
     RAG_SELECT_COLUMNS_NO_FILE_METADATA,
+    apply_parsed_quiz_history_list_tree,
     exam_quiz_list_row,
 )
 from utils.supabase import get_supabase
@@ -34,9 +38,9 @@ def select_rag_row_with_transcript_fallback(supabase: Any, rag_id: int) -> Any:
         RAG_SELECT_COLUMNS_NO_FILE_METADATA,
         RAG_SELECT_COLUMNS_LEGACY,
         RAG_SELECT_COLUMNS_LEGACY_NO_FILE_METADATA,
-        "rag_id, rag_tab_id, transcript",
-        "rag_id, rag_tab_id, transcription",
-        "rag_id, rag_tab_id",
+        "rag_id, rag_page_id, transcript",
+        "rag_id, rag_page_id, transcription",
+        "rag_id, rag_page_id",
     )
     last_err: APIError | None = None
     for cols in candidates:
@@ -67,7 +71,7 @@ def select_rag_row_with_transcript_fallback(supabase: Any, rag_id: int) -> Any:
 # ---------------------------------------------------------------------------
 
 def exam_default_row(
-    exam_tab_id: str,
+    exam_page_id: str,
     *,
     tab_name: str = "",
     person_id: str = "",
@@ -77,7 +81,7 @@ def exam_default_row(
     """Exam 表新增一筆時的預設欄位（不含 exam_id；created_at／updated_at 為台北時間）。"""
     ts = now_taipei_iso()
     return {
-        "exam_tab_id": exam_tab_id,
+        "exam_page_id": exam_page_id,
         "tab_name": tab_name,
         "person_id": person_id,
         "course_id": course_id,
@@ -111,15 +115,15 @@ def exams_table_select(
     return q.execute().data or []
 
 
-def exams_by_tab_ids(exam_tab_ids: list[str]) -> list[dict]:
-    """依 exam_tab_id 查詢 Exam 表（僅 deleted=False）。"""
-    if not exam_tab_ids:
+def exams_by_page_ids(exam_page_ids: list[str]) -> list[dict]:
+    """依 exam_page_id 查詢 Exam 表（僅 deleted=False）。"""
+    if not exam_page_ids:
         return []
     supabase = get_supabase()
     return (
         supabase.table("Exam")
         .select("*")
-        .in_("exam_tab_id", exam_tab_ids)
+        .in_("exam_page_id", exam_page_ids)
         .eq("deleted", False)
         .execute()
         .data or []
@@ -138,15 +142,15 @@ def apply_exam_quiz_not_deleted(q):
 def _build_exam_quiz_select(
     *,
     columns: str,
-    exam_tab_ids: list[str] | None = None,
+    exam_page_ids: list[str] | None = None,
     person_id: str | None = None,
     course_id: int | None = None,
 ):
     """組 Exam_Quiz select query（不含 deleted 篩選；每次呼叫回傳新 builder）。"""
     supabase = get_supabase()
     q = supabase.table("Exam_Quiz").select(columns)
-    if exam_tab_ids is not None:
-        q = q.in_("exam_tab_id", exam_tab_ids)
+    if exam_page_ids is not None:
+        q = q.in_("exam_page_id", exam_page_ids)
     if person_id is not None:
         q = q.eq("person_id", person_id.strip())
     if course_id is not None:
@@ -157,7 +161,7 @@ def _build_exam_quiz_select(
 def _select_exam_quiz_rows(
     *,
     columns: str,
-    exam_tab_ids: list[str] | None = None,
+    exam_page_ids: list[str] | None = None,
     person_id: str | None = None,
     course_id: int | None = None,
 ) -> list[dict]:
@@ -165,7 +169,7 @@ def _select_exam_quiz_rows(
     rows = (
         apply_exam_quiz_not_deleted(_build_exam_quiz_select(
             columns=columns,
-            exam_tab_ids=exam_tab_ids,
+            exam_page_ids=exam_page_ids,
             person_id=person_id,
             course_id=course_id,
         ))
@@ -179,34 +183,44 @@ def _select_exam_quiz_rows(
 
 def _select_exam_quiz_rows_with_follow_up_fallback(**kwargs: Any) -> list[dict]:
     for cols in (
+        "*",
         EXAM_QUIZ_SELECT_COLUMNS,
+        EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY_LIST,
         EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID,
+        EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID_NO_QUIZ_HISTORY_LIST,
         EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP,
+        EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_NO_QUIZ_HISTORY_LIST,
     ):
         try:
             return _select_exam_quiz_rows(columns=cols, **kwargs)
         except APIError as e:
             msg = (e.message or "").lower()
-            if e.code == "42703" and ("follow_up" in msg or "follow_up_exam_quiz_id" in msg):
+            if e.code == "42703" and (
+                "quiz_history_list" in msg
+                or "follow_up" in msg
+                or "follow_up_exam_quiz_id" in msg
+            ):
                 continue
             raise
-    return _select_exam_quiz_rows(columns=EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP, **kwargs)
+    return _select_exam_quiz_rows(
+        columns=EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_NO_QUIZ_HISTORY_LIST, **kwargs
+    )
 
 
-def quizzes_by_exam_tab_ids(
-    exam_tab_ids: list[str],
+def quizzes_by_exam_page_ids(
+    exam_page_ids: list[str],
     *,
     course_id: int | None = None,
 ) -> dict[str, list[dict]]:
-    """依 exam_tab_id 查詢 Exam_Quiz，回傳 exam_tab_id -> quizzes[]（含 follow_up）。"""
-    if not exam_tab_ids:
+    """依 exam_page_id 查詢 Exam_Quiz，回傳 exam_page_id -> quizzes[]（含 follow_up）。"""
+    if not exam_page_ids:
         return {}
     rows = _select_exam_quiz_rows_with_follow_up_fallback(
-        exam_tab_ids=exam_tab_ids, course_id=course_id
+        exam_page_ids=exam_page_ids, course_id=course_id
     )
-    out: dict[str, list[dict]] = {tid: [] for tid in exam_tab_ids}
+    out: dict[str, list[dict]] = {tid: [] for tid in exam_page_ids}
     for row in rows:
-        tid = row.get("exam_tab_id")
+        tid = row.get("exam_page_id")
         if tid is not None:
             out.setdefault(str(tid), []).append(row)
     return out
@@ -229,20 +243,20 @@ def quizzes_by_course_id(course_id: int) -> list[dict]:
 # Exam_Quiz 資料組裝輔助
 # ---------------------------------------------------------------------------
 
-def _exam_quiz_rag_tab_id_str(q: dict) -> str:
-    rt = q.get("rag_tab_id")
+def _exam_quiz_rag_page_id_str(q: dict) -> str:
+    rt = q.get("rag_page_id")
     if rt is None:
         return ""
     return str(rt).strip()
 
 
 def enrich_exam_quizzes_rag_tab_from_units(quizzes_flat: list[dict]) -> None:
-    """Exam_Quiz 列若無 rag_tab_id 但有 rag_unit_id，自 Rag_Unit 補上 rag_tab_id（就地修改）。"""
+    """Exam_Quiz 列若無 rag_page_id 但有 rag_unit_id，自 Rag_Unit 補上 rag_page_id（就地修改）。"""
     if not quizzes_flat:
         return
     missing_units: set[int] = set()
     for q in quizzes_flat:
-        if _exam_quiz_rag_tab_id_str(q):
+        if _exam_quiz_rag_page_id_str(q):
             continue
         ru = q.get("rag_unit_id")
         if ru is None:
@@ -256,7 +270,7 @@ def enrich_exam_quizzes_rag_tab_from_units(quizzes_flat: list[dict]) -> None:
     supabase = get_supabase()
     resp = (
         supabase.table("Rag_Unit")
-        .select("rag_unit_id, rag_tab_id")
+        .select("rag_unit_id, rag_page_id")
         .in_("rag_unit_id", list(missing_units))
         .eq("deleted", False)
         .execute()
@@ -270,11 +284,11 @@ def enrich_exam_quizzes_rag_tab_from_units(quizzes_flat: list[dict]) -> None:
             uid = int(rid)
         except (TypeError, ValueError):
             continue
-        rtv = row.get("rag_tab_id")
+        rtv = row.get("rag_page_id")
         rt = (str(rtv).strip() if rtv is not None else "") or None
         tab_for_unit[uid] = rt
     for q in quizzes_flat:
-        if _exam_quiz_rag_tab_id_str(q):
+        if _exam_quiz_rag_page_id_str(q):
             continue
         ru = q.get("rag_unit_id")
         if ru is None:
@@ -285,13 +299,13 @@ def enrich_exam_quizzes_rag_tab_from_units(quizzes_flat: list[dict]) -> None:
             continue
         rt = tab_for_unit.get(uid)
         if rt:
-            q["rag_tab_id"] = rt
+            q["rag_page_id"] = rt
 
 
 def ensure_exam_quiz_rag_id_keys(quizzes_flat: list[dict]) -> None:
-    """確保每筆 Exam_Quiz dict 皆含 rag_quiz_id、rag_tab_id、rag_unit_id 鍵（無則 null）。"""
+    """確保每筆 Exam_Quiz dict 皆含 rag_quiz_id、rag_page_id、rag_unit_id 鍵（無則 null）。"""
     for q in quizzes_flat:
-        for key in ("rag_quiz_id", "rag_tab_id", "rag_unit_id"):
+        for key in ("rag_quiz_id", "rag_page_id", "rag_unit_id"):
             if key not in q:
                 q[key] = None
 
@@ -365,6 +379,8 @@ def exam_tab_quizzes_response(quizzes: list[dict]) -> list[dict]:
     nest_follow_up_quizzes(quizzes)
     roots = filter_to_chain_roots(quizzes)
     roots.sort(key=chain_root_exam_quiz_id)
+    for root in roots:
+        apply_parsed_quiz_history_list_tree(root)
     return roots
 
 
@@ -380,11 +396,11 @@ def rag_quiz_for_exam_response_row(row: dict[str, Any]) -> dict[str, Any]:
         rag_quiz_id: int | None = int(rq) if rq is not None else None
     except (TypeError, ValueError):
         rag_quiz_id = None
-    rt = row.get("rag_tab_id")
-    rag_tab_id = (str(rt).strip() if rt is not None else "") or None
+    rt = row.get("rag_page_id")
+    rag_page_id = (str(rt).strip() if rt is not None else "") or None
     return {
         "rag_quiz_id": rag_quiz_id,
-        "rag_tab_id": rag_tab_id,
+        "rag_page_id": rag_page_id,
         "rag_unit_id": rag_unit_id,
         "person_id": str(row.get("person_id") or ""),
         "follow_up": bool(row.get("follow_up")),

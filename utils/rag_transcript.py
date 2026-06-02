@@ -91,15 +91,15 @@ def path_has_folder_segment(decoded_path: str, folder_name: str) -> bool:
     return any(s in parts for s in segs)
 
 
-def read_upload_zip_bytes(person_id: str, rag_tab_id: str) -> bytes:
+def read_upload_zip_bytes(person_id: str, rag_page_id: str) -> bytes:
     """自 Supabase RAG bucket 的 upload 區下載該 tab 的 ZIP，讀成 bytes（暫存檔會刪除）。"""
     pid = (person_id or "").strip() or UPLOAD_DEFAULT_PERSON
-    rid = (rag_tab_id or "").strip()
+    rid = (rag_page_id or "").strip()
     if not rid or "/" in rid or "\\" in rid:
-        raise ValueError("無效的 rag_tab_id")
+        raise ValueError("無效的 rag_page_id")
     tmp = get_zip_path_by_person(pid, rid)
     if not tmp or not tmp.exists():
-        raise FileNotFoundError(f"找不到 upload ZIP（person_id={pid}, rag_tab_id={rid}）")
+        raise FileNotFoundError(f"找不到 upload ZIP（person_id={pid}, rag_page_id={rid}）")
     try:
         return tmp.read_bytes()
     finally:
@@ -120,7 +120,7 @@ def read_repack_zip_bytes(repack_file_name: str) -> bytes:
         raise ValueError("無效的 repack_file_name（無法取得 repack tab id）")
     tmp = get_zip_path(stem)
     if not tmp or not tmp.exists():
-        raise FileNotFoundError(f"找不到 repack ZIP（repack_file_name={raw!r}, tab_id={stem!r}）")
+        raise FileNotFoundError(f"找不到 repack ZIP（repack_file_name={raw!r}, page_id={stem!r}）")
     try:
         return tmp.read_bytes()
     finally:
@@ -217,7 +217,7 @@ def pick_audio_from_upload_zip(zip_bytes: bytes, folder_name: str) -> tuple[byte
                 raise ValueError(
                     f"於資料夾「{fn}」下沒有音訊檔，但偵測到文字檔（.md .txt .doc .docx 等）。"
                     "若為 **YouTube 單元**（檔內為影片連結），請改呼叫 **GET /rag/transcript/youtube**，"
-                    "使用相同的 person_id、rag_tab_id、folder_name。"
+                    "使用相同的 person_id、rag_page_id、folder_name。"
                 )
             raise ValueError(
                 f"於資料夾「{fn}」下找不到支援的音訊檔（副檔名: {', '.join(sorted(_AUDIO_EXTS))}）"

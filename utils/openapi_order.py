@@ -18,7 +18,7 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/rag/tab/create",
     "/rag/tab/create-upload-zip",
     "/rag/tab/tab-name",
-    "/rag/tab/delete/{rag_tab_id}",
+    "/rag/tab/delete/{rag_page_id}",
     "/rag/tab/upload-zip",
     "/rag/tab/build-rag-zip",
     "/rag/tab/build-rag-zip-stream",
@@ -53,7 +53,7 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/exam/rag-for-exams",
     "/exam/tab/create",
     "/exam/tab/tab-name",
-    "/exam/tab/delete/{exam_tab_id}",
+    "/exam/tab/delete/{exam_page_id}",
     # --- Exam：題目 CRUD ---
     "/exam/tab/quiz/create",
     "/exam/tab/quiz/delete/{exam_quiz_id}",

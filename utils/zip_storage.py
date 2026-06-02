@@ -3,11 +3,11 @@
 所有 ZIP 存於 Supabase Storage bucket（環境變數 SUPABASE_RAG_BUCKET，預設 "MyQuiz-ai"）。
 
 Bucket 內路徑結構：
-  upload: {person_id}/{tab_id}/upload/{tab_id}.zip（物件名僅 ASCII；原始檔名存在 metadata.filename）
-  repack: {person_id}/{parent_tab_id}/repack/{tab_id}.zip
-  rag:    {person_id}/{parent_tab_id}/rag/{tab_id}.zip
+  upload: {person_id}/{page_id}/upload/{page_id}.zip（物件名僅 ASCII；原始檔名存在 metadata.filename）
+  repack: {person_id}/{parent_page_id}/repack/{page_id}.zip
+  rag:    {person_id}/{parent_page_id}/rag/{page_id}.zip
 
-Metadata 以 _metadata.json 存於 bucket 根目錄，供 get_zip_path 依 tab_id 查路徑。
+Metadata 以 _metadata.json 存於 bucket 根目錄，供 get_zip_path 依 page_id 查路徑。
 
 get_zip_path() / get_zip_path_by_person() 會將 ZIP 下載至暫存檔後回傳 Path；
   呼叫端負責用完後刪除暫存檔（path.unlink(missing_ok=True)）。
@@ -33,22 +33,22 @@ UPLOAD_DEFAULT_PERSON = "_"
 _METADATA_KEY = "_metadata.json"
 
 
-def _storage_safe_tab_id(candidate: str, person_id: str | None = None) -> str:
+def _storage_safe_page_id(candidate: str, person_id: str | None = None) -> str:
     """
     Supabase Storage 物件 key 須為 ASCII；中文等非 ASCII 會觸發 InvalidKey。
-    路徑片段含非 ASCII 時改以 generate_tab_id 產生；純 ASCII 則沿用（含數字、底線、空白等）。
+    路徑片段含非 ASCII 時改以 generate_page_id 產生；純 ASCII 則沿用（含數字、底線、空白等）。
     """
     c = (candidate or "").strip()
     if not c or "/" in c or "\\" in c or len(c) > 255:
-        return generate_tab_id(person_id)
+        return generate_page_id(person_id)
     if any(ord(ch) > 127 for ch in c):
-        return generate_tab_id(person_id)
+        return generate_page_id(person_id)
     return c
 
 
-def generate_tab_id(person_id: str | None = None) -> str:
+def generate_page_id(person_id: str | None = None) -> str:
     """
-    以 person_id 與目前電腦時間產生 tab_id。
+    以 person_id 與目前電腦時間產生 page_id。
     格式：{person_id}_yymmddhhmmss。
     """
     safe = (person_id or "").strip() or "_"
@@ -77,12 +77,12 @@ def _resolve_person_id(person_id: str | None) -> str:
     return pid
 
 
-def _upload_object_basename(tab_id: str) -> str:
+def _upload_object_basename(page_id: str) -> str:
     """
     Supabase Storage 物件 key 須為 ASCII 等合法字元；中文等 Unicode 檔名會觸發 InvalidKey。
-    上傳 ZIP 在 bucket 內一律使用 {tab_id}.zip。
+    上傳 ZIP 在 bucket 內一律使用 {page_id}.zip。
     """
-    return f"{tab_id}.zip"
+    return f"{page_id}.zip"
 
 
 def _load_metadata() -> dict:
@@ -125,54 +125,54 @@ def save_zip(
     original_filename: str | None = None,
     folder: str = FOLDER_UPLOAD,
     person_id: str | None = None,
-    tab_id: str | None = None,
-    parent_tab_id: str | None = None,
+    page_id: str | None = None,
+    parent_page_id: str | None = None,
 ) -> str:
     """
-    將 ZIP 內容上傳至 Supabase Storage bucket，回傳 tab_id。
+    將 ZIP 內容上傳至 Supabase Storage bucket，回傳 page_id。
     folder 可為 FOLDER_UPLOAD、FOLDER_REPACK、FOLDER_RAG。
     """
     if folder == FOLDER_UPLOAD:
-        if tab_id is not None and ("/" in tab_id or "\\" in tab_id or not tab_id.strip()):
-            raise ValueError("tab_id 不可包含路徑字元且不可為空")
-        tab_id = (tab_id or "").strip() or generate_tab_id(person_id)
+        if page_id is not None and ("/" in page_id or "\\" in page_id or not page_id.strip()):
+            raise ValueError("page_id 不可包含路徑字元且不可為空")
+        page_id = (page_id or "").strip() or generate_page_id(person_id)
     else:
-        if not parent_tab_id or "/" in parent_tab_id or "\\" in parent_tab_id:
-            raise ValueError("repack/rag 需傳入 parent_tab_id（上傳的 tab_id）")
-        parent_tab_id = parent_tab_id.strip()
-        raw = (tab_id or "").strip()
+        if not parent_page_id or "/" in parent_page_id or "\\" in parent_page_id:
+            raise ValueError("repack/rag 需傳入 parent_page_id（上傳的 page_id）")
+        parent_page_id = parent_page_id.strip()
+        raw = (page_id or "").strip()
         if raw and "/" not in raw and "\\" not in raw:
-            tab_id = _storage_safe_tab_id(raw, person_id)
+            page_id = _storage_safe_page_id(raw, person_id)
         else:
-            tab_id = generate_tab_id(person_id)
+            page_id = generate_page_id(person_id)
 
     pid = _resolve_person_id(person_id)
 
     if folder == FOLDER_UPLOAD:
-        # 顯示用原始檔名（可含中文）；bucket 內檔名固定為 {tab_id}.zip
-        display_name = (Path(original_filename).name if original_filename else "").strip() or _upload_object_basename(tab_id)
-        stored_name = _upload_object_basename(tab_id)
-        storage_path = f"{pid}/{tab_id}/{FOLDER_UPLOAD}/{stored_name}"
+        # 顯示用原始檔名（可含中文）；bucket 內檔名固定為 {page_id}.zip
+        display_name = (Path(original_filename).name if original_filename else "").strip() or _upload_object_basename(page_id)
+        stored_name = _upload_object_basename(page_id)
+        storage_path = f"{pid}/{page_id}/{FOLDER_UPLOAD}/{stored_name}"
     else:
-        stored_name = f"{tab_id}.zip"
-        storage_path = f"{pid}/{parent_tab_id}/{folder}/{tab_id}.zip"
+        stored_name = f"{page_id}.zip"
+        storage_path = f"{pid}/{parent_page_id}/{folder}/{page_id}.zip"
 
     _upload_to_bucket(storage_path, contents)
 
     # 更新 metadata
     meta = _load_metadata()
-    meta[tab_id] = {
+    meta[page_id] = {
         "filename": display_name if folder == FOLDER_UPLOAD else (original_filename or stored_name),
         "folder": folder,
         "person_id": pid,
         "storage_path": storage_path,
     }
     if folder == FOLDER_UPLOAD:
-        meta[tab_id]["stored_filename"] = stored_name
+        meta[page_id]["stored_filename"] = stored_name
     else:
-        meta[tab_id]["parent_tab_id"] = parent_tab_id
+        meta[page_id]["parent_page_id"] = parent_page_id
     _save_metadata(meta)
-    return tab_id
+    return page_id
 
 
 def _download_to_temp(storage_path: str) -> Optional[Path]:
@@ -193,16 +193,16 @@ def _download_to_temp(storage_path: str) -> Optional[Path]:
         return None
 
 
-def get_zip_path(tab_id: str) -> Optional[Path]:
+def get_zip_path(page_id: str) -> Optional[Path]:
     """
-    依 tab_id 從 Supabase Storage 下載 ZIP 至暫存檔後回傳路徑；不存在則回傳 None。
+    依 page_id 從 Supabase Storage 下載 ZIP 至暫存檔後回傳路徑；不存在則回傳 None。
     呼叫端負責用完後刪除暫存檔（path.unlink(missing_ok=True)）。
     """
-    if not tab_id or "/" in tab_id or "\\" in tab_id:
+    if not page_id or "/" in page_id or "\\" in page_id:
         return None
 
     meta = _load_metadata()
-    entry = meta.get(tab_id)
+    entry = meta.get(page_id)
 
     if entry and isinstance(entry, dict):
         storage_path = entry.get("storage_path")
@@ -212,14 +212,14 @@ def get_zip_path(tab_id: str) -> Optional[Path]:
         # 從 metadata 欄位重建路徑
         folder = entry.get("folder", FOLDER_UPLOAD)
         pid = _resolve_person_id(entry.get("person_id"))
-        parent_tab_id = entry.get("parent_tab_id")
+        parent_page_id = entry.get("parent_page_id")
 
         if folder == FOLDER_UPLOAD:
-            stored_name = entry.get("stored_filename") or entry.get("filename") or f"{tab_id}.zip"
+            stored_name = entry.get("stored_filename") or entry.get("filename") or f"{page_id}.zip"
             stored_name = Path(stored_name).name
-            storage_path = f"{pid}/{tab_id}/{FOLDER_UPLOAD}/{stored_name}"
-        elif parent_tab_id:
-            storage_path = f"{pid}/{parent_tab_id}/{folder}/{tab_id}.zip"
+            storage_path = f"{pid}/{page_id}/{FOLDER_UPLOAD}/{stored_name}"
+        elif parent_page_id:
+            storage_path = f"{pid}/{parent_page_id}/{folder}/{page_id}.zip"
         else:
             return None
 
@@ -228,38 +228,38 @@ def get_zip_path(tab_id: str) -> Optional[Path]:
     return None
 
 
-def get_zip_path_by_person(person_id: str, tab_id: str) -> Optional[Path]:
+def get_zip_path_by_person(person_id: str, page_id: str) -> Optional[Path]:
     """
-    依 person_id 與 tab_id 從 Supabase Storage 下載上傳 ZIP 至暫存檔後回傳路徑。
+    依 person_id 與 page_id 從 Supabase Storage 下載上傳 ZIP 至暫存檔後回傳路徑。
     呼叫端負責用完後刪除暫存檔（path.unlink(missing_ok=True)）。
     """
-    if not tab_id or "/" in tab_id or "\\" in tab_id:
+    if not page_id or "/" in page_id or "\\" in page_id:
         return None
     pid = _resolve_person_id(person_id)
 
     meta = _load_metadata()
-    entry = meta.get(tab_id)
+    entry = meta.get(page_id)
 
     if entry and isinstance(entry, dict):
         storage_path = entry.get("storage_path")
         if storage_path:
             return _download_to_temp(storage_path)
-        stored_name = entry.get("stored_filename") or entry.get("filename") or f"{tab_id}.zip"
+        stored_name = entry.get("stored_filename") or entry.get("filename") or f"{page_id}.zip"
         stored_name = Path(stored_name).name
-        return _download_to_temp(f"{pid}/{tab_id}/{FOLDER_UPLOAD}/{stored_name}")
+        return _download_to_temp(f"{pid}/{page_id}/{FOLDER_UPLOAD}/{stored_name}")
 
     # 相容 fallback
-    return _download_to_temp(f"{pid}/{tab_id}/{FOLDER_UPLOAD}/{tab_id}.zip")
+    return _download_to_temp(f"{pid}/{page_id}/{FOLDER_UPLOAD}/{page_id}.zip")
 
 
-def delete_tab_folder(person_id: str, tab_id: str) -> bool:
+def delete_tab_folder(person_id: str, page_id: str) -> bool:
     """
-    刪除 Supabase Storage 中該 tab_id 下的所有檔案（upload/repack/rag），
-    以及以此 tab_id 為 parent_tab_id 的子項目。
+    刪除 Supabase Storage 中該 page_id 下的所有檔案（upload/repack/rag），
+    以及以此 page_id 為 parent_page_id 的子項目。
     並清除 metadata 中對應的紀錄。
     回傳是否有刪除動作。
     """
-    if not tab_id or "/" in tab_id or "\\" in tab_id:
+    if not page_id or "/" in page_id or "\\" in page_id:
         return False
     pid = _resolve_person_id(person_id)
 
@@ -269,17 +269,17 @@ def delete_tab_folder(person_id: str, tab_id: str) -> bool:
     # 刪除 upload / repack / rag 三個子目錄下的所有檔案
     for folder in [FOLDER_UPLOAD, FOLDER_REPACK, FOLDER_RAG]:
         try:
-            files = storage.list(f"{pid}/{tab_id}/{folder}")
-            paths = [f"{pid}/{tab_id}/{folder}/{f['name']}" for f in (files or []) if f.get("name")]
+            files = storage.list(f"{pid}/{page_id}/{folder}")
+            paths = [f"{pid}/{page_id}/{folder}/{f['name']}" for f in (files or []) if f.get("name")]
             if paths:
                 storage.remove(paths)
                 deleted_something = True
         except Exception:
             pass
 
-    # 從 metadata 找出以此 tab_id 為 parent_tab_id 的子檔案並刪除
+    # 從 metadata 找出以此 page_id 為 parent_page_id 的子檔案並刪除
     meta = _load_metadata()
-    child_ids = [k for k, v in meta.items() if isinstance(v, dict) and v.get("parent_tab_id") == tab_id]
+    child_ids = [k for k, v in meta.items() if isinstance(v, dict) and v.get("parent_page_id") == page_id]
     for child_id in child_ids:
         child_path = meta[child_id].get("storage_path")
         if child_path:
@@ -289,8 +289,8 @@ def delete_tab_folder(person_id: str, tab_id: str) -> bool:
             except Exception:
                 pass
 
-    # 清除 metadata 中該 tab_id 及其子項目的紀錄
-    to_remove = [k for k, v in meta.items() if k == tab_id or (isinstance(v, dict) and v.get("parent_tab_id") == tab_id)]
+    # 清除 metadata 中該 page_id 及其子項目的紀錄
+    to_remove = [k for k, v in meta.items() if k == page_id or (isinstance(v, dict) and v.get("parent_page_id") == page_id)]
     if to_remove:
         for k in to_remove:
             meta.pop(k, None)

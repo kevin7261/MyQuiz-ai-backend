@@ -43,6 +43,7 @@ from services.grading import (
     cleanup_grade_workspace,
     run_grade_job_background,
     update_rag_quiz_with_grade,
+    _rag_quiz_missing_column_error,
 )
 from utils.taipei_time import now_taipei_iso
 from utils.serialization import to_json_safe
@@ -73,6 +74,11 @@ from utils.rag_course import (
 )
 from utils.supabase import get_supabase
 from utils.zip_storage import get_zip_path
+from utils.db_schema import (
+    parse_rag_quiz_history_list,
+    resolve_quiz_history_for_generate,
+    serialize_rag_quiz_history_list,
+)
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -88,7 +94,7 @@ RAG_UNIT_TYPE_TEXT = 2
 # ---------------------------------------------------------------------------
 
 class GenerateQuizRequest(BaseModel):
-    """POST /rag/tab/unit/quiz/llm-generate；請求 body 欄位順序同 public.Rag_Quiz（rag_quiz_id, quiz_name, quiz_user_prompt_text），末欄 quiz_history_list 為 API 擴充。"""
+    """POST /rag/tab/unit/quiz/llm-generate；請求 body 欄位順序同 public.Rag_Quiz（rag_quiz_id, quiz_name, quiz_user_prompt_text, quiz_history_list）。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
@@ -101,21 +107,21 @@ class GenerateQuizRequest(BaseModel):
     )
     quiz_history_list: list[str] = Field(
         default_factory=list,
-        description="已出過的題目題幹（字串陣列）；送入 LLM 出題 prompt，避免重複出題",
+        description="已出過的題目題幹（字串陣列）；送入 LLM 出題 prompt；未傳時可自 DB quiz_history_list 推導題幹",
     )
 
 
 class QuizGradeRequest(BaseModel):
     """
     POST /rag/tab/unit/quiz/llm-grade 請求 body。
-    欄位順序：Rag.rag_id → public.Rag_Quiz（rag_tab_id, rag_quiz_id, quiz_content, answer_user_prompt_text, answer_content／quiz_answer）。
+    欄位順序：Rag.rag_id → public.Rag_Quiz（rag_page_id, rag_quiz_id, quiz_content, answer_user_prompt_text, answer_content／quiz_answer）。
     """
 
     rag_id: str = Field(
         "",
         description="必填；Rag 表 rag_id（字串）；載入講義／向量 ZIP 並驗證存取權",
     )
-    rag_tab_id: str = Field("", description="選填；後端以 Rag.rag_tab_id 為準")
+    rag_page_id: str = Field("", description="選填；後端以 Rag.rag_page_id 為準")
     rag_quiz_id: str = Field("", description="必填（數字字串 >0）；Rag_Quiz 主鍵")
     quiz_content: str = Field(
         "",
@@ -133,7 +139,7 @@ class QuizGradeRequest(BaseModel):
 
 
 class GenerateQuizDbOnlyRequest(BaseModel):
-    """POST /rag/tab/unit/quiz/llm-generate-db；欄位順序同 Rag_Quiz（rag_quiz_id, quiz_name），末欄 quiz_history_list 為 API 擴充。"""
+    """POST /rag/tab/unit/quiz/llm-generate-db；欄位順序同 Rag_Quiz（rag_quiz_id, quiz_name, quiz_history_list）。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
@@ -142,7 +148,7 @@ class GenerateQuizDbOnlyRequest(BaseModel):
     )
     quiz_history_list: list[str] = Field(
         default_factory=list,
-        description="已出過的題目題幹（字串陣列）；送入 LLM 出題 prompt，避免重複出題",
+        description="已出過的題目題幹（字串陣列）；未傳時可自 DB quiz_history_list 推導題幹",
     )
 
 
@@ -172,7 +178,7 @@ class QuizHistoryPair(BaseModel):
 
 
 class GenerateQuizFollowupRequest(BaseModel):
-    """POST /rag/tab/unit/quiz/llm-generate-followup；末欄 quiz_history_list 為先前問答（一問一答一項）。"""
+    """POST /rag/tab/unit/quiz/llm-generate-followup；含 quiz_history_list（先前問答 JSON 陣列，對齊 DB 欄位）。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
@@ -185,7 +191,7 @@ class GenerateQuizFollowupRequest(BaseModel):
     )
     quiz_history_list: list[QuizHistoryPair] = Field(
         default_factory=list,
-        description="先前問答列表；每項含 quiz_content、answer_content、quiz_answer_reference、answer_critique",
+        description="先前問答（物件陣列）；未傳時自 Rag_Quiz.quiz_history_list 讀取",
     )
 
 
@@ -199,21 +205,21 @@ class GenerateQuizFollowupDbOnlyRequest(BaseModel):
     )
     quiz_history_list: list[QuizHistoryPair] = Field(
         default_factory=list,
-        description="先前問答列表；每項含 quiz_content、answer_content、quiz_answer_reference、answer_critique",
+        description="先前問答（物件陣列）；未傳時自 Rag_Quiz.quiz_history_list 讀取",
     )
 
 
 class QuizGradeDbOnlyRequest(BaseModel):
     """
     POST /rag/tab/unit/quiz/llm-grade-db。
-    欄位順序：Rag.rag_id → Rag_Quiz（rag_tab_id, rag_quiz_id, quiz_content, answer_content／quiz_answer）；不含 answer_user_prompt_text。
+    欄位順序：Rag.rag_id → Rag_Quiz（rag_page_id, rag_quiz_id, quiz_content, answer_content／quiz_answer）；不含 answer_user_prompt_text。
     """
 
     rag_id: str = Field(
         "",
         description="必填；Rag 表 rag_id（字串）；載入講義／向量 ZIP 並驗證存取權",
     )
-    rag_tab_id: str = Field("", description="選填；後端以 Rag.rag_tab_id 為準")
+    rag_page_id: str = Field("", description="選填；後端以 Rag.rag_page_id 為準")
     rag_quiz_id: str = Field("", description="必填（數字字串 >0）；Rag_Quiz 主鍵")
     quiz_content: str = Field(
         "",
@@ -228,24 +234,24 @@ class QuizGradeDbOnlyRequest(BaseModel):
 
 class RagQuizForExamRequest(BaseModel):
     """
-    POST /rag/tab/unit/quiz/for-exam：欄位順序同 public.Rag_Quiz（rag_quiz_id, rag_tab_id, rag_unit_id, for_exam）。
-    以 rag_quiz_id 更新 Rag_Quiz.for_exam；若一併傳入 rag_tab_id／rag_unit_id（>0），須與該列一致。
+    POST /rag/tab/unit/quiz/for-exam：欄位順序同 public.Rag_Quiz（rag_quiz_id, rag_page_id, rag_unit_id, for_exam）。
+    以 rag_quiz_id 更新 Rag_Quiz.for_exam；若一併傳入 rag_page_id／rag_unit_id（>0），須與該列一致。
     """
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
-    rag_tab_id: str = Field("", description="選填；與資料列 rag_tab_id 須一致")
+    rag_page_id: str = Field("", description="選填；與資料列 rag_page_id 須一致")
     rag_unit_id: int = Field(0, ge=0, description="選填；>0 時須與資料列 rag_unit_id 一致")
     for_exam: bool = Field(True, description="true：標記為測驗用；false：取消測驗用")
 
 
 class RagQuizFollowupRequest(BaseModel):
     """
-    POST /rag/tab/unit/quiz/followup：欄位順序同 public.Rag_Quiz（rag_quiz_id, rag_tab_id, rag_unit_id, follow_up）。
-    以 rag_quiz_id 更新 Rag_Quiz.follow_up；若一併傳入 rag_tab_id／rag_unit_id（>0），須與該列一致。
+    POST /rag/tab/unit/quiz/followup：欄位順序同 public.Rag_Quiz（rag_quiz_id, rag_page_id, rag_unit_id, follow_up）。
+    以 rag_quiz_id 更新 Rag_Quiz.follow_up；若一併傳入 rag_page_id／rag_unit_id（>0），須與該列一致。
     """
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
-    rag_tab_id: str = Field("", description="選填；與資料列 rag_tab_id 須一致")
+    rag_page_id: str = Field("", description="選填；與資料列 rag_page_id 須一致")
     rag_unit_id: int = Field(0, ge=0, description="選填；>0 時須與資料列 rag_unit_id 一致")
     followup: bool = Field(
         False,
@@ -257,7 +263,7 @@ class RagQuizFollowupRequest(BaseModel):
 class RagUnitTextResponse(BaseModel):
     """GET /rag/unit/text 回應。"""
 
-    rag_tab_id: str
+    rag_page_id: str
     folder_name: str = ""
     rag_unit_id: int = 0
     text_file_name: str = ""
@@ -267,7 +273,7 @@ class RagUnitTextResponse(BaseModel):
 class RagUnitMp3FileFromZipResponse(BaseModel):
     """GET /rag/unit/mp3-file：自 upload ZIP 擷取之音訊與同資料夾文字檔逐字稿。"""
 
-    rag_tab_id: str
+    rag_page_id: str
     folder_name: str
     audio_base64: str
     media_type: str
@@ -279,7 +285,7 @@ class RagUnitMp3FileFromZipResponse(BaseModel):
 class RagUnitYoutubeUrlFromZipResponse(BaseModel):
     """GET /rag/unit/youtube-url：自 upload ZIP 解析 watch URL 與文字檔第二行起逐字稿。"""
 
-    rag_tab_id: str
+    rag_page_id: str
     folder_name: str
     youtube_url: str = Field(..., description="https://www.youtube.com/watch?v=…")
     text_file_name: str = ""
@@ -295,13 +301,13 @@ class RagUnitYoutubeUrlFromZipResponse(BaseModel):
 def mark_rag_quiz_followup(
     body: openapi_body(
         RagQuizFollowupRequest,
-        {"rag_quiz_id": 1, "rag_tab_id": "", "rag_unit_id": 0, "followup": False},
+        {"rag_quiz_id": 1, "rag_page_id": "", "rag_unit_id": 0, "followup": False},
     ),
     caller_person_id: PersonId,
     course_id: CourseId,
 ):
     """更新 Rag_Quiz.follow_up（followup=true 標記追問、false 取消）。以 rag_quiz_id 定位；僅 deleted=false 且 person_id 一致者可更新。"""
-    req_tab = (body.rag_tab_id or "").strip()
+    req_tab = (body.rag_page_id or "").strip()
     req_unit = int(body.rag_unit_id or 0)
     try:
         supabase = get_supabase()
@@ -309,7 +315,7 @@ def mark_rag_quiz_followup(
         def build_followup_sel(with_course_filter: bool):
             cols = select_without_course_id_if_needed(
                 "Rag_Quiz",
-                "rag_quiz_id, rag_tab_id, rag_unit_id, person_id, course_id",
+                "rag_quiz_id, rag_page_id, rag_unit_id, person_id, course_id",
                 with_course_filter,
             )
             q = (
@@ -330,8 +336,8 @@ def mark_rag_quiz_followup(
         pid = (row0.get("person_id") or "").strip()
         if pid != caller_person_id:
             raise HTTPException(status_code=403, detail="無權更新該 Rag_Quiz")
-        if req_tab and (row0.get("rag_tab_id") or "").strip() != req_tab:
-            raise HTTPException(status_code=400, detail="rag_tab_id 與 rag_quiz_id 對應資料不一致")
+        if req_tab and (row0.get("rag_page_id") or "").strip() != req_tab:
+            raise HTTPException(status_code=400, detail="rag_page_id 與 rag_quiz_id 對應資料不一致")
         if req_unit > 0 and int(row0.get("rag_unit_id") or 0) != req_unit:
             raise HTTPException(status_code=400, detail="rag_unit_id 與 rag_quiz_id 對應資料不一致")
 
@@ -351,7 +357,7 @@ def mark_rag_quiz_followup(
         row = (read.data or [{}])[0]
         return to_json_safe({
             "rag_quiz_id": row.get("rag_quiz_id"),
-            "rag_tab_id": row.get("rag_tab_id"),
+            "rag_page_id": row.get("rag_page_id"),
             "rag_unit_id": row.get("rag_unit_id"),
             "person_id": row.get("person_id"),
             "quiz_name": row.get("quiz_name"),
@@ -422,36 +428,66 @@ def _quiz_history_qa_dicts(pairs: list[QuizHistoryPair]) -> list[dict[str, str]]
     ]
 
 
-def _resolve_rag_quiz_tab_id(
-    supabase: Any, *, unit_rag_tab_id: str, source_rag_tab_id: str, rag_quiz_id: int
+def _resolve_rag_quiz_page_id(
+    supabase: Any, *, unit_rag_page_id: str, source_rag_page_id: str, rag_quiz_id: int
 ) -> str:
-    """rag_tab_id 以 Rag_Unit 為準（FK 綁 rag_unit_id）；Quiz 欄位為冗餘，過期時回寫。回傳解析後的 rag_tab_id。"""
-    if unit_rag_tab_id:
-        rag_tab_id = unit_rag_tab_id
-        if source_rag_tab_id != unit_rag_tab_id:
+    """rag_page_id 以 Rag_Unit 為準（FK 綁 rag_unit_id）；Quiz 欄位為冗餘，過期時回寫。回傳解析後的 rag_page_id。"""
+    if unit_rag_page_id:
+        rag_page_id = unit_rag_page_id
+        if source_rag_page_id != unit_rag_page_id:
             try:
                 supabase.table("Rag_Quiz").update(
-                    {"rag_tab_id": unit_rag_tab_id, "updated_at": now_taipei_iso()}
+                    {"rag_page_id": unit_rag_page_id, "updated_at": now_taipei_iso()}
                 ).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
             except Exception as e:
                 _logger.warning(
-                    "Rag_Quiz rag_tab_id 與 Rag_Unit 不一致，回寫失敗 rag_quiz_id=%s: %s",
+                    "Rag_Quiz rag_page_id 與 Rag_Unit 不一致，回寫失敗 rag_quiz_id=%s: %s",
                     rag_quiz_id,
                     e,
                 )
     else:
-        rag_tab_id = source_rag_tab_id
-    if not rag_tab_id:
-        raise HTTPException(status_code=400, detail="無法由 rag_quiz_id 解析 rag_tab_id")
-    return rag_tab_id
+        rag_page_id = source_rag_page_id
+    if not rag_page_id:
+        raise HTTPException(status_code=400, detail="無法由 rag_quiz_id 解析 rag_page_id")
+    return rag_page_id
+
+
+def _prewrite_quiz_history_list(
+    supabase: Any, *, rag_quiz_id: int, qa_dicts: list[dict[str, str]]
+) -> None:
+    """出題前寫入 quiz_history_list（與請求／DB 合併後之有效歷史）。"""
+    payload = {
+        "quiz_history_list": serialize_rag_quiz_history_list(qa_dicts),
+        "updated_at": now_taipei_iso(),
+    }
+    try:
+        for _ in range(2):
+            try:
+                supabase.table("Rag_Quiz").update(payload).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
+                return
+            except Exception as upd_err:
+                if _rag_quiz_missing_column_error(upd_err, "quiz_history_list"):
+                    return
+                raise
+    except Exception as e:
+        _logger.warning("Rag_Quiz 預寫 quiz_history_list 略過 rag_quiz_id=%s: %s", rag_quiz_id, e)
 
 
 def _persist_and_verify_rag_quiz(
     supabase: Any, *, rag_quiz_id: int, quiz_update: dict[str, Any], qc: str
 ) -> None:
     """更新 Rag_Quiz 出題結果並讀回驗證；任何失敗或讀回不一致皆拋 500 HTTPException。"""
+    update_payload = dict(quiz_update)
     try:
-        supabase.table("Rag_Quiz").update(quiz_update).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
+        for _ in range(2):
+            try:
+                supabase.table("Rag_Quiz").update(update_payload).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
+                break
+            except Exception as upd_err:
+                if _rag_quiz_missing_column_error(upd_err, "quiz_history_list") and "quiz_history_list" in update_payload:
+                    update_payload.pop("quiz_history_list")
+                    continue
+                raise
     except Exception as e:
         _logger.error(
             "Rag_Quiz llm-generate 更新失敗 rag_quiz_id=%s: %s",
@@ -509,7 +545,7 @@ def _rag_llm_generate_quiz_impl(
     def build_quiz_sel(with_course_filter: bool):
         cols = select_without_course_id_if_needed(
             "Rag_Quiz",
-            "rag_quiz_id, rag_tab_id, rag_unit_id, quiz_user_prompt_text, course_id",
+            "rag_quiz_id, rag_page_id, rag_unit_id, quiz_user_prompt_text, quiz_history_list, course_id",
             with_course_filter,
         )
         q = (
@@ -522,7 +558,30 @@ def _rag_llm_generate_quiz_impl(
             q = q.eq("course_id", course_id)
         return q.limit(1)
 
-    q_sel = execute_with_course_id_fallback("Rag_Quiz", build_quiz_sel, course_id)
+    try:
+        q_sel = execute_with_course_id_fallback("Rag_Quiz", build_quiz_sel, course_id)
+    except APIError as e:
+        msg = (e.message or "").lower()
+        if e.code == "42703" and "quiz_history_list" in msg:
+            def build_quiz_sel_no_history(with_course_filter: bool):
+                cols = select_without_course_id_if_needed(
+                    "Rag_Quiz",
+                    "rag_quiz_id, rag_page_id, rag_unit_id, quiz_user_prompt_text, course_id",
+                    with_course_filter,
+                )
+                q = (
+                    supabase.table("Rag_Quiz")
+                    .select(cols)
+                    .eq("rag_quiz_id", rag_quiz_id)
+                    .eq("deleted", False)
+                )
+                if with_course_filter and course_id is not None:
+                    q = q.eq("course_id", course_id)
+                return q.limit(1)
+
+            q_sel = execute_with_course_id_fallback("Rag_Quiz", build_quiz_sel_no_history, course_id)
+        else:
+            raise
     if not q_sel.data:
         raise HTTPException(status_code=404, detail=f"找不到 rag_quiz_id={rag_quiz_id} 的 Rag_Quiz")
     q_row = q_sel.data[0]
@@ -536,9 +595,9 @@ def _rag_llm_generate_quiz_impl(
     def fetch_unit_row(*, include_folder_combination: bool):
         def build(with_course_filter: bool):
             base_cols = (
-                "rag_unit_id, rag_tab_id, unit_name, folder_combination, transcript, unit_type, course_id"
+                "rag_unit_id, rag_page_id, unit_name, folder_combination, transcript, unit_type, course_id"
                 if include_folder_combination
-                else "rag_unit_id, rag_tab_id, unit_name, transcript, unit_type, course_id"
+                else "rag_unit_id, rag_page_id, unit_name, transcript, unit_type, course_id"
             )
             cols = select_without_course_id_if_needed("Rag_Unit", base_cols, with_course_filter)
             q = (
@@ -567,31 +626,31 @@ def _rag_llm_generate_quiz_impl(
     unit_filter = (
         (unit_row.get("folder_combination") or unit_row.get("unit_name") or "").strip() or None
     )
-    unit_rag_tab_id = (unit_row.get("rag_tab_id") or "").strip()
-    source_rag_tab_id = (q_row.get("rag_tab_id") or "").strip()
-    rag_tab_id = _resolve_rag_quiz_tab_id(
+    unit_rag_page_id = (unit_row.get("rag_page_id") or "").strip()
+    source_rag_page_id = (q_row.get("rag_page_id") or "").strip()
+    rag_page_id = _resolve_rag_quiz_page_id(
         supabase,
-        unit_rag_tab_id=unit_rag_tab_id,
-        source_rag_tab_id=source_rag_tab_id,
+        unit_rag_page_id=unit_rag_page_id,
+        source_rag_page_id=source_rag_page_id,
         rag_quiz_id=rag_quiz_id,
     )
 
     rag_sel = (
         supabase.table("Rag")
         .select("rag_id, course_id")
-        .eq("rag_tab_id", rag_tab_id)
+        .eq("rag_page_id", rag_page_id)
         .eq("course_id", course_id)
         .eq("deleted", False)
         .limit(1)
         .execute()
     )
     if not rag_sel.data:
-        raise HTTPException(status_code=404, detail=f"找不到 rag_tab_id={rag_tab_id} 的 Rag")
+        raise HTTPException(status_code=404, detail=f"找不到 rag_page_id={rag_page_id} 的 Rag")
     rag_id = int(rag_sel.data[0].get("rag_id") or 0)
     if rag_id <= 0:
-        raise HTTPException(status_code=400, detail="該 rag_tab_id 對應的 rag_id 無效")
+        raise HTTPException(status_code=400, detail="該 rag_page_id 對應的 rag_id 無效")
 
-    row, stem, rag_zip_tab_id = get_rag_stem_from_rag_id(
+    row, stem, rag_zip_page_id = get_rag_stem_from_rag_id(
         supabase,
         rag_id,
         include_row=True,
@@ -626,7 +685,13 @@ def _rag_llm_generate_quiz_impl(
 
     path: Path | None = None
     try:
-        qa_dicts = _quiz_history_qa_dicts(quiz_history_qa or [])
+        request_qa = _quiz_history_qa_dicts(quiz_history_qa or []) if followup else None
+        qa_dicts, stems_for_llm = resolve_quiz_history_for_generate(
+            request_qa=request_qa,
+            request_stems=quiz_history_stems if not followup else None,
+            db_raw=q_row.get("quiz_history_list"),
+        )
+        _prewrite_quiz_history_list(supabase, rag_quiz_id=rag_quiz_id, qa_dicts=qa_dicts)
         if unit_type_val in (2, 3, 4):
             if followup:
                 result = generate_quiz_followup_transcript_only(
@@ -640,14 +705,14 @@ def _rag_llm_generate_quiz_impl(
                     api_key=api_key,
                     transcript=transcript_text,
                     quiz_user_prompt_text=qup_for_llm,
-                    quiz_history_list=quiz_history_stems or [],
+                    quiz_history_list=stems_for_llm,
                 )
         else:
-            path = get_zip_path(rag_zip_tab_id)
+            path = get_zip_path(rag_zip_page_id)
             if not path or not path.exists():
                 raise HTTPException(
                     status_code=404,
-                    detail=f"找不到 RAG ZIP，請確認 rag_id={rag_id}（rag_tab_id={rag_zip_tab_id}）",
+                    detail=f"找不到 RAG ZIP，請確認 rag_id={rag_id}（rag_page_id={rag_zip_page_id}）",
                 )
             if followup:
                 result = generate_quiz_followup(
@@ -661,11 +726,11 @@ def _rag_llm_generate_quiz_impl(
                     path,
                     api_key=api_key,
                     quiz_user_prompt_text=qup_for_llm,
-                    quiz_history_list=quiz_history_stems or [],
+                    quiz_history_list=stems_for_llm,
                 )
         result["transcript"] = "" if unit_type_val == 1 else transcript_text
         result["rag_output"] = {
-            "rag_tab_id": stem,
+            "rag_page_id": stem,
             "unit_name": stem,
             "filename": f"{stem}.zip",
         }
@@ -684,8 +749,10 @@ def _rag_llm_generate_quiz_impl(
         )
         result["quiz_name"] = resolved_quiz_name
         result["follow_up"] = followup
+        if qa_dicts:
+            result["quiz_history_list"] = qa_dicts
         quiz_update: dict[str, Any] = {
-            "rag_tab_id": rag_tab_id,
+            "rag_page_id": rag_page_id,
             "quiz_name": resolved_quiz_name,
             "quiz_user_prompt_text": qup_stored,
             "quiz_content": qc,
@@ -694,6 +761,7 @@ def _rag_llm_generate_quiz_impl(
             "answer_content": None,
             "answer_critique": None,
             "follow_up": followup,
+            "quiz_history_list": serialize_rag_quiz_history_list(qa_dicts),
             "updated_at": qts,
         }
         _persist_and_verify_rag_quiz(
@@ -722,12 +790,12 @@ def rag_llm_generate_quiz(
     course_id: CourseId,
 ):
     """
-    Body：rag_quiz_id、quiz_name、quiz_user_prompt_text（可空字串）、quiz_history_list（選填；順序同 public.Rag_Quiz）；
-    rag_tab_id／rag_unit_id 由後端依 rag_quiz_id 自資料庫帶入；quiz_user_prompt_text 空則自該列 Rag_Quiz 讀取。
-    選填 `quiz_history_list`（字串陣列）：已出過的題目題幹，由 `services.quiz_generation` 併入 user「已出過題目」區塊，避免重複出題。
+    Body：rag_quiz_id、quiz_name、quiz_user_prompt_text（可空字串）、quiz_history_list（選填；對齊 public.Rag_Quiz 欄位）；
+    rag_page_id／rag_unit_id 由後端依 rag_quiz_id 自資料庫帶入；quiz_user_prompt_text 空則自該列 Rag_Quiz 讀取。
+    選填 `quiz_history_list`（字串陣列）：已出過的題目題幹；未傳時可自 DB 既有 quiz_history_list 推導題幹。
     unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcript。
     unit_type 2／3／4 時不載入 RAG ZIP，改以逐字稿為 context；與 unit_type=1 共用 `SYSTEM_PROMPT_QUIZ`、`USER_PROMPT_COURSE` 與 `_generate_quiz_from_context`。
-    出題成功後更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=false；清空 answer_content、answer_critique；保留 answer_user_prompt_text）。
+    出題成功後更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=false、quiz_history_list=null；清空 answer_content、answer_critique；保留 answer_user_prompt_text）。
     """
     return _rag_llm_generate_quiz_impl(
         rag_quiz_id=body.rag_quiz_id,
@@ -760,7 +828,7 @@ def rag_llm_generate_quiz_followup(
     Body 與 `llm-generate` 類似，但 `quiz_history_list` 為物件陣列，
     每項含 `quiz_content`、`answer_content`、`quiz_answer_reference`、`answer_critique`，一問一答一項。
     使用 `SYSTEM_PROMPT_QUIZ_FOLLOWUP`／`USER_PROMPT_COURSE_FOLLOWUP`。
-    出題成功後同樣更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=true；清空 answer_content、answer_critique；保留 answer_user_prompt_text）。
+    出題成功後同樣更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=true；寫入 quiz_history_list 為請求或 DB 既有之先前問答；清空 answer_content、answer_critique；保留 answer_user_prompt_text）。
     """
     return _rag_llm_generate_quiz_impl(
         rag_quiz_id=body.rag_quiz_id,
@@ -880,7 +948,7 @@ async def _enqueue_rag_llm_grade_job(
 
     supabase = get_supabase()
     try:
-        row, stem, rag_zip_tab_id = get_rag_stem_from_rag_id(supabase, rag_id_int, include_row=True)
+        row, stem, rag_zip_page_id = get_rag_stem_from_rag_id(supabase, rag_id_int, include_row=True)
     except HTTPException as e:
         return JSONResponse(status_code=e.status_code, content={"error": e.detail})
 
@@ -991,11 +1059,11 @@ async def _enqueue_rag_llm_grade_job(
         transcript_grade = transcript_text
         work_dir = Path(tempfile.mkdtemp(prefix="myquizai_grade_tx_"))
     else:
-        rag_zip_path = get_zip_path(rag_zip_tab_id)
+        rag_zip_path = get_zip_path(rag_zip_page_id)
         if not rag_zip_path or not rag_zip_path.exists():
             return JSONResponse(
                 status_code=404,
-                content={"error": f"找不到 RAG ZIP，請確認 rag_id={rag_id_str}（tab_id={rag_zip_tab_id}）"},
+                content={"error": f"找不到 RAG ZIP，請確認 rag_id={rag_id_str}（page_id={rag_zip_page_id}）"},
             )
         work_dir = Path(tempfile.mkdtemp(prefix="myquizai_grade_"))
         zip_source_path = work_dir / "ref.zip"
@@ -1047,7 +1115,7 @@ async def grade_submission(
         QuizGradeRequest,
         {
             "rag_id": "1",
-            "rag_tab_id": "",
+            "rag_page_id": "",
             "rag_quiz_id": "1",
             "quiz_content": "",
             "answer_user_prompt_text": "",
@@ -1087,7 +1155,7 @@ async def grade_submission_stored_answer_prompt(
         QuizGradeDbOnlyRequest,
         {
             "rag_id": "1",
-            "rag_tab_id": "",
+            "rag_page_id": "",
             "rag_quiz_id": "1",
             "quiz_content": "",
             "quiz_answer": "學生作答文字",
@@ -1120,20 +1188,20 @@ async def grade_submission_stored_answer_prompt(
 def mark_rag_quiz_for_exam(
     body: openapi_body(
         RagQuizForExamRequest,
-        {"rag_quiz_id": 1, "rag_tab_id": "", "rag_unit_id": 0, "for_exam": True},
+        {"rag_quiz_id": 1, "rag_page_id": "", "rag_unit_id": 0, "for_exam": True},
     ),
     caller_person_id: PersonId,
     course_id: CourseId,
 ):
     """更新 Rag_Quiz.for_exam（true＝測驗用、false＝取消）。以 rag_quiz_id 定位；僅 deleted=false 且 person_id 一致者可更新。"""
-    req_tab = (body.rag_tab_id or "").strip()
+    req_tab = (body.rag_page_id or "").strip()
     req_unit = int(body.rag_unit_id or 0)
     try:
         supabase = get_supabase()
         def build_for_exam_sel(with_course_filter: bool):
             cols = select_without_course_id_if_needed(
                 "Rag_Quiz",
-                "rag_quiz_id, rag_tab_id, rag_unit_id, person_id, course_id",
+                "rag_quiz_id, rag_page_id, rag_unit_id, person_id, course_id",
                 with_course_filter,
             )
             q = (
@@ -1154,8 +1222,8 @@ def mark_rag_quiz_for_exam(
         pid = (row0.get("person_id") or "").strip()
         if pid != caller_person_id:
             raise HTTPException(status_code=403, detail="無權更新該 Rag_Quiz")
-        if req_tab and (row0.get("rag_tab_id") or "").strip() != req_tab:
-            raise HTTPException(status_code=400, detail="rag_tab_id 與 rag_quiz_id 對應資料不一致")
+        if req_tab and (row0.get("rag_page_id") or "").strip() != req_tab:
+            raise HTTPException(status_code=400, detail="rag_page_id 與 rag_quiz_id 對應資料不一致")
         if req_unit > 0 and int(row0.get("rag_unit_id") or 0) != req_unit:
             raise HTTPException(status_code=400, detail="rag_unit_id 與 rag_quiz_id 對應資料不一致")
 
@@ -1173,7 +1241,7 @@ def mark_rag_quiz_for_exam(
         row = (read.data or [{}])[0]
         return to_json_safe({
             "rag_quiz_id": row.get("rag_quiz_id"),
-            "rag_tab_id": row.get("rag_tab_id"),
+            "rag_page_id": row.get("rag_page_id"),
             "rag_unit_id": row.get("rag_unit_id"),
             "person_id": row.get("person_id"),
             "quiz_name": row.get("quiz_name"),
@@ -1250,6 +1318,10 @@ async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseI
                         )
                         if q.data:
                             rag_quiz_row = to_json_safe(q.data[0])
+                            if isinstance(rag_quiz_row, dict):
+                                rag_quiz_row["quiz_history_list"] = parse_rag_quiz_history_list(
+                                    rag_quiz_row.get("quiz_history_list")
+                                )
                 except (TypeError, ValueError) as e:
                     _logger.debug("grade-result rag_quiz_id 無效 job_id=%s: %s", job_id, e)
                 except Exception as e:
@@ -1263,10 +1335,10 @@ async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseI
 # ---------------------------------------------------------------------------
 
 
-def _read_upload_zip_bytes_or_http_error(person_id: str, rag_tab_id: str) -> bytes:
+def _read_upload_zip_bytes_or_http_error(person_id: str, rag_page_id: str) -> bytes:
     """讀取 upload ZIP 內容；對應 404（找不到）／400（值錯誤）／500（其他）HTTPException。"""
     try:
-        return read_upload_zip_bytes(person_id, rag_tab_id)
+        return read_upload_zip_bytes(person_id, rag_page_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
@@ -1278,11 +1350,11 @@ def _read_upload_zip_bytes_or_http_error(person_id: str, rag_tab_id: str) -> byt
 
 def _transcript_from_upload_zip_for_folder(
     person_id: str,
-    rag_tab_id: str,
+    rag_page_id: str,
     folder_name: str,
 ) -> tuple[str, str]:
     """自 upload ZIP 資料夾讀取 unit_type=2 文字檔全文；回傳 (transcript, text_file_name)。"""
-    zip_bytes = read_upload_zip_bytes(person_id, rag_tab_id)
+    zip_bytes = read_upload_zip_bytes(person_id, rag_page_id)
     text, inner_path = read_single_transcript_text_from_upload_zip(zip_bytes, folder_name)
     return text, Path(inner_path).name
 
@@ -1295,7 +1367,7 @@ def _transcript_from_upload_zip_for_folder(
 )
 def rag_unit_text(
     course_id: CourseId,
-    rag_tab_id: str = Query(..., description="Rag.rag_tab_id（parent tab）"),
+    rag_page_id: str = Query(..., description="Rag.rag_page_id（parent tab）"),
     folder_name: str = Query(
         "",
         description="與 upload ZIP 內單元資料夾名相同；與 rag_unit_id 二擇一（有 folder_name 時須傳 person_id）",
@@ -1319,7 +1391,7 @@ def rag_unit_text(
     - **folder_name**：自 upload ZIP 讀取（與 build-rag-zip unit_type=2 一致）；須傳 `person_id`。
     - **rag_unit_id**：自 `Rag_Unit` 讀取，**不需** `person_id`；若 DB 無逐字稿則改讀 upload ZIP（以 `folder_combination` 或 `unit_name` 為資料夾名）。
     """
-    tab = (rag_tab_id or "").strip()
+    tab = (rag_page_id or "").strip()
     folder = (folder_name or "").strip()
     unit_id = int(rag_unit_id or 0)
 
@@ -1332,7 +1404,7 @@ def rag_unit_text(
         pid = (person_id or "").strip()
         if not pid:
             raise HTTPException(status_code=400, detail="使用 folder_name 時須傳入 person_id")
-        require_rag_tab_owner(pid, rag_tab_id, course_id)
+        require_rag_tab_owner(pid, rag_page_id, course_id)
         try:
             transcript, text_file_name = _transcript_from_upload_zip_for_folder(pid, tab, folder)
         except FileNotFoundError as e:
@@ -1343,22 +1415,22 @@ def rag_unit_text(
             _logger.exception("GET /rag/unit/text 讀取 upload ZIP 失敗")
             raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
         return RagUnitTextResponse(
-            rag_tab_id=tab,
+            rag_page_id=tab,
             folder_name=folder,
             rag_unit_id=0,
             text_file_name=text_file_name,
             transcript=transcript,
         )
 
-    owner_pid = resolve_rag_tab_owner_person_id(rag_tab_id, course_id)
+    owner_pid = resolve_rag_tab_owner_person_id(rag_page_id, course_id)
     supabase = get_supabase()
 
     def build_text_sel(with_course_filter: bool, *, include_folder: bool):
         cols = (
-            "rag_unit_id, rag_tab_id, unit_type, unit_name, folder_combination, "
+            "rag_unit_id, rag_page_id, unit_type, unit_name, folder_combination, "
             "text_file_name, transcript, deleted, course_id"
             if include_folder
-            else "rag_unit_id, rag_tab_id, unit_type, unit_name, text_file_name, transcript, deleted, course_id"
+            else "rag_unit_id, rag_page_id, unit_type, unit_name, text_file_name, transcript, deleted, course_id"
         )
         cols = select_without_course_id_if_needed("Rag_Unit", cols, with_course_filter)
         q = (
@@ -1399,15 +1471,15 @@ def rag_unit_text(
     if not sel.data:
         raise HTTPException(
             status_code=404,
-            detail="找不到該 rag_unit_id，或與此 rag_tab_id／擁有者不一致",
+            detail="找不到該 rag_unit_id，或與此 rag_page_id／擁有者不一致",
         )
     row = sel.data[0]
     if row.get("deleted"):
         raise HTTPException(status_code=404, detail="該單元已刪除")
-    if (row.get("rag_tab_id") or "").strip() != tab:
+    if (row.get("rag_page_id") or "").strip() != tab:
         raise HTTPException(
             status_code=400,
-            detail="rag_tab_id 與該 rag_unit_id 所屬之 Rag_Unit.rag_tab_id 不一致",
+            detail="rag_page_id 與該 rag_unit_id 所屬之 Rag_Unit.rag_page_id 不一致",
         )
     try:
         ut = int(row.get("unit_type") or 0)
@@ -1436,7 +1508,7 @@ def rag_unit_text(
             _logger.exception("GET /rag/unit/text ZIP 備援失敗")
 
     return RagUnitTextResponse(
-        rag_tab_id=tab,
+        rag_page_id=tab,
         folder_name=zip_folder,
         rag_unit_id=unit_id,
         text_file_name=text_file_name,
@@ -1458,7 +1530,7 @@ def rag_unit_text(
 def rag_unit_audio_file(
     caller_person_id: PersonId,
     course_id: CourseId,
-    rag_tab_id: str = Query(..., description="Rag.rag_tab_id（upload ZIP 路徑）"),
+    rag_page_id: str = Query(..., description="Rag.rag_page_id（upload ZIP 路徑）"),
     folder_name: str = Query(
         ...,
         description="與 Rag_Unit.unit_name、upload ZIP 內單元資料夾名相同",
@@ -1466,12 +1538,12 @@ def rag_unit_audio_file(
 ):
     """
     自 upload ZIP 內指定資料夾擷取音訊（base64）與**恰好一個**文字檔全文作為 `transcript`（與 build-rag-zip unit_type=3 一致；須音訊＋逐字稿）。
-    query 須含 `person_id`，且須與該 `rag_tab_id` 之 Rag.person_id 一致。
+    query 須含 `person_id`，且須與該 `rag_page_id` 之 Rag.person_id 一致。
     """
-    require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
-    tab = (rag_tab_id or "").strip()
+    require_rag_tab_owner(caller_person_id, rag_page_id, course_id)
+    tab = (rag_page_id or "").strip()
     folder = (folder_name or "").strip()
-    zip_bytes = _read_upload_zip_bytes_or_http_error(caller_person_id, rag_tab_id)
+    zip_bytes = _read_upload_zip_bytes_or_http_error(caller_person_id, rag_page_id)
 
     try:
         contents, suffix, inner_path = pick_audio_from_upload_zip(zip_bytes, folder)
@@ -1486,7 +1558,7 @@ def rag_unit_audio_file(
     media = audio_media_type_for_suffix(suffix)
     disp_name = Path(inner_path).name
     return RagUnitMp3FileFromZipResponse(
-        rag_tab_id=tab,
+        rag_page_id=tab,
         folder_name=folder,
         audio_base64=base64.b64encode(contents).decode(),
         media_type=media,
@@ -1510,7 +1582,7 @@ def rag_unit_audio_file(
 def rag_unit_youtube_url(
     caller_person_id: PersonId,
     course_id: CourseId,
-    rag_tab_id: str = Query(..., description="Rag.rag_tab_id（upload ZIP 路徑）"),
+    rag_page_id: str = Query(..., description="Rag.rag_page_id（upload ZIP 路徑）"),
     folder_name: str = Query(
         ...,
         description="與 Rag_Unit.unit_name、upload ZIP 內單元資料夾名相同",
@@ -1518,12 +1590,12 @@ def rag_unit_youtube_url(
 ):
     """
     自 upload ZIP 內指定資料夾讀取**恰好一個**文字檔：第一行為 YouTube URL，第二行起為 `transcript`（與 build-rag-zip unit_type=4 一致）。
-    query 須含 `person_id`，且須與該 rag_tab_id 之 Rag.person_id 一致。
+    query 須含 `person_id`，且須與該 rag_page_id 之 Rag.person_id 一致。
     """
-    require_rag_tab_owner(caller_person_id, rag_tab_id, course_id)
-    tab = (rag_tab_id or "").strip()
+    require_rag_tab_owner(caller_person_id, rag_page_id, course_id)
+    tab = (rag_page_id or "").strip()
     folder = (folder_name or "").strip()
-    zip_bytes = _read_upload_zip_bytes_or_http_error(caller_person_id, rag_tab_id)
+    zip_bytes = _read_upload_zip_bytes_or_http_error(caller_person_id, rag_page_id)
 
     try:
         vid, inner_path = read_youtube_video_id_from_upload_zip(zip_bytes, folder)
@@ -1532,7 +1604,7 @@ def rag_unit_youtube_url(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     return RagUnitYoutubeUrlFromZipResponse(
-        rag_tab_id=tab,
+        rag_page_id=tab,
         folder_name=folder,
         youtube_url=f"https://www.youtube.com/watch?v={vid}",
         text_file_name=Path(inner_path).name,

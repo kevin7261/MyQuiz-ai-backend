@@ -24,7 +24,7 @@ def execute_with_course_id_fallback(
     build_query: Callable[[bool], Any],
     course_id: int | None,
 ) -> Any:
-    """執行查詢；若表尚無 course_id 欄位則略過該篩選（rag_tab_id 已由 Rag 列限定課程）。"""
+    """執行查詢；若表尚無 course_id 欄位則略過該篩選（rag_page_id 已由 Rag 列限定課程）。"""
     if course_id is None:
         return build_query(False).execute()
     if _course_id_column_cache.get(table) is False:
@@ -87,20 +87,20 @@ def assert_row_course_id(row: dict[str, Any], course_id: int, entity_label: str 
 
 def require_rag_tab_owner(
     person_id: str,
-    rag_tab_id: str,
+    rag_page_id: str,
     course_id: int,
     *,
     require_person_match: bool = True,
 ) -> dict[str, Any]:
     """確認 Rag 列存在、course_id 一致；require_person_match 時 person_id 須一致。回傳 Rag 列。"""
-    rid = (rag_tab_id or "").strip()
+    rid = (rag_page_id or "").strip()
     if not rid or "/" in rid or "\\" in rid:
-        raise HTTPException(status_code=400, detail="無效的 rag_tab_id")
+        raise HTTPException(status_code=400, detail="無效的 rag_page_id")
     supabase = get_supabase()
     q = (
         supabase.table("Rag")
-        .select("rag_tab_id, person_id, course_id")
-        .eq("rag_tab_id", rid)
+        .select("rag_page_id, person_id, course_id")
+        .eq("rag_page_id", rid)
         .eq("course_id", course_id)
         .eq("deleted", False)
         .limit(1)
@@ -110,18 +110,18 @@ def require_rag_tab_owner(
     sel = q.execute()
     if not sel.data:
         detail = (
-            "找不到該 rag_tab_id，或已刪除／不屬於此 course_id"
+            "找不到該 rag_page_id，或已刪除／不屬於此 course_id"
             if not require_person_match
-            else "找不到該 rag_tab_id，或已刪除／不屬於此 person_id／course_id"
+            else "找不到該 rag_page_id，或已刪除／不屬於此 person_id／course_id"
         )
         raise HTTPException(status_code=404, detail=detail)
     return sel.data[0]
 
 
-def resolve_rag_tab_owner_person_id(rag_tab_id: str, course_id: int) -> str:
-    """依 rag_tab_id + course_id 取得 upload ZIP 所屬 person_id（不驗證呼叫者 query person_id）。"""
-    row = require_rag_tab_owner("", rag_tab_id, course_id, require_person_match=False)
+def resolve_rag_tab_owner_person_id(rag_page_id: str, course_id: int) -> str:
+    """依 rag_page_id + course_id 取得 upload ZIP 所屬 person_id（不驗證呼叫者 query person_id）。"""
+    row = require_rag_tab_owner("", rag_page_id, course_id, require_person_match=False)
     owner = (row.get("person_id") or "").strip()
     if not owner:
-        raise HTTPException(status_code=404, detail="找不到該 rag_tab_id 之 person_id")
+        raise HTTPException(status_code=404, detail="找不到該 rag_page_id 之 person_id")
     return owner

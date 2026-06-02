@@ -1,5 +1,5 @@
 """
-依 Rag 表與 Rag_Unit 表解析 repack stem、rag_zip_tab_id（供取得 RAG ZIP 路徑等）。
+依 Rag 表與 Rag_Unit 表解析 repack stem、rag_zip_page_id（供取得 RAG ZIP 路徑等）。
 優先從 Rag_Unit 讀取（新版 schema）；Rag_Unit 無資料時回退至 rag_metadata.outputs（向下相容舊版）。
 """
 
@@ -53,7 +53,7 @@ def _stem_from_output_entry(entry: dict) -> str:
     if stem:
         return stem
     stem = (
-        entry.get("rag_tab_id")
+        entry.get("rag_page_id")
         or entry.get("unit_name")
         or entry.get("tab_name")
         or entry.get("rag_name")
@@ -69,7 +69,7 @@ def _output_unit_candidates(entry: dict) -> set[str]:
     out: set[str] = set()
     if not isinstance(entry, dict):
         return out
-    for k in ("folder_combination", "unit_name", "rag_tab_id", "tab_name", "rag_name"):
+    for k in ("folder_combination", "unit_name", "rag_page_id", "tab_name", "rag_name"):
         v = (entry.get(k) or "").strip()
         if v:
             out.add(v)
@@ -83,18 +83,18 @@ def _output_unit_candidates(entry: dict) -> set[str]:
 
 def _stem_from_rag_file_name(rag_file_name: str, unit_name: str) -> tuple[str, str]:
     """
-    從 rag_file_name（例如 abc123_rag.zip）解析 stem 與 rag_zip_tab_id。
+    從 rag_file_name（例如 abc123_rag.zip）解析 stem 與 rag_zip_page_id。
     rag_file_name 對應 Rag_Unit.rag_file_name，格式為 {stem}_rag.zip。
-    回傳 (stem, rag_zip_tab_id)；無法解析時以 unit_name 組合。
+    回傳 (stem, rag_zip_page_id)；無法解析時以 unit_name 組合。
     """
     if rag_file_name:
-        tab_id = Path(rag_file_name).stem  # e.g., "abc123_rag"
-        if tab_id.endswith("_rag"):
-            stem = tab_id[:-4]
+        page_id = Path(rag_file_name).stem  # e.g., "abc123_rag"
+        if page_id.endswith("_rag"):
+            stem = page_id[:-4]
         else:
             stem = unit_name
-            tab_id = f"{unit_name}_rag"
-        return stem, tab_id
+            page_id = f"{unit_name}_rag"
+        return stem, page_id
     stem = unit_name
     return stem, f"{stem}_rag"
 
@@ -108,24 +108,24 @@ def get_rag_stem_from_rag_id(
 ):
     """
     由 rag_id 查詢 Rag 表，再從 Rag_Unit 表（優先）或 rag_metadata.outputs（向下相容）取得
-    repack stem 與 rag_zip_tab_id（通常為 {stem}_rag）。
+    repack stem 與 rag_zip_page_id（通常為 {stem}_rag）。
 
-    include_row=True 時回傳 (row, stem, rag_zip_tab_id)；否則回傳 (stem, rag_zip_tab_id)。
-    rag_unit_id 若 >0，優先選取該主鍵之列（須隸屬此 Rag.rag_tab_id）。
+    include_row=True 時回傳 (row, stem, rag_zip_page_id)；否則回傳 (stem, rag_zip_page_id)。
+    rag_unit_id 若 >0，優先選取該主鍵之列（須隸屬此 Rag.rag_page_id）。
     否則 unit_name 若指定（非空白），則選取該名稱的單元；皆未指定則使用第一筆。
     """
     # 勿在主要 SELECT 含 rag_metadata：部分環境尚未 migration 該欄，會導致整筆查詢 42703。
     # 部分環境 Rag 表尚無 transcript 欄位（42703）時改選不含該欄。
     select_cols = (
-        "rag_tab_id, transcript, person_id, rag_id"
+        "rag_page_id, transcript, person_id, rag_id"
         if include_row
-        else "rag_tab_id"
+        else "rag_page_id"
     )
     select_cols_no_transcript = (
-        "rag_tab_id, person_id, rag_id" if include_row else "rag_tab_id"
+        "rag_page_id, person_id, rag_id" if include_row else "rag_page_id"
     )
     select_cols_legacy_transcription = (
-        "rag_tab_id, transcription, person_id, rag_id" if include_row else "rag_tab_id"
+        "rag_page_id, transcription, person_id, rag_id" if include_row else "rag_page_id"
     )
     try:
         rag_rows = (
@@ -163,13 +163,13 @@ def get_rag_stem_from_rag_id(
     if not rag_rows.data or len(rag_rows.data) == 0:
         raise HTTPException(status_code=404, detail=f"找不到 rag_id={rag_id} 的 Rag 資料")
     row = rag_rows.data[0]
-    rag_tab_id = (row.get("rag_tab_id") or "").strip()
+    rag_page_id = (row.get("rag_page_id") or "").strip()
 
     try:
         unit_rows = (
             supabase.table("Rag_Unit")
             .select("rag_unit_id, unit_name, folder_combination, rag_file_name, repack_file_name")
-            .eq("rag_tab_id", rag_tab_id)
+            .eq("rag_page_id", rag_page_id)
             .eq("deleted", False)
             .order("created_at", desc=False)
             .execute()
@@ -180,7 +180,7 @@ def get_rag_stem_from_rag_id(
             unit_rows = (
                 supabase.table("Rag_Unit")
                 .select("rag_unit_id, unit_name, rag_file_name, repack_file_name")
-                .eq("rag_tab_id", rag_tab_id)
+                .eq("rag_page_id", rag_page_id)
                 .eq("deleted", False)
                 .order("created_at", desc=False)
                 .execute()
@@ -212,7 +212,7 @@ def get_rag_stem_from_rag_id(
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"找不到 rag_unit_id={ruid_wanted} 的 Rag_Unit（rag_tab_id={rag_tab_id!r}）；"
+                        f"找不到 rag_unit_id={ruid_wanted} 的 Rag_Unit（rag_page_id={rag_page_id!r}）；"
                         f"可選 unit_name：{available}"
                     ),
                 )
@@ -231,16 +231,16 @@ def get_rag_stem_from_rag_id(
                     detail=f"找不到 unit_name／folder_combination={wanted!r} 的 Rag_Unit；可選：{available}",
                 )
         path_key = (selected.get("folder_combination") or selected.get("unit_name") or "").strip()
-        stem, rag_zip_tab_id = _stem_from_rag_file_name(
+        stem, rag_zip_page_id = _stem_from_rag_file_name(
             selected.get("rag_file_name", ""),
             path_key,
         )
         if not stem:
             raise HTTPException(
                 status_code=400,
-                detail=f"Rag_Unit（rag_tab_id={rag_tab_id}）缺少可辨識的 stem",
+                detail=f"Rag_Unit（rag_page_id={rag_page_id}）缺少可辨識的 stem",
             )
-        return (row, stem, rag_zip_tab_id) if include_row else (stem, rag_zip_tab_id)
+        return (row, stem, rag_zip_page_id) if include_row else (stem, rag_zip_page_id)
 
     meta = _fetch_rag_metadata_if_present(supabase, rag_id)
     if include_row and meta is not None:
@@ -283,7 +283,7 @@ def get_rag_stem_from_rag_id(
             status_code=400,
             detail=f"該筆 Rag（rag_id={rag_id}）的 outputs 第一筆缺少可辨識的 repack stem",
         )
-    rag_zip_tab_id = ""
+    rag_zip_page_id = ""
     src = matched_output if matched_output is not None else (
         outputs[0] if isinstance(outputs[0], dict) else None
     )
@@ -292,15 +292,15 @@ def get_rag_stem_from_rag_id(
         if rf.lower().endswith(".zip"):
             rid = rf[:-4].strip()
             if rid.endswith("_rag") and "/" not in rid and "\\" not in rid:
-                rag_zip_tab_id = rid
-    if not rag_zip_tab_id:
+                rag_zip_page_id = rid
+    if not rag_zip_page_id:
         if "/" in stem or "\\" in stem:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     "此 Rag 僅有舊版 rag_metadata.outputs，且 folder_combination 含路徑字元，"
-                    "無法自 stem 組出 rag ZIP tab_id；請改用含 Rag_Unit 的資料或傳 rag_unit_id"
+                    "無法自 stem 組出 rag ZIP page_id；請改用含 Rag_Unit 的資料或傳 rag_unit_id"
                 ),
             )
-        rag_zip_tab_id = f"{stem}_rag"
-    return (row, stem, rag_zip_tab_id) if include_row else (stem, rag_zip_tab_id)
+        rag_zip_page_id = f"{stem}_rag"
+    return (row, stem, rag_zip_page_id) if include_row else (stem, rag_zip_page_id)

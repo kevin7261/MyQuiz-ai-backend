@@ -2,7 +2,7 @@
 個人分析 API 模組。
 依 person_id、course_id 查詢 Exam_Quiz 資料。新 schema 答案欄位直接內嵌於 Exam_Quiz（answer_content, answer_critique），不再有獨立的 Exam_Answer 表。
 - GET /person-analysis/quizzes/{person_id}：依 person_id、course_id 取得已作答的 Exam_Quiz（answer_content 非空），
-  依 exam_tab_id 分群回傳 Exam；每筆 Exam 的題目結構與 GET /exam/tabs 相同（quizzes[]，Exam_Quiz 含 follow_up 鏈，含 enrich／rag 鍵）。
+  依 exam_page_id 分群回傳 Exam；每筆 Exam 的題目結構與 GET /exam/tabs 相同（quizzes[]，Exam_Quiz 含 follow_up 鏈，含 enrich／rag 鍵）。
   另帶 weakness_report：每次請求皆呼叫 LLM 產生弱點報告（有 LLM API Key 且成功呼叫時為模型回覆原文，否則 null）。
 
 重要：弱點報告與出題／批改相同，系統與使用者訊息皆為 **Markdown**；本路由**不**使用 `response_format=json_object`。
@@ -28,7 +28,7 @@ SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY = (
 )
 fetch_system_setting_text = fetch_course_setting_text
 from services.exam_queries import (
-    exams_by_tab_ids,
+    exams_by_page_ids,
     enrich_exam_quizzes_rag_tab_from_units,
     ensure_exam_quiz_rag_id_keys,
     exam_tab_quizzes_response,
@@ -60,7 +60,7 @@ def list_quizzes_by_person(
     person_id: str = PathParam(..., description="要查詢的 person_id"),
 ):
     """
-    依 person_id、course_id 取得已作答的 Exam_Quiz（answer_content 非空），依 exam_tab_id 分群後對應 Exam；
+    依 person_id、course_id 取得已作答的 Exam_Quiz（answer_content 非空），依 exam_page_id 分群後對應 Exam；
     每筆 Exam 的 quizzes 形狀與 GET /exam/tabs 一致（題目為完整 Exam_Quiz 列，含作答欄位）。
     weakness_report：每次請求皆嘗試呼叫 LLM 產生；成功時為 `message.content` 原文，否則為 null。
     弱點報告 user 訊息會併入 Course_Setting `person_analysis_user_prompt_text`
@@ -75,22 +75,22 @@ def list_quizzes_by_person(
         quizzes = quizzes_by_person_id(path_pid, course_id=course_id)
         quizzes_with_answers = [q for q in quizzes if quiz_has_answer(q)]
 
-        tab_ids: list[str] = list(dict.fromkeys(
-            str(q.get("exam_tab_id")) for q in quizzes_with_answers if q.get("exam_tab_id") is not None
+        page_ids: list[str] = list(dict.fromkeys(
+            str(q.get("exam_page_id")) for q in quizzes_with_answers if q.get("exam_page_id") is not None
         ))
-        exam_rows = exams_by_tab_ids(tab_ids)
-        quizzes_by_tab: dict[str, list[dict]] = {tid: [] for tid in tab_ids}
+        exam_rows = exams_by_page_ids(page_ids)
+        quizzes_by_tab: dict[str, list[dict]] = {tid: [] for tid in page_ids}
         for q in quizzes_with_answers:
-            tid = q.get("exam_tab_id")
+            tid = q.get("exam_page_id")
             if tid is not None:
                 quizzes_by_tab.setdefault(str(tid), []).append(q)
 
-        flat_for_enrich = [qz for tid in tab_ids for qz in quizzes_by_tab.get(tid, [])]
+        flat_for_enrich = [qz for tid in page_ids for qz in quizzes_by_tab.get(tid, [])]
         enrich_exam_quizzes_rag_tab_from_units(flat_for_enrich)
         ensure_exam_quiz_rag_id_keys(flat_for_enrich)
 
         for row in exam_rows:
-            tid = str(row.get("exam_tab_id") or "")
+            tid = str(row.get("exam_page_id") or "")
             row["quizzes"] = exam_tab_quizzes_response(quizzes_by_tab.get(tid, []))
 
         data = to_json_safe(exam_rows)

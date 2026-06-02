@@ -58,19 +58,19 @@ def fetch_exam_rag_id_from_settings(
         return key, None
 
 
-def rag_id_from_rag_tab_id(supabase, rag_tab_id: str, course_id: int | None = None) -> int | None:
-    """由 `Rag.rag_tab_id` 解析 `rag_id`（deleted=false）；course_id 若指定則一併篩選。"""
-    return _rag_id_from_rag_tab_id(supabase, rag_tab_id, course_id)
+def rag_id_from_rag_page_id(supabase, rag_page_id: str, course_id: int | None = None) -> int | None:
+    """由 `Rag.rag_page_id` 解析 `rag_id`（deleted=false）；course_id 若指定則一併篩選。"""
+    return _rag_id_from_rag_page_id(supabase, rag_page_id, course_id)
 
 
-def _rag_id_from_rag_tab_id(supabase, rag_tab_id: str, course_id: int | None = None) -> int | None:
-    tab = (rag_tab_id or "").strip()
+def _rag_id_from_rag_page_id(supabase, rag_page_id: str, course_id: int | None = None) -> int | None:
+    tab = (rag_page_id or "").strip()
     if not tab:
         return None
     q = (
         supabase.table("Rag")
         .select("rag_id")
-        .eq("rag_tab_id", tab)
+        .eq("rag_page_id", tab)
         .eq("deleted", False)
         .limit(1)
     )
@@ -97,11 +97,11 @@ def resolve_exam_content_rag_id(
     """
     供測驗出題／批改選擇 Rag.rag_id。
 
-    GET /exam/rag-for-exams 可列出多個 rag_tab_id 底下之單元（並依 Rag.local／連線篩選）；若僅依 Course_Setting
+    GET /exam/rag-for-exams 可列出多個 rag_page_id 底下之單元（並依 Rag.local／連線篩選）；若僅依 Course_Setting
     單一 rag_id，會與 rag_unit_id 所屬 tab 不一致。故優先：
 
-    1. stem_rag_unit_id > 0：由 Rag_Unit.rag_tab_id → Rag.rag_id
-    2. rag_quiz_id > 0：Rag_Quiz.rag_tab_id，若空則經 rag_unit_id 同上
+    1. stem_rag_unit_id > 0：由 Rag_Unit.rag_page_id → Rag.rag_id
+    2. rag_quiz_id > 0：Rag_Quiz.rag_page_id，若空則經 rag_unit_id 同上
     3. 回退 fetch_exam_rag_id_from_settings
 
     回傳 (rag_id, setting_key)；成功自 1／2 解析時 setting_key 為 None；
@@ -117,7 +117,7 @@ def resolve_exam_content_rag_id(
         def build_uq(with_course_filter: bool):
             q = (
                 supabase.table("Rag_Unit")
-                .select("rag_tab_id")
+                .select("rag_page_id")
                 .eq("rag_unit_id", ruid)
                 .eq("deleted", False)
                 .limit(1)
@@ -128,7 +128,7 @@ def resolve_exam_content_rag_id(
 
         ru = execute_with_course_id_fallback("Rag_Unit", build_uq, course_id)
         if ru.data:
-            found = _rag_id_from_rag_tab_id(supabase, ru.data[0].get("rag_tab_id") or "", course_id)
+            found = _rag_id_from_rag_page_id(supabase, ru.data[0].get("rag_page_id") or "", course_id)
             if found:
                 return found, None
 
@@ -142,7 +142,7 @@ def resolve_exam_content_rag_id(
         def build_rqq(with_course_filter: bool):
             q = (
                 supabase.table("Rag_Quiz")
-                .select("rag_tab_id, rag_unit_id")
+                .select("rag_page_id, rag_unit_id")
                 .eq("rag_quiz_id", rqid)
                 .eq("deleted", False)
                 .limit(1)
@@ -154,9 +154,9 @@ def resolve_exam_content_rag_id(
         rq = execute_with_course_id_fallback("Rag_Quiz", build_rqq, course_id)
         if rq.data:
             r0 = rq.data[0]
-            tab = (r0.get("rag_tab_id") or "").strip()
+            tab = (r0.get("rag_page_id") or "").strip()
             if tab:
-                found = _rag_id_from_rag_tab_id(supabase, tab, course_id)
+                found = _rag_id_from_rag_page_id(supabase, tab, course_id)
                 if found:
                     return found, None
             ru2_raw = r0.get("rag_unit_id")
@@ -168,7 +168,7 @@ def resolve_exam_content_rag_id(
                 def build_uq2(with_course_filter: bool):
                     q = (
                         supabase.table("Rag_Unit")
-                        .select("rag_tab_id")
+                        .select("rag_page_id")
                         .eq("rag_unit_id", ru2)
                         .eq("deleted", False)
                         .limit(1)
@@ -179,7 +179,7 @@ def resolve_exam_content_rag_id(
 
                 ru = execute_with_course_id_fallback("Rag_Unit", build_uq2, course_id)
                 if ru.data:
-                    found = _rag_id_from_rag_tab_id(supabase, ru.data[0].get("rag_tab_id") or "", course_id)
+                    found = _rag_id_from_rag_page_id(supabase, ru.data[0].get("rag_page_id") or "", course_id)
                     if found:
                         return found, None
 
