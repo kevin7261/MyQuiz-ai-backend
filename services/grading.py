@@ -31,7 +31,7 @@ from postgrest.exceptions import APIError
 
 from utils.taipei_time import now_taipei_iso
 from services.quiz_generation import _context_as_markdown_fenced
-from utils.db_schema import parse_rag_quiz_history_list, serialize_rag_quiz_history_list
+from utils.db_schema import parse_rag_quiz_history_list, quiz_history_item, serialize_rag_quiz_history_list
 from utils.rag_faiss import process_zip_to_docs
 from utils.supabase import get_supabase
 
@@ -544,21 +544,29 @@ def _rag_quiz_missing_column_error(exc: BaseException, column: str) -> bool:
 def _append_rag_quiz_history(
     existing_raw: Any,
     *,
+    rag_unit_id: int = 0,
+    quiz_name: str = "",
+    follow_up: bool = False,
     quiz_content: str,
-    answer_content: str,
-    quiz_answer_reference: str,
-    answer_critique: str,
-) -> str | None:
+    quiz_hint: str = "",
+    quiz_answer_reference: str = "",
+    answer_content: str = "",
+    answer_critique: str = "",
+) -> str:
     qc = (quiz_content or "").strip()
     if not qc:
         return serialize_rag_quiz_history_list(parse_rag_quiz_history_list(existing_raw))
     history = parse_rag_quiz_history_list(existing_raw)
-    entry = {
-        "quiz_content": qc,
-        "answer_content": answer_content or "",
-        "quiz_answer_reference": (quiz_answer_reference or "").strip(),
-        "answer_critique": (answer_critique or "").strip(),
-    }
+    entry = quiz_history_item(
+        rag_unit_id=rag_unit_id,
+        quiz_name=quiz_name,
+        follow_up=follow_up,
+        quiz_content=qc,
+        quiz_hint=quiz_hint,
+        quiz_answer_reference=quiz_answer_reference,
+        answer_content=answer_content or "",
+        answer_critique=answer_critique,
+    )
     if history and (history[-1].get("quiz_content") or "").strip() == qc:
         history[-1] = entry
     else:
@@ -593,11 +601,18 @@ def update_rag_quiz_with_grade(
         supabase = get_supabase()
         history_qc = qc_persist
         history_ref = ""
+        history_hint = ""
+        history_rag_unit_id = 0
+        history_quiz_name = ""
+        history_follow_up = False
         existing_history_raw: Any = None
         try:
             hist_sel = (
                 supabase.table("Rag_Quiz")
-                .select("quiz_content, quiz_answer_reference, quiz_history_list")
+                .select(
+                    "rag_unit_id, quiz_name, follow_up, quiz_content, quiz_hint, "
+                    "quiz_answer_reference, quiz_history_list"
+                )
                 .eq("rag_quiz_id", rag_quiz_id)
                 .eq("deleted", False)
                 .limit(1)
@@ -608,15 +623,26 @@ def update_rag_quiz_with_grade(
                 if not history_qc:
                     history_qc = (h0.get("quiz_content") or "").strip()
                 history_ref = (h0.get("quiz_answer_reference") or "").strip()
+                history_hint = (h0.get("quiz_hint") or "").strip()
+                history_quiz_name = (h0.get("quiz_name") or "").strip()
+                history_follow_up = bool(h0.get("follow_up"))
+                try:
+                    history_rag_unit_id = int(h0.get("rag_unit_id") or 0)
+                except (TypeError, ValueError):
+                    history_rag_unit_id = 0
                 existing_history_raw = h0.get("quiz_history_list")
         except Exception as hist_err:
             if not _rag_quiz_missing_column_error(hist_err, "quiz_history_list"):
                 _logger.debug("讀取 Rag_Quiz quiz_history_list 略過 rag_quiz_id=%s: %s", rag_quiz_id, hist_err)
         row["quiz_history_list"] = _append_rag_quiz_history(
             existing_history_raw,
+            rag_unit_id=history_rag_unit_id,
+            quiz_name=history_quiz_name,
+            follow_up=history_follow_up,
             quiz_content=history_qc,
-            answer_content=quiz_answer or "",
+            quiz_hint=history_hint,
             quiz_answer_reference=history_ref,
+            answer_content=quiz_answer or "",
             answer_critique=critique_text,
         )
         update_payload = dict(row)
@@ -715,11 +741,18 @@ def update_exam_quiz_with_grade(
         supabase = get_supabase()
         history_qc = ""
         history_ref = ""
+        history_hint = ""
+        history_rag_unit_id = 0
+        history_quiz_name = ""
+        history_follow_up = False
         existing_history_raw: Any = None
         try:
             hist_sel = (
                 supabase.table("Exam_Quiz")
-                .select("quiz_content, quiz_answer_reference, quiz_history_list")
+                .select(
+                    "rag_unit_id, quiz_name, follow_up, quiz_content, quiz_hint, "
+                    "quiz_answer_reference, quiz_history_list"
+                )
                 .eq("exam_quiz_id", exam_quiz_id)
                 .limit(1)
                 .execute()
@@ -728,6 +761,13 @@ def update_exam_quiz_with_grade(
                 h0 = hist_sel.data[0]
                 history_qc = (h0.get("quiz_content") or "").strip()
                 history_ref = (h0.get("quiz_answer_reference") or "").strip()
+                history_hint = (h0.get("quiz_hint") or "").strip()
+                history_quiz_name = (h0.get("quiz_name") or "").strip()
+                history_follow_up = bool(h0.get("follow_up"))
+                try:
+                    history_rag_unit_id = int(h0.get("rag_unit_id") or 0)
+                except (TypeError, ValueError):
+                    history_rag_unit_id = 0
                 existing_history_raw = h0.get("quiz_history_list")
         except Exception as hist_err:
             if not _rag_quiz_missing_column_error(hist_err, "quiz_history_list"):
@@ -738,9 +778,13 @@ def update_exam_quiz_with_grade(
                 )
         row["quiz_history_list"] = _append_rag_quiz_history(
             existing_history_raw,
+            rag_unit_id=history_rag_unit_id,
+            quiz_name=history_quiz_name,
+            follow_up=history_follow_up,
             quiz_content=history_qc,
-            answer_content=quiz_answer or "",
+            quiz_hint=history_hint,
             quiz_answer_reference=history_ref,
+            answer_content=quiz_answer or "",
             answer_critique=critique,
         )
         update_payload = dict(row)

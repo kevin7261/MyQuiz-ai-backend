@@ -76,7 +76,13 @@ RAG_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_NO_QUIZ_HISTORY_LIST = (
 )
 
 
-def _normalize_rag_quiz_history_item(item: Any) -> dict[str, str] | None:
+def _normalize_rag_quiz_history_item(item: Any) -> dict[str, Any] | None:
+    """正規化單筆 quiz_history_list 為八欄位物件（quiz_content 必填）。"""
+    if isinstance(item, str):
+        qc = item.strip()
+        if not qc:
+            return None
+        return quiz_history_item(quiz_content=qc)
     if not isinstance(item, dict):
         return None
     qc = (item.get("quiz_content") or "").strip()
@@ -85,16 +91,66 @@ def _normalize_rag_quiz_history_item(item: Any) -> dict[str, str] | None:
     ans = item.get("answer_content")
     if ans is None:
         ans = item.get("quiz_answer") or item.get("answer")
+    rag_unit_id = item.get("rag_unit_id")
+    try:
+        rag_unit_id = int(rag_unit_id or 0)
+    except (TypeError, ValueError):
+        rag_unit_id = 0
+    follow_up_raw = item.get("follow_up")
+    if follow_up_raw is None:
+        follow_up_raw = item.get("followup") or item.get("followUp")
+    return quiz_history_item(
+        rag_unit_id=rag_unit_id,
+        quiz_name=(item.get("quiz_name") or "").strip(),
+        follow_up=bool(follow_up_raw),
+        quiz_content=qc,
+        quiz_hint=(item.get("quiz_hint") or item.get("hint") or "").strip(),
+        quiz_answer_reference=(item.get("quiz_answer_reference") or "").strip(),
+        answer_content=(ans or "") if ans is not None else "",
+        answer_critique=(item.get("answer_critique") or "").strip(),
+    )
+
+
+def quiz_history_item(
+    *,
+    rag_unit_id: int = 0,
+    quiz_name: str = "",
+    follow_up: bool = False,
+    quiz_content: str,
+    quiz_hint: str = "",
+    quiz_answer_reference: str = "",
+    answer_content: str = "",
+    answer_critique: str = "",
+) -> dict[str, Any]:
+    """建立標準 quiz_history_list 單筆（八鍵皆存在）。"""
     return {
-        "quiz_content": qc,
-        "answer_content": (ans or "") if ans is not None else "",
-        "quiz_answer_reference": (item.get("quiz_answer_reference") or "").strip(),
-        "answer_critique": (item.get("answer_critique") or "").strip(),
+        "rag_unit_id": int(rag_unit_id or 0),
+        "quiz_name": (quiz_name or "").strip(),
+        "follow_up": bool(follow_up),
+        "quiz_content": (quiz_content or "").strip(),
+        "quiz_hint": (quiz_hint or "").strip(),
+        "quiz_answer_reference": (quiz_answer_reference or "").strip(),
+        "answer_content": (answer_content or "") if answer_content is not None else "",
+        "answer_critique": (answer_critique or "").strip(),
     }
 
 
-def parse_rag_quiz_history_list(raw: Any) -> list[dict[str, str]]:
-    """解析 Rag_Quiz／Exam_Quiz 之 quiz_history_list（text 存 JSON 陣列）。"""
+QUIZ_HISTORY_OPENAPI_ITEM: dict[str, Any] = {
+    "rag_unit_id": 1,
+    "quiz_name": "題型名稱",
+    "follow_up": False,
+    "quiz_content": "先前題目題幹",
+    "quiz_hint": "提示",
+    "quiz_answer_reference": "參考答案全文",
+    "answer_content": "學生先前作答",
+    "answer_critique": "批改評語",
+}
+
+QUIZ_HISTORY_OPENAPI_LIST: list[dict[str, Any]] = [dict(QUIZ_HISTORY_OPENAPI_ITEM)]
+
+
+def parse_rag_quiz_history_list(raw: Any) -> list[dict[str, Any]]:
+    """解析 Rag_Quiz／Exam_Quiz 之 quiz_history_list（text JSON 或已解析 list；元素可為字串或物件）。"""
     if raw is None or raw == "":
         return []
     data: Any = raw
@@ -105,7 +161,7 @@ def parse_rag_quiz_history_list(raw: Any) -> list[dict[str, str]]:
             return []
     if not isinstance(data, list):
         return []
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     for item in data:
         normalized = _normalize_rag_quiz_history_item(item)
         if normalized is not None:
@@ -113,18 +169,18 @@ def parse_rag_quiz_history_list(raw: Any) -> list[dict[str, str]]:
     return out
 
 
-def serialize_rag_quiz_history_list(items: list[dict[str, str]] | None) -> str | None:
-    """寫入 Rag_Quiz／Exam_Quiz 之 quiz_history_list；空陣列回傳 null。"""
+def serialize_rag_quiz_history_list(items: list[dict[str, Any]] | None) -> str:
+    """寫入 Rag_Quiz／Exam_Quiz 之 quiz_history_list（text 欄位用 JSON 字串）。"""
     if not items:
-        return None
+        return "[]"
     cleaned = [_normalize_rag_quiz_history_item(item) for item in items]
     cleaned = [item for item in cleaned if item is not None]
     if not cleaned:
-        return None
+        return "[]"
     return json.dumps(cleaned, ensure_ascii=False)
 
 
-def rag_quiz_history_stems(history: list[dict[str, str]] | None) -> list[str]:
+def rag_quiz_history_stems(history: list[dict[str, Any]] | None) -> list[str]:
     """自 quiz_history_list 物件陣列取出已出過題幹（供一般出題 prompt）。"""
     return [
         (item.get("quiz_content") or "").strip()
@@ -133,43 +189,33 @@ def rag_quiz_history_stems(history: list[dict[str, str]] | None) -> list[str]:
     ]
 
 
-def quiz_history_from_stems(stems: list[str] | None) -> list[dict[str, str]]:
-    """將一般出題請求的字串題幹陣列轉為 DB quiz_history_list 物件格式。"""
-    out: list[dict[str, str]] = []
+def quiz_history_from_stems(stems: list[str] | None) -> list[dict[str, Any]]:
+    """相容舊 API 字串題幹陣列 → 標準八欄位物件陣列。"""
+    out: list[dict[str, Any]] = []
     for stem in stems or []:
-        s = (stem or "").strip()
-        if not s:
-            continue
-        out.append(
-            {
-                "quiz_content": s,
-                "answer_content": "",
-                "quiz_answer_reference": "",
-                "answer_critique": "",
-            }
-        )
+        item = _normalize_rag_quiz_history_item(stem)
+        if item is not None:
+            out.append(item)
     return out
+
+
+def coerce_quiz_history_request(raw: Any) -> list[dict[str, Any]]:
+    """請求 body 之 quiz_history_list：接受 JSON 字串、物件陣列或字串陣列。"""
+    if raw is None:
+        return []
+    return parse_rag_quiz_history_list(raw)
 
 
 def resolve_quiz_history_for_generate(
     *,
-    request_qa: list[dict[str, str]] | None = None,
-    request_stems: list[str] | None = None,
-    db_raw: Any = None,
-) -> tuple[list[dict[str, str]], list[str]]:
+    request_history: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     """
-    合併請求 body 與 DB 的 quiz_history_list（請求 QA 物件 > 請求題幹字串 > DB）。
-    回傳 (物件陣列，供寫入 DB／追問 LLM；題幹字串陣列，供一般出題 LLM)。
+    出題僅使用 API 請求 body 的 quiz_history_list（不讀 DB、不自行合成）。
+    回傳 (標準物件陣列供寫 DB／追問 LLM；題幹字串陣列供一般出題 LLM)。
     """
-    db_history = parse_rag_quiz_history_list(db_raw)
-    qa: list[dict[str, str]] = list(request_qa or [])
-    if not qa and request_stems:
-        qa = quiz_history_from_stems(request_stems)
-    if not qa and db_history:
-        qa = list(db_history)
-    stems = rag_quiz_history_stems(qa) if qa else [s.strip() for s in (request_stems or []) if (s or "").strip()]
-    if not stems and db_history:
-        stems = rag_quiz_history_stems(db_history)
+    qa = list(request_history or [])
+    stems = rag_quiz_history_stems(qa)
     return qa, stems
 
 

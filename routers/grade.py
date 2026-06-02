@@ -37,7 +37,7 @@ from postgrest.exceptions import APIError
 from dependencies.person_id import PersonId
 from dependencies.course_id import CourseId
 from fastapi.responses import JSONResponse, Response
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from services.grading import (
     cleanup_grade_workspace,
@@ -75,6 +75,9 @@ from utils.rag_course import (
 from utils.supabase import get_supabase
 from utils.zip_storage import get_zip_path
 from utils.db_schema import (
+    QUIZ_HISTORY_OPENAPI_ITEM,
+    QUIZ_HISTORY_OPENAPI_LIST,
+    coerce_quiz_history_request,
     parse_rag_quiz_history_list,
     resolve_quiz_history_for_generate,
     serialize_rag_quiz_history_list,
@@ -93,8 +96,50 @@ RAG_UNIT_TYPE_TEXT = 2
 # Pydantic models
 # ---------------------------------------------------------------------------
 
+class QuizHistoryPair(BaseModel):
+    """quiz_history_list 單筆：八欄位物件。"""
+
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [QUIZ_HISTORY_OPENAPI_ITEM]},
+    )
+
+    rag_unit_id: int = Field(0, ge=0, description="Rag_Unit 主鍵", examples=[1])
+    quiz_name: str = Field("", description="題型名稱")
+    follow_up: bool = Field(
+        False,
+        description="是否為追問題",
+        validation_alias=AliasChoices("follow_up", "followup", "followUp"),
+    )
+    quiz_content: str = Field(..., description="先前題目題幹")
+    quiz_hint: str = Field("", description="提示")
+    answer_content: str = Field(
+        "",
+        description="先前作答（學生答案）",
+        validation_alias=AliasChoices("answer_content", "quiz_answer", "answer"),
+    )
+    quiz_answer_reference: str = Field(
+        "",
+        description="該題參考答案（對齊 quiz_answer_reference）",
+        validation_alias=AliasChoices(
+            "quiz_answer_reference",
+            "quiz_reference_answer",
+            "reference_answer",
+        ),
+    )
+    answer_critique: str = Field(
+        "",
+        description="該題評閱／批改評語（對齊 answer_critique）",
+        validation_alias=AliasChoices("answer_critique", "critique", "quiz_comments"),
+    )
+
+
+def _coerce_quiz_history_list_validator(v: Any) -> Any:
+    """正規化 API 傳入的 quiz_history_list（不讀 DB）。"""
+    return coerce_quiz_history_request(v)
+
+
 class GenerateQuizRequest(BaseModel):
-    """POST /rag/tab/unit/quiz/llm-generate；請求 body 欄位順序同 public.Rag_Quiz（rag_quiz_id, quiz_name, quiz_user_prompt_text, quiz_history_list）。"""
+    """POST /rag/tab/unit/quiz/llm-generate；含 quiz_history_list（八欄位物件陣列）。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
@@ -105,10 +150,15 @@ class GenerateQuizRequest(BaseModel):
         "",
         description="出題 user prompt（可空）；非空時優先並寫入 Rag_Quiz；空則自該列 Rag_Quiz.quiz_user_prompt_text 帶入 LLM",
     )
-    quiz_history_list: list[str] = Field(
+    quiz_history_list: list[QuizHistoryPair] = Field(
         default_factory=list,
-        description="已出過的題目題幹（字串陣列）；送入 LLM 出題 prompt；未傳時可自 DB quiz_history_list 推導題幹",
+        description="先前問答（八欄位物件陣列）；僅使用 API 傳入值",
     )
+
+    @field_validator("quiz_history_list", mode="before")
+    @classmethod
+    def _coerce_quiz_history_list(cls, v: Any) -> Any:
+        return _coerce_quiz_history_list_validator(v)
 
 
 class QuizGradeRequest(BaseModel):
@@ -139,42 +189,22 @@ class QuizGradeRequest(BaseModel):
 
 
 class GenerateQuizDbOnlyRequest(BaseModel):
-    """POST /rag/tab/unit/quiz/llm-generate-db；欄位順序同 Rag_Quiz（rag_quiz_id, quiz_name, quiz_history_list）。"""
+    """POST /rag/tab/unit/quiz/llm-generate-db；含 quiz_history_list（八欄位物件陣列）。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
         "",
         description="測驗名稱；空字串則由 repack stem／單元 unit_name 決定 Rag_Quiz.quiz_name",
     )
-    quiz_history_list: list[str] = Field(
+    quiz_history_list: list[QuizHistoryPair] = Field(
         default_factory=list,
-        description="已出過的題目題幹（字串陣列）；未傳時可自 DB quiz_history_list 推導題幹",
+        description="先前問答（八欄位物件陣列）；僅使用 API 傳入值",
     )
 
-
-class QuizHistoryPair(BaseModel):
-    """先前問答一組：題幹、作答、參考答案與評閱（對齊 Rag_Quiz 欄位）。"""
-
-    quiz_content: str = Field(..., description="先前題目題幹")
-    answer_content: str = Field(
-        ...,
-        description="先前作答（學生答案）",
-        validation_alias=AliasChoices("answer_content", "quiz_answer", "answer"),
-    )
-    quiz_answer_reference: str = Field(
-        "",
-        description="該題參考答案（對齊 Rag_Quiz.quiz_answer_reference）",
-        validation_alias=AliasChoices(
-            "quiz_answer_reference",
-            "quiz_reference_answer",
-            "reference_answer",
-        ),
-    )
-    answer_critique: str = Field(
-        "",
-        description="該題評閱／批改評語（對齊 Rag_Quiz.answer_critique）",
-        validation_alias=AliasChoices("answer_critique", "critique", "quiz_comments"),
-    )
+    @field_validator("quiz_history_list", mode="before")
+    @classmethod
+    def _coerce_quiz_history_list(cls, v: Any) -> Any:
+        return _coerce_quiz_history_list_validator(v)
 
 
 class GenerateQuizFollowupRequest(BaseModel):
@@ -191,8 +221,13 @@ class GenerateQuizFollowupRequest(BaseModel):
     )
     quiz_history_list: list[QuizHistoryPair] = Field(
         default_factory=list,
-        description="先前問答（物件陣列）；未傳時自 Rag_Quiz.quiz_history_list 讀取",
+        description="先前問答（八欄位物件陣列）；僅使用 API 傳入值",
     )
+
+    @field_validator("quiz_history_list", mode="before")
+    @classmethod
+    def _coerce_quiz_history_list(cls, v: Any) -> Any:
+        return _coerce_quiz_history_list_validator(v)
 
 
 class GenerateQuizFollowupDbOnlyRequest(BaseModel):
@@ -205,8 +240,13 @@ class GenerateQuizFollowupDbOnlyRequest(BaseModel):
     )
     quiz_history_list: list[QuizHistoryPair] = Field(
         default_factory=list,
-        description="先前問答（物件陣列）；未傳時自 Rag_Quiz.quiz_history_list 讀取",
+        description="先前問答（八欄位物件陣列）；僅使用 API 傳入值",
     )
+
+    @field_validator("quiz_history_list", mode="before")
+    @classmethod
+    def _coerce_quiz_history_list(cls, v: Any) -> Any:
+        return _coerce_quiz_history_list_validator(v)
 
 
 class QuizGradeDbOnlyRequest(BaseModel):
@@ -390,7 +430,7 @@ _RAG_LLM_GENERATE_OPENAPI_EXAMPLE = {
     "rag_quiz_id": 1,
     "quiz_name": "",
     "quiz_user_prompt_text": "",
-    "quiz_history_list": ["先前已出過的題幹文字"],
+    "quiz_history_list": list(QUIZ_HISTORY_OPENAPI_LIST),
 }
 
 _RAG_LLM_GENERATE_FOLLOWUP_OPENAPI_EXAMPLE = {
@@ -398,13 +438,20 @@ _RAG_LLM_GENERATE_FOLLOWUP_OPENAPI_EXAMPLE = {
     "quiz_name": "",
     "quiz_user_prompt_text": "",
     "quiz_history_list": [
-        {
-            "quiz_content": "先前題目題幹",
-            "answer_content": "學生先前作答",
-            "quiz_answer_reference": "參考答案全文",
-            "answer_critique": "批改評語（指出答不好之處）",
-        },
+        {**QUIZ_HISTORY_OPENAPI_ITEM, "answer_critique": "批改評語（指出答不好之處）"},
     ],
+}
+
+_RAG_LLM_GENERATE_DB_OPENAPI_EXAMPLE = {
+    "rag_quiz_id": 1,
+    "quiz_name": "",
+    "quiz_history_list": list(QUIZ_HISTORY_OPENAPI_LIST),
+}
+
+_RAG_LLM_GENERATE_FOLLOWUP_DB_OPENAPI_EXAMPLE = {
+    "rag_quiz_id": 1,
+    "quiz_name": "",
+    "quiz_history_list": list(_RAG_LLM_GENERATE_FOLLOWUP_OPENAPI_EXAMPLE["quiz_history_list"]),
 }
 
 
@@ -416,16 +463,8 @@ def _safe_unlink(p: Path) -> None:
         pass
 
 
-def _quiz_history_qa_dicts(pairs: list[QuizHistoryPair]) -> list[dict[str, str]]:
-    return [
-        {
-            "quiz_content": p.quiz_content,
-            "answer_content": p.answer_content,
-            "quiz_answer_reference": p.quiz_answer_reference,
-            "answer_critique": p.answer_critique,
-        }
-        for p in pairs
-    ]
+def _quiz_history_qa_dicts(pairs: list[QuizHistoryPair]) -> list[dict[str, Any]]:
+    return parse_rag_quiz_history_list([p.model_dump() for p in pairs])
 
 
 def _resolve_rag_quiz_page_id(
@@ -453,7 +492,7 @@ def _resolve_rag_quiz_page_id(
 
 
 def _prewrite_quiz_history_list(
-    supabase: Any, *, rag_quiz_id: int, qa_dicts: list[dict[str, str]]
+    supabase: Any, *, rag_quiz_id: int, qa_dicts: list[dict[str, Any]]
 ) -> None:
     """出題前寫入 quiz_history_list（與請求／DB 合併後之有效歷史）。"""
     payload = {
@@ -537,8 +576,7 @@ def _rag_llm_generate_quiz_impl(
     caller_person_id: str,
     course_id: int,
     followup: bool,
-    quiz_history_stems: list[str] | None = None,
-    quiz_history_qa: list[QuizHistoryPair] | None = None,
+    quiz_history: list[QuizHistoryPair] | None = None,
 ):
     supabase = get_supabase()
 
@@ -685,11 +723,9 @@ def _rag_llm_generate_quiz_impl(
 
     path: Path | None = None
     try:
-        request_qa = _quiz_history_qa_dicts(quiz_history_qa or []) if followup else None
+        request_history = _quiz_history_qa_dicts(quiz_history or [])
         qa_dicts, stems_for_llm = resolve_quiz_history_for_generate(
-            request_qa=request_qa,
-            request_stems=quiz_history_stems if not followup else None,
-            db_raw=q_row.get("quiz_history_list"),
+            request_history=request_history,
         )
         _prewrite_quiz_history_list(supabase, rag_quiz_id=rag_quiz_id, qa_dicts=qa_dicts)
         if unit_type_val in (2, 3, 4):
@@ -792,10 +828,10 @@ def rag_llm_generate_quiz(
     """
     Body：rag_quiz_id、quiz_name、quiz_user_prompt_text（可空字串）、quiz_history_list（選填；對齊 public.Rag_Quiz 欄位）；
     rag_page_id／rag_unit_id 由後端依 rag_quiz_id 自資料庫帶入；quiz_user_prompt_text 空則自該列 Rag_Quiz 讀取。
-    選填 `quiz_history_list`（字串陣列）：已出過的題目題幹；未傳時可自 DB 既有 quiz_history_list 推導題幹。
+    選填 `quiz_history_list`（八欄位物件陣列）：僅使用 API 傳入值供出題與寫入 DB；未傳視為空陣列。
     unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcript。
     unit_type 2／3／4 時不載入 RAG ZIP，改以逐字稿為 context；與 unit_type=1 共用 `SYSTEM_PROMPT_QUIZ`、`USER_PROMPT_COURSE` 與 `_generate_quiz_from_context`。
-    出題成功後更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=false、quiz_history_list=null；清空 answer_content、answer_critique；保留 answer_user_prompt_text）。
+    出題成功後更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=false、quiz_history_list；清空 answer_content、answer_critique；保留 answer_user_prompt_text）。
     """
     return _rag_llm_generate_quiz_impl(
         rag_quiz_id=body.rag_quiz_id,
@@ -804,7 +840,7 @@ def rag_llm_generate_quiz(
         caller_person_id=caller_person_id,
         course_id=course_id,
         followup=False,
-        quiz_history_stems=body.quiz_history_list,
+        quiz_history=body.quiz_history_list,
     )
 
 
@@ -826,7 +862,8 @@ def rag_llm_generate_quiz_followup(
     """
     依先前問答接續出下一題：作答不佳則針對弱點追問；作答良好則改出新的不重複題目。
     Body 與 `llm-generate` 類似，但 `quiz_history_list` 為物件陣列，
-    每項含 `quiz_content`、`answer_content`、`quiz_answer_reference`、`answer_critique`，一問一答一項。
+    每項含 `rag_unit_id`、`quiz_name`、`follow_up`、`quiz_content`、`quiz_hint`、
+    `quiz_answer_reference`、`answer_content`、`answer_critique`。
     使用 `SYSTEM_PROMPT_QUIZ_FOLLOWUP`／`USER_PROMPT_COURSE_FOLLOWUP`。
     出題成功後同樣更新 public.Rag_Quiz（quiz_name、quiz_*、follow_up=true；寫入 quiz_history_list 為請求或 DB 既有之先前問答；清空 answer_content、answer_critique；保留 answer_user_prompt_text）。
     """
@@ -837,7 +874,7 @@ def rag_llm_generate_quiz_followup(
         caller_person_id=caller_person_id,
         course_id=course_id,
         followup=True,
-        quiz_history_qa=body.quiz_history_list,
+        quiz_history=body.quiz_history_list,
     )
 
 
@@ -852,10 +889,7 @@ def rag_llm_generate_quiz_followup(
     operation_id="rag_llm_generate_quiz_db_prompt",
 )
 def rag_llm_generate_quiz_db_prompt(
-    body: openapi_body(
-        GenerateQuizDbOnlyRequest,
-        {"rag_quiz_id": 1, "quiz_name": "", "quiz_history_list": ["先前已出過的題幹文字"]},
-    ),
+    body: openapi_body(GenerateQuizDbOnlyRequest, _RAG_LLM_GENERATE_DB_OPENAPI_EXAMPLE),
     caller_person_id: PersonId,
     course_id: CourseId,
 ):
@@ -871,7 +905,7 @@ def rag_llm_generate_quiz_db_prompt(
         caller_person_id=caller_person_id,
         course_id=course_id,
         followup=False,
-        quiz_history_stems=body.quiz_history_list,
+        quiz_history=body.quiz_history_list,
     )
 
 
@@ -886,21 +920,7 @@ def rag_llm_generate_quiz_db_prompt(
     operation_id="rag_llm_generate_quiz_followup_db_prompt",
 )
 def rag_llm_generate_quiz_followup_db_prompt(
-    body: openapi_body(
-        GenerateQuizFollowupDbOnlyRequest,
-        {
-            "rag_quiz_id": 1,
-            "quiz_name": "",
-            "quiz_history_list": [
-                {
-                    "quiz_content": "先前題目題幹",
-                    "answer_content": "學生先前作答",
-                    "quiz_answer_reference": "參考答案全文",
-                    "answer_critique": "批改評語",
-                },
-            ],
-        },
-    ),
+    body: openapi_body(GenerateQuizFollowupDbOnlyRequest, _RAG_LLM_GENERATE_FOLLOWUP_DB_OPENAPI_EXAMPLE),
     caller_person_id: PersonId,
     course_id: CourseId,
 ):
@@ -916,7 +936,7 @@ def rag_llm_generate_quiz_followup_db_prompt(
         caller_person_id=caller_person_id,
         course_id=course_id,
         followup=True,
-        quiz_history_qa=body.quiz_history_list,
+        quiz_history=body.quiz_history_list,
     )
 
 
