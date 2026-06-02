@@ -1,5 +1,6 @@
 """
 課程設定（Course_Setting）API 模組，掛載於 /rag。
+- GET /rag/members：依 course_id 列出該課程所有使用者；須為有效登入使用者；必填 query course_id。
 - GET /rag/person_analysis_user_prompt_text：取得 person_analysis_user_prompt_text；須為有效登入使用者；必填 query course_id。
 - PUT /rag/person_analysis_user_prompt_text：寫入；僅 user_type 1／2。
 - GET /rag/course_analysis_user_prompt_text：取得 course_analysis_user_prompt_text；須為有效登入使用者；必填 query course_id。
@@ -123,6 +124,96 @@ class PutCourseAnalysisUserPromptTextRequest(BaseModel):
     """PUT /rag/course_analysis_user_prompt_text 的 body。"""
 
     course_analysis_user_prompt_text: str = Field(..., description="課程分析使用者 Prompt 文字")
+
+
+class CourseMemberItem(BaseModel):
+    """GET /rag/members 單筆成員。"""
+
+    course_user_id: int
+    user_id: int
+    person_id: Optional[str] = None
+    name: Optional[str] = None
+    password: Optional[str] = None
+    user_type: Optional[int] = None
+    college_id: Optional[int] = None
+
+
+class ListCourseMembersResponse(BaseModel):
+    """GET /rag/members 回應。"""
+
+    course_id: int
+    members: list[CourseMemberItem]
+    count: int
+
+
+def _fetch_course_members(supabase, course_id: int) -> list[CourseMemberItem]:
+    """依 course_id 自 User_Course_Relation 與 User 組出課程成員列表。"""
+    rel_resp = (
+        supabase.table(USER_COURSE_RELATION_TABLE)
+        .select("course_user_id, user_id, person_id, name, user_type, college_id")
+        .eq("course_id", course_id)
+        .or_(ACTIVE_DELETED_FILTER)
+        .order("course_user_id")
+        .execute()
+    )
+    rels = rel_resp.data or []
+    if not rels:
+        return []
+
+    user_ids = [int(r["user_id"]) for r in rels if r.get("user_id") is not None]
+    if not user_ids:
+        return []
+
+    user_resp = (
+        supabase.table(USER_TABLE)
+        .select("user_id, person_id, name, password")
+        .in_("user_id", list(dict.fromkeys(user_ids)))
+        .or_(ACTIVE_DELETED_FILTER)
+        .execute()
+    )
+    user_by_id = {
+        int(u["user_id"]): u for u in (user_resp.data or []) if u.get("user_id") is not None
+    }
+
+    members: list[CourseMemberItem] = []
+    for r in rels:
+        uid_raw = r.get("user_id")
+        if uid_raw is None:
+            continue
+        uid = int(uid_raw)
+        user_row = user_by_id.get(uid)
+        if not user_row:
+            continue
+        name = (user_row.get("name") or "").strip() or (r.get("name") or "").strip() or None
+        pid = (user_row.get("person_id") or r.get("person_id") or "").strip() or None
+        college_raw = r.get("college_id")
+        college_id = int(college_raw) if college_raw is not None and int(college_raw or 0) != 0 else None
+        members.append(
+            CourseMemberItem(
+                course_user_id=int(r["course_user_id"]),
+                user_id=uid,
+                person_id=pid,
+                name=name,
+                password=user_row.get("password"),
+                user_type=r.get("user_type"),
+                college_id=college_id,
+            )
+        )
+    return members
+
+
+@router.get("/members", response_model=ListCourseMembersResponse)
+def list_course_members(person_id: PersonId, course_id: CourseId):
+    """依 course_id 列出該課程所有使用者（User_Course_Relation + User，不含已刪除）。"""
+    _require_active_person(person_id)
+    try:
+        supabase = get_supabase()
+        members = _fetch_course_members(supabase, course_id)
+        return ListCourseMembersResponse(course_id=course_id, members=members, count=len(members))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/person_analysis_user_prompt_text", response_model=PersonAnalysisUserPromptTextResponse)
