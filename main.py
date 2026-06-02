@@ -19,6 +19,7 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 
 from dependencies.person_id import PersonId
 from middleware.api_log_middleware import APILogMiddleware
@@ -33,6 +34,7 @@ from routers.prompt import router as prompt_router
 from routers.course_settings import router as course_settings_router
 from routers.users import router as users_router
 from routers.zip import router as zip_router
+from utils.openapi_order import sort_openapi_paths
 
 # ---------------------------------------------------------------------------
 # FastAPI 應用程式
@@ -90,8 +92,7 @@ app.add_middleware(APILogMiddleware)
 # ---------------------------------------------------------------------------
 # 路由掛載
 # ---------------------------------------------------------------------------
-# zip_router 先於 grade_router 掛載，讓 /rag/tab/unit/quiz/create（無 LLM）
-# 在 OpenAPI 文件上排在 llm-generate 之前，視覺上較直觀。
+# zip_router 先於 grade_router 掛載（歷史原因）；OpenAPI 路徑順序見 utils.openapi_order。
 
 app.include_router(zip_router)
 app.include_router(grade_router)
@@ -104,6 +105,23 @@ app.include_router(course_router)
 app.include_router(course_settings_router)
 app.include_router(prompt_router)
 app.include_router(log_router)
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=getattr(app, "version", "0.1.0"),
+        description=app.description,
+        routes=app.routes,
+    )
+    schema["paths"] = sort_openapi_paths(schema.get("paths") or {})
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 
 # ---------------------------------------------------------------------------

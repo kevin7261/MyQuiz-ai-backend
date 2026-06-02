@@ -9,6 +9,7 @@ from postgrest.exceptions import APIError
 
 from utils.taipei_time import now_taipei_iso
 from utils.db_schema import (
+    ACTIVE_DELETED_FILTER,
     EXAM_COURSE_ID_DEFAULT,
     EXAM_QUIZ_SELECT_COLUMNS,
     EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP,
@@ -129,14 +130,19 @@ def exams_by_tab_ids(exam_tab_ids: list[str]) -> list[dict]:
 # Exam_Quiz 表查詢
 # ---------------------------------------------------------------------------
 
-def _select_exam_quiz_rows(
+def apply_exam_quiz_not_deleted(q):
+    """僅未軟刪之列（deleted=false 或 null；deleted=true 不回傳，與 Rag_Quiz 相同）。"""
+    return q.or_(ACTIVE_DELETED_FILTER)
+
+
+def _build_exam_quiz_select(
     *,
     columns: str,
     exam_tab_ids: list[str] | None = None,
     person_id: str | None = None,
     course_id: int | None = None,
-) -> list[dict]:
-    """查 Exam_Quiz（僅 deleted=false）；回傳列經 exam_quiz_list_row 正規化（含 follow_up）。"""
+):
+    """組 Exam_Quiz select query（不含 deleted 篩選；每次呼叫回傳新 builder）。"""
     supabase = get_supabase()
     q = supabase.table("Exam_Quiz").select(columns)
     if exam_tab_ids is not None:
@@ -145,14 +151,29 @@ def _select_exam_quiz_rows(
         q = q.eq("person_id", person_id.strip())
     if course_id is not None:
         q = q.eq("course_id", course_id)
-    try:
-        rows = q.eq("deleted", False).order("exam_quiz_id", desc=False).execute().data or []
-    except APIError as e:
-        msg = (e.message or "").lower()
-        if e.code == "42703" and "deleted" in msg:
-            rows = q.order("exam_quiz_id", desc=False).execute().data or []
-        else:
-            raise
+    return q
+
+
+def _select_exam_quiz_rows(
+    *,
+    columns: str,
+    exam_tab_ids: list[str] | None = None,
+    person_id: str | None = None,
+    course_id: int | None = None,
+) -> list[dict]:
+    """查 Exam_Quiz（僅未軟刪；deleted=true 不回傳）。"""
+    rows = (
+        apply_exam_quiz_not_deleted(_build_exam_quiz_select(
+            columns=columns,
+            exam_tab_ids=exam_tab_ids,
+            person_id=person_id,
+            course_id=course_id,
+        ))
+        .order("exam_quiz_id", desc=False)
+        .execute()
+        .data
+        or []
+    )
     return [exam_quiz_list_row(r) for r in rows]
 
 
@@ -305,7 +326,16 @@ def nest_follow_up_quizzes(quizzes: list[dict]) -> None:
 
 def filter_to_chain_roots(quizzes: list[dict]) -> list[dict]:
     """只回傳 chain root 為頂層：follow_up_exam_quiz_id 為 0／空者（含 follow_up=true 但無前一題）。
-    其餘 follow_up_exam_quiz_id>0 者嵌於前一題的 follow_up_quiz。"""
+    其餘 follow_up_exam_quiz_id>0 者嵌於前一題的 follow_up_quiz；前一題已軟刪（不在 quizzes）者一併略過。"""
+    by_id: dict[int, dict] = {}
+    for q in quizzes:
+        qid = q.get("exam_quiz_id")
+        if qid is None:
+            continue
+        try:
+            by_id[int(qid)] = q
+        except (TypeError, ValueError):
+            pass
     out: list[dict] = []
     for q in quizzes:
         try:
@@ -313,6 +343,8 @@ def filter_to_chain_roots(quizzes: list[dict]) -> list[dict]:
         except (TypeError, ValueError):
             prev_id = 0
         if prev_id > 0:
+            if prev_id in by_id:
+                continue
             continue
         out.append(q)
     return out

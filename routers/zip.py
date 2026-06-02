@@ -1,20 +1,17 @@
 """
-ZIP 與 RAG 相關 API 模組。
-提供：
-- GET /rag/tabs：列出 Rag 表（含 units→quizzes）；須傳 query course_id，僅回傳該課程資料；僅回傳 query person_id 與 Rag.person_id 相同之列；query `local` 篩選 Rag.local，未傳時依連線是否本機判定；回傳依 created_at 舊→新；unit_type=mp3 且含 mp3_file_name 時另附 mp3_audio_url（GET /rag/tab/unit/mp3-file 之 query：`rag_tab_id`、`rag_unit_id` 即可，**不需** person_id，供前端 `<audio src>`）；unit_type=youtube 且含 youtube_url 時另附 youtube_url_api（同上，**不需** person_id）
-- GET /rag/units：依 rag_tab_id 列出 Rag_Unit（含 quizzes）
-- POST /rag/tab/create：建立一筆 Rag（可傳 local）
-- POST /rag/tab/create-upload-zip：建立 Rag 並上傳 ZIP（等同 tab/create 後 tab/upload-zip）
-- PUT /rag/tab/tab-name：更新既有 Rag 的 tab_name（body：rag_id、tab_name）
-- PUT /rag/tab/delete/{rag_tab_id}：依 rag_tab_id 軟刪除 Rag 及其 Rag_Unit，並刪除儲存（須傳 query person_id）
-- POST /rag/tab/upload-zip：上傳 ZIP（須先 tab/create；亦可改用 tab/create-upload-zip 一次完成）
-- POST /rag/tab/build-rag-zip：依 unit_list 打包；unit_type=1 且允許 FAISS 時建向量庫上傳 rag；unit_type=2/3/4 時 repack 照舊，rag 區改上傳「逐字稿全文之單檔 transcript.md」所包成的 ZIP（非 repack 複製；**unit_type=2** 時 **text_file_name** 記錄上傳 ZIP 內來源文字檔檔名；`.md`/`.txt` 內容 UTF-8 原文寫入 Rag_Unit.transcript，含 Markdown）；可選 body.build_faiss 覆寫；**rag_chunk_size／rag_chunk_overlap** 為全批預設，**rag_chunk_sizes／rag_chunk_overlaps**（逗號字串或 JSON 整數陣列）可與任務同序逐段覆寫；**unit_names**（逗號字串或 JSON 字串陣列）同序非空段覆寫 Rag_Unit.unit_name（顯示名）；**folder_combination** 恒為 repack ZIP 檔名 stem 寫入 DB（多資料夾為 ``folder1/tfolder2``，非底線 ``_``）；**unit_type≠1** 時寫入／回傳之 rag_chunk_size／rag_chunk_overlap 為 0；回應 NDJSON。POST /rag/tab/build-rag-zip-stream 為別名
-- PUT /rag/tab/unit/quiz/delete/{rag_quiz_id}：依 rag_quiz_id 軟刪除 Rag_Quiz（deleted=true；須為該列 person_id）
-- PUT /rag/tab/unit/unit-name：更新 Rag_Unit 的 unit_name（body：rag_unit_id、unit_name）
-- GET /rag/tab/unit/mp3-file：query rag_tab_id、rag_unit_id（**不需** query person_id；後端依 rag_tab_id 自 Rag 解析擁有者）；僅 unit_type=3 時回傳音訊（優先該單元 **repack** ZIP；repack 缺漏時改讀該 tab 之 upload ZIP，與 GET /rag/unit/mp3-file 相同語意）
-- GET /rag/tab/unit/youtube-url：query rag_tab_id、rag_unit_id（**不需** person_id）；僅 unit_type=4 時回傳 `youtube_url`（Rag_Unit.youtube_url，建 RAG 時擷取自上傳 ZIP 內文字檔）
-- POST /rag/tab/unit/quiz/create：body `rag_tab_id`、`rag_unit_id` 定位 Rag_Unit 後新增一筆 Rag_Quiz（無 LLM）；`rag_quiz_id` 由資料庫產生。
-- PUT /rag/tab/unit/quiz/quiz-name：更新 Rag_Quiz 的 quiz_name（body：rag_quiz_id、quiz_name）
+ZIP 與 RAG 相關 API 模組。路徑層級與排序與 Exam 對齊（見 utils.openapi_order、README API 目錄）。
+
+**分頁**：GET /rag/tabs → GET /rag/tab/units → POST tab/create → POST tab/create-upload-zip
+→ PUT tab/tab-name → PUT tab/delete/{rag_tab_id} → POST tab/upload-zip → POST tab/build-rag-zip（-stream 別名）
+
+**單元**：PUT tab/unit/unit-name → GET tab/unit/mp3-file → GET tab/unit/youtube-url
+
+**題目**：POST tab/unit/quiz/create → PUT quiz/quiz-name → PUT quiz/delete/{rag_quiz_id}
+→（followup／for-exam／llm-* 見 routers/grade.py）
+
+**舊路徑**：GET /rag/unit/text、/rag/unit/mp3-file、/rag/unit/youtube-url
+
+GET /rag/tabs 須 course_id、person_id；`local` 未傳時依連線判定。build-rag-zip 見路由 docstring。
 """
 
 import base64

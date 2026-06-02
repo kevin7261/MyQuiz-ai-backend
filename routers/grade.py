@@ -1,21 +1,17 @@
 """
-RAG 評分與出題 API 模組。
-- POST /rag/tab/unit/quiz/followup：更新 Rag_Quiz.follow_up（body `followup` 預設 false；true 標記追問、false 取消）。
-- POST /rag/tab/unit/quiz/llm-generate：依 rag_quiz_id 出題（LLM）；選填 quiz_history_list 避免重複出題；unit_type 1 僅 RAG ZIP 向量檢索；2/3/4 以 transcript 純生成；其餘載 RAG ZIP 向量檢索；出題成功後清空 answer_content、answer_critique。
-- POST /rag/tab/unit/quiz/llm-generate-db：同 llm-generate，唯 body 不包含 quiz_user_prompt_text，一律沿用 Rag_Quiz 列上既有值；出題成功後同樣清空 answer_content、answer_critique。
-- POST /rag/tab/unit/quiz/llm-generate-followup：接續出題；答不好追問弱點，答好則出新題；quiz_history_list 為先前問答（題幹＋作答）列表；出題成功後清空 answer_content、answer_critique（保留 answer_user_prompt_text）。
-- POST /rag/tab/unit/quiz/llm-generate-followup-db：同 llm-generate-followup，唯 body 不包含 quiz_user_prompt_text；出題成功後同樣清空 answer_content、answer_critique。
-- POST /rag/tab/unit/quiz/llm-grade：非同步 RAG+LLM 評分（body 以 rag_id 置頂；quiz_content 可空，自 Rag_Quiz 讀題幹）；answer_user_prompt_text 可空——空字串會寫入並覆蓋該列。回傳 202 + job_id，輪詢 GET /rag/tab/unit/quiz/grade-result/{job_id}。
-- POST /rag/tab/unit/quiz/llm-grade-db：同 llm-grade，唯 body 不包含 answer_user_prompt_text，評分與寫回一律沿用 Rag_Quiz.answer_user_prompt_text（不論請求）。
-- POST /rag/tab/unit/quiz/for-exam：更新 Rag_Quiz.for_exam（body `for_exam` 預設 true；false 取消測驗用）。
-- GET /rag/tab/unit/quiz/grade-result/{job_id}：輪詢評分結果（ready 時含 rag_quiz 整列）。
-- GET /rag/unit/text：依 rag_tab_id、folder_name 自 upload ZIP 回傳文字檔全文 transcript（需 person_id）；或依 rag_unit_id 自 DB 讀取（**不需** person_id），DB 為空時改讀 upload ZIP。
-- GET /rag/unit/mp3-file：自 upload ZIP 依 folder_name 回傳音訊（base64）與同資料夾內文字檔逐字稿；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者。
-- GET /rag/unit/youtube-url：自 upload ZIP 依 folder_name 解析 YouTube URL 與文字檔第二行起之逐字稿；query 須含 person_id，且須為該 rag_tab_id 之 Rag 擁有者。
-- GET /rag/api_key：讀取 Course_Setting key=rag-api-key（依 query course_id）；僅開發者／管理者。
-- PUT /rag/api_key：寫入 Course_Setting key=rag-api-key（依 query course_id）；僅開發者／管理者。
-- GET /rag/person_analysis_user_prompt_text、PUT /rag/person_analysis_user_prompt_text：個人分析 prompt（見 course_settings 路由）。
-- GET /rag/course_analysis_user_prompt_text、PUT /rag/course_analysis_user_prompt_text：課程分析 prompt（見 course_settings 路由）。
+RAG 出題、評分、題目標記與課程設定 API（路徑順序見 utils.openapi_order）。
+
+**題目標記**（在 llm-generate 之前，與 Exam 題目 CRUD 區塊對齊）：
+- POST /rag/tab/unit/quiz/followup：更新 follow_up
+- POST /rag/tab/unit/quiz/for-exam：更新 for_exam
+
+**出題**：POST …/llm-generate(-db) → POST …/llm-generate-followup(-db)
+
+**評分**：POST …/llm-grade(-db) → GET …/grade-result/{job_id}
+
+**單元資源**：GET /rag/unit/text、/rag/unit/mp3-file、/rag/unit/youtube-url
+
+**設定**：GET/PUT /rag/api_key；個人／課程分析 prompt 見 course_settings 路由。
 """
 
 import base64

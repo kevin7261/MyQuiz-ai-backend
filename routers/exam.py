@@ -1,23 +1,19 @@
 """
-Exam API 模組。對應 public.Exam、public.Exam_Quiz。
+Exam API 模組。對應 public.Exam、public.Exam_Quiz。路徑層級與 RAG 對齊（見 utils.openapi_order）。
 
-檔案結構（由上而下）：模型／檢索說明 → LLM Prompt → 型別與作業快取 → Pydantic → 輔助函式與路由。
+檔案結構：模型／檢索說明 → LLM Prompt → 型別與作業快取 → Pydantic → 輔助函式與路由。
 
-- GET /exam/tabs：列出 Exam（deleted=false，person_id 篩選，local 篩選，course_id 篩選），每筆帶 quizzes[]（Exam_Quiz，含 follow_up 鏈）。
-- GET /exam/rag-for-exams：列出 for_exam 測驗用 RAG 資料（Rag_Unit.for_exam=true 或含 Rag_Quiz.for_exam=true）；須傳 course_id；僅含隸屬 Rag.local 與 query local 相符之分頁（未傳 local 時依連線是否本機判定）。
-- POST /exam/tab/create：建立一筆 Exam（寫入 course_id）。
-- PUT /exam/tab/tab-name：更新既有 Exam 的 tab_name。
-- POST /exam/tab/quiz/create：新增空白 Exam_Quiz（不呼叫 LLM）。
-- POST /exam/tab/quiz/create-llm-generate：新增 Exam_Quiz 並 LLM 出題（等同 create 後 llm-generate）。
-- POST /exam/tab/quiz/llm-generate：出題須含 `rag_tab_id`／`rag_unit_id`／`rag_quiz_id`；成功後更新 Exam_Quiz（含 `unit_name`、`quiz_user_prompt_text`、`answer_user_prompt_text`）；JSON 回傳含兩段 prompt 供前端顯示。
-- POST /exam/tab/quiz/create-llm-generate-followup：新增 Exam_Quiz 並接續 LLM 出題（等同 create 後 llm-generate-followup；第一題時自動一般出題）。
-- POST /exam/tab/quiz/llm-generate-followup：接續出題；須請求提供 follow_up_exam_quiz_id（>0）與非空 quiz_history_list，否則視為第一題（回應不含 follow_up）；答不好追問弱點，答好則出新題。
-- POST /exam/tab/quiz/llm-grade：非同步 RAG+LLM 評分；回傳 202 + job_id，輪詢 GET /exam/tab/quiz/grade-result/{job_id}。
-- PUT /exam/tab/delete/{exam_tab_id}：軟刪除 Exam。
-- PUT /exam/tab/quiz/delete/{exam_quiz_id}：軟刪除 Exam_Quiz（deleted=true；須為該列 person_id）。
-- POST /exam/tab/quiz/rate：更新 Exam_Quiz.quiz_rate（僅 -1、0、1）。
-- GET /exam/api_key：讀取 Course_Setting key=exam-api-key（依 query course_id）；僅開發者／管理者。
-- PUT /exam/api_key：寫入 Course_Setting key=exam-api-key（依 query course_id）；僅開發者／管理者。
+**分頁**：GET /exam/tabs → GET /exam/rag-for-exams → POST tab/create → PUT tab/tab-name
+→ PUT tab/delete/{exam_tab_id}
+
+**題目**：POST tab/quiz/create → PUT tab/quiz/delete/{exam_quiz_id}
+→ POST tab/quiz/llm-generate → POST tab/quiz/llm-generate-followup
+→ POST tab/quiz/create-llm-generate → POST tab/quiz/create-llm-generate-followup
+→ POST tab/quiz/llm-grade → GET tab/quiz/grade-result/{job_id} → POST tab/quiz/rate
+
+**設定**：GET/PUT /exam/api_key
+
+Exam_Quiz 僅回傳未軟刪（deleted=true 不回傳）。刪除題目會一併軟刪追問子題鏈。
 """
 
 import json
@@ -47,6 +43,7 @@ from services.quiz_generation import (
 from utils.openapi import openapi_body
 
 from services.exam_queries import (
+    apply_exam_quiz_not_deleted,
     ensure_exam_quiz_rag_id_keys,
     enrich_exam_quizzes_rag_tab_from_units,
     exam_default_row,
@@ -1028,10 +1025,8 @@ def _exam_llm_generate_quiz_impl(
         )
         .eq("exam_quiz_id", exam_quiz_id)
         .eq("course_id", course_id)
-        .eq("deleted", False)
-        .limit(1)
-        .execute()
     )
+    qsel = apply_exam_quiz_not_deleted(qsel).limit(1).execute()
     if not qsel.data or len(qsel.data) == 0:
         raise HTTPException(status_code=404, detail=f"找不到 exam_quiz_id={exam_quiz_id} 的 Exam_Quiz，或已刪除")
     qrow = qsel.data[0]
@@ -1580,10 +1575,8 @@ async def exam_grade_submission(
         )
         .eq("exam_quiz_id", body.exam_quiz_id)
         .eq("course_id", course_id)
-        .eq("deleted", False)
-        .limit(1)
-        .execute()
     )
+    qsel = apply_exam_quiz_not_deleted(qsel).limit(1).execute()
     if not qsel.data or len(qsel.data) == 0:
         return JSONResponse(
             status_code=404,
@@ -1877,14 +1870,12 @@ async def get_exam_grade_result(job_id: str, _person_id: PersonId, course_id: Co
                     eid_int = int(eid)
                     if eid_int > 0:
                         supabase = get_supabase()
-                        q = (
+                        q = apply_exam_quiz_not_deleted(
                             supabase.table("Exam_Quiz")
                             .select("*")
                             .eq("exam_quiz_id", eid_int)
                             .eq("course_id", course_id)
-                            .limit(1)
-                            .execute()
-                        )
+                        ).limit(1).execute()
                         if q.data:
                             out["exam_quiz"] = to_json_safe(q.data[0])
                 except (TypeError, ValueError):
@@ -1906,15 +1897,12 @@ def update_exam_quiz_rate(
     exam_quiz_id = int(body.exam_quiz_id)
     quiz_rate = int(body.quiz_rate)
     supabase = get_supabase()
-    r = (
+    r = apply_exam_quiz_not_deleted(
         supabase.table("Exam_Quiz")
         .select("exam_quiz_id, person_id, course_id")
         .eq("exam_quiz_id", exam_quiz_id)
         .eq("course_id", course_id)
-        .eq("deleted", False)
-        .limit(1)
-        .execute()
-    )
+    ).limit(1).execute()
     if not r.data or len(r.data) == 0:
         raise HTTPException(status_code=404, detail=f"找不到 exam_quiz_id={exam_quiz_id} 的 Exam_Quiz，或已刪除")
     qpid = (r.data[0].get("person_id") or "").strip()
@@ -1965,11 +1953,10 @@ def delete_exam_quiz(
                 "exam_quiz_id, exam_tab_id, person_id, course_id",
                 with_course_filter,
             )
-            q = (
+            q = apply_exam_quiz_not_deleted(
                 supabase.table("Exam_Quiz")
                 .select(cols)
                 .eq("exam_quiz_id", exam_quiz_id)
-                .eq("deleted", False)
             )
             if with_course_filter and course_id is not None:
                 q = q.eq("course_id", course_id)
@@ -1983,9 +1970,32 @@ def delete_exam_quiz(
         if pid != caller_person_id:
             raise HTTPException(status_code=403, detail="無權刪除該 Exam_Quiz")
         ts = now_taipei_iso()
-        supabase.table("Exam_Quiz").update({"deleted": True, "updated_at": ts}).eq(
-            "exam_quiz_id", exam_quiz_id
-        ).eq("deleted", False).execute()
+        ids_to_delete: set[int] = {exam_quiz_id}
+        while True:
+            child_resp = apply_exam_quiz_not_deleted(
+                supabase.table("Exam_Quiz")
+                .select("exam_quiz_id")
+                .in_("follow_up_exam_quiz_id", list(ids_to_delete))
+            ).execute()
+            new_ids: set[int] = set()
+            for child_row in child_resp.data or []:
+                cid = child_row.get("exam_quiz_id")
+                if cid is None:
+                    continue
+                try:
+                    cid_int = int(cid)
+                except (TypeError, ValueError):
+                    continue
+                if cid_int not in ids_to_delete:
+                    new_ids.add(cid_int)
+            if not new_ids:
+                break
+            ids_to_delete |= new_ids
+        apply_exam_quiz_not_deleted(
+            supabase.table("Exam_Quiz")
+            .update({"deleted": True, "updated_at": ts})
+            .in_("exam_quiz_id", list(ids_to_delete))
+        ).execute()
         return {
             "message": "已將 Exam_Quiz 標記為刪除",
             "exam_quiz_id": exam_quiz_id,
