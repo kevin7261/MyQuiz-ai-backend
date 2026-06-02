@@ -184,6 +184,13 @@ def _select_exam_quiz_rows(
     return [exam_quiz_list_row(r) for r in rows]
 
 
+def _strip_grade_rate_from_columns(columns: str) -> str:
+    """移除 select 欄位中的 grade_rate（舊版 Exam_Quiz 無此欄時 fallback）。"""
+    return ", ".join(
+        p.strip() for p in columns.split(",") if p.strip() and p.strip() != "grade_rate"
+    )
+
+
 def _select_exam_quiz_rows_with_follow_up_fallback(**kwargs: Any) -> list[dict]:
     for cols in (
         "*",
@@ -201,6 +208,21 @@ def _select_exam_quiz_rows_with_follow_up_fallback(**kwargs: Any) -> list[dict]:
             return _select_exam_quiz_rows(columns=cols, **kwargs)
         except APIError as e:
             msg = (e.message or "").lower()
+            if e.code == "42703" and "grade_rate" in msg:
+                stripped = _strip_grade_rate_from_columns(cols)
+                if stripped != cols:
+                    try:
+                        return _select_exam_quiz_rows(columns=stripped, **kwargs)
+                    except APIError as e2:
+                        e2_msg = (e2.message or "").lower()
+                        if e2.code == "42703" and (
+                            "quiz_history_list" in e2_msg
+                            or "quiz_history_list_prompt_text" in e2_msg
+                            or "follow_up" in e2_msg
+                            or "follow_up_exam_quiz_id" in e2_msg
+                        ):
+                            continue
+                        raise
             if e.code == "42703" and (
                 "quiz_history_list" in msg
                 or "quiz_history_list_prompt_text" in msg

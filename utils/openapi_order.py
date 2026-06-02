@@ -66,7 +66,8 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/exam/tab/quiz/llm-grade",
     "/exam/tab/quiz/grade",
     "/exam/tab/quiz/grade-result/{job_id}",
-    "/exam/tab/quiz/rate",
+    "/exam/tab/quiz/quiz-rate",
+    "/exam/tab/quiz/grade-rate",
     # --- Exam：課程設定 ---
     "/exam/api_key",
 )
