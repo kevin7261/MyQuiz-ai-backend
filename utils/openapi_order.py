@@ -77,6 +77,7 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/profile/users",
     "/profile/users/batch",
     "/profile/users/delete",
+    "/profile/password",
     "/profile/login",
     "/profile",
 )

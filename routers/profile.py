@@ -5,6 +5,7 @@
 - POST /profile/users：新增單一使用者（person_id、name、course_id、user_type；college_id 自 Course 帶入）
 - POST /profile/users/batch：批次新增使用者（每筆僅 person_id、name；user_type 固定為 3；password 預設 0000）
 - PUT /profile/users/delete：軟刪除（body.person_id 指定對象，將 deleted 設為 true）
+- PATCH /profile/password：修改指定使用者密碼（body 僅 person_id、password）
 - POST /profile/login：以 person_id + password 登入（成功時另回傳該帳號之 User_Course_Relation 課程列表）
 - PATCH /profile：更新個人資料（name、user_type）
 """
@@ -280,6 +281,12 @@ class DeleteUserRequest(BaseModel):
     person_id: str
 
 
+class UpdatePasswordRequest(BaseModel):
+    """PATCH /profile/password：要修改密碼的使用者 person_id 與新 password。"""
+    person_id: str
+    password: str
+
+
 def _courses_for_users(
     supabase,
     user_ids: list[int],
@@ -438,6 +445,44 @@ def _soft_delete_user(supabase, target_person_id: str) -> LoginResponse:
     return LoginResponse(user=_user_list_item(row_out, college_map, courses), courses=courses)
 
 
+def _update_user_password(supabase, target_person_id: str, new_password: str) -> LoginResponse:
+    target = (target_person_id or "").strip()
+    pwd = (new_password or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="person_id 不可為空")
+    if not pwd:
+        raise HTTPException(status_code=400, detail="password 不可為空")
+    resp = (
+        supabase.table(USER_TABLE)
+        .select(USER_TABLE_COLUMNS)
+        .eq("person_id", target)
+        .or_(ACTIVE_DELETED_FILTER)
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="找不到該使用者或已刪除")
+    row = resp.data[0]
+    user_id = row.get("user_id")
+    pid = row.get("person_id")
+    ts = now_taipei_iso()
+    supabase.table(USER_TABLE).update({"password": pwd, "updated_at": ts}).eq("user_id", user_id).eq(
+        "person_id", pid
+    ).execute()
+    resp2 = (
+        supabase.table(USER_TABLE)
+        .select(USER_TABLE_COLUMNS)
+        .eq("user_id", user_id)
+        .eq("person_id", pid)
+        .or_(ACTIVE_DELETED_FILTER)
+        .execute()
+    )
+    out_row = resp2.data[0] if resp2.data else {**row, "updated_at": ts}
+    college_map = _fetch_colleges_by_ids(supabase, [_normalize_college_id(out_row.get("college_id"))])
+    courses = _courses_for_users(supabase, [int(user_id)]).get(int(user_id), []) if user_id is not None else []
+    return LoginResponse(user=_user_list_item(out_row, college_map, courses), courses=courses)
+
+
 @router.put("/users/delete", response_model=LoginResponse, summary="Soft delete user", operation_id="profile_users_delete")
 def soft_delete_user(
     body: openapi_body(DeleteUserRequest, {"person_id": "string"}),
@@ -453,6 +498,29 @@ def soft_delete_user(
     try:
         supabase = get_supabase()
         return _soft_delete_user(supabase, target)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch(
+    "/password",
+    response_model=LoginResponse,
+    summary="Update user password",
+    operation_id="profile_password",
+)
+def update_user_password(
+    body: openapi_body(UpdatePasswordRequest, {"person_id": "string", "password": "string"}),
+    _person_id: PersonId,
+):
+    """
+    PATCH /profile/password。修改指定 person_id 之密碼；body 僅傳 person_id、password（新密碼）。
+    需帶 query person_id（呼叫者身分）。
+    """
+    try:
+        supabase = get_supabase()
+        return _update_user_password(supabase, body.person_id, body.password)
     except HTTPException:
         raise
     except Exception as e:
