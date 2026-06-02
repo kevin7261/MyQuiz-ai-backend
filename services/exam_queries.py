@@ -14,9 +14,12 @@ from utils.db_schema import (
     EXAM_QUIZ_SELECT_COLUMNS,
     EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP,
     EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID,
+    EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID_NO_QUIZ_HISTORY,
     EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID_NO_QUIZ_HISTORY_LIST,
     EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_NO_QUIZ_HISTORY_LIST,
+    EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY,
     EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY_LIST,
+    EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY_LIST_PROMPT_TEXT,
     RAG_SELECT_COLUMNS,
     RAG_SELECT_COLUMNS_LEGACY,
     RAG_SELECT_COLUMNS_LEGACY_NO_FILE_METADATA,
@@ -186,8 +189,11 @@ def _select_exam_quiz_rows_with_follow_up_fallback(**kwargs: Any) -> list[dict]:
         "*",
         EXAM_QUIZ_SELECT_COLUMNS,
         EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY_LIST,
+        EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY_LIST_PROMPT_TEXT,
+        EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY,
         EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID,
         EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID_NO_QUIZ_HISTORY_LIST,
+        EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID_NO_QUIZ_HISTORY,
         EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP,
         EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_NO_QUIZ_HISTORY_LIST,
     ):
@@ -197,6 +203,7 @@ def _select_exam_quiz_rows_with_follow_up_fallback(**kwargs: Any) -> list[dict]:
             msg = (e.message or "").lower()
             if e.code == "42703" and (
                 "quiz_history_list" in msg
+                or "quiz_history_list_prompt_text" in msg
                 or "follow_up" in msg
                 or "follow_up_exam_quiz_id" in msg
             ):

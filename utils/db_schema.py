@@ -321,8 +321,13 @@ def resolve_quiz_history_for_generate(
 
 
 def apply_parsed_quiz_history_list(quiz: dict[str, Any]) -> None:
-    """就地將 quiz 列的 quiz_history_list 轉為物件陣列（GET /tabs 等回傳用）。"""
+    """就地將 quiz 列的 quiz_history_list／quiz_history_list_prompt_text 轉為物件陣列（GET /tabs 等回傳用）。"""
     quiz["quiz_history_list"] = parse_rag_quiz_history_list(quiz.get("quiz_history_list"))
+    if "quiz_history_list_prompt_text" in quiz:
+        quiz["quiz_history_list_prompt_text"] = parse_quiz_history_prompt_text(
+            quiz.get("quiz_history_list_prompt_text"),
+            followup=bool(quiz.get("follow_up")),
+        )
 
 
 def apply_parsed_quiz_history_list_tree(quiz: dict[str, Any]) -> None:
@@ -381,9 +386,21 @@ EXAM_QUIZ_SELECT_COLUMNS = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "follow_up, follow_up_exam_quiz_id, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, "
     "quiz_hint, quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, "
-    "answer_critique, quiz_history_list, updated_at, created_at"
+    "answer_critique, quiz_history_list, quiz_history_list_prompt_text, updated_at, created_at"
 )
 EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY_LIST = (
+    "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
+    "follow_up, follow_up_exam_quiz_id, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, "
+    "quiz_hint, quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, "
+    "answer_critique, quiz_history_list_prompt_text, updated_at, created_at"
+)
+EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY_LIST_PROMPT_TEXT = (
+    "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
+    "follow_up, follow_up_exam_quiz_id, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, "
+    "quiz_hint, quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, "
+    "answer_critique, quiz_history_list, updated_at, created_at"
+)
+EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "follow_up, follow_up_exam_quiz_id, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, "
     "quiz_hint, quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, "
@@ -393,9 +410,15 @@ EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "follow_up, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, quiz_hint, "
     "quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, answer_critique, "
-    "quiz_history_list, updated_at, created_at"
+    "quiz_history_list, quiz_history_list_prompt_text, updated_at, created_at"
 )
 EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID_NO_QUIZ_HISTORY_LIST = (
+    "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
+    "follow_up, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, quiz_hint, "
+    "quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, answer_critique, "
+    "quiz_history_list_prompt_text, updated_at, created_at"
+)
+EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID_NO_QUIZ_HISTORY = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "follow_up, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, quiz_hint, "
     "quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, answer_critique, "
@@ -405,7 +428,7 @@ EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "unit_name, quiz_name, quiz_user_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, "
     "quiz_rate, answer_user_prompt_text, answer_content, answer_critique, quiz_history_list, "
-    "updated_at, created_at"
+    "quiz_history_list_prompt_text, updated_at, created_at"
 )
 EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_NO_QUIZ_HISTORY_LIST = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
@@ -442,6 +465,10 @@ def exam_quiz_list_row(row: dict[str, Any]) -> dict[str, Any]:
         "quiz_answer": ans_s,
         "answer_critique": row.get("answer_critique"),
         "quiz_history_list": parse_rag_quiz_history_list(row.get("quiz_history_list")),
+        "quiz_history_list_prompt_text": parse_quiz_history_prompt_text(
+            row.get("quiz_history_list_prompt_text"),
+            followup=bool(row.get("follow_up")),
+        ),
         "updated_at": row.get("updated_at"),
         "created_at": row.get("created_at"),
     }

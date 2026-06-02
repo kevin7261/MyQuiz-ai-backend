@@ -35,6 +35,7 @@ from dependencies.person_id import PersonId
 from dependencies.course_id import CourseId
 
 from services.quiz_generation import (
+    format_quiz_history_prompt_for_llm,
     generate_quiz,
     generate_quiz_followup,
     generate_quiz_followup_transcript_only,
@@ -81,9 +82,16 @@ from utils.zip_storage import generate_page_id, get_zip_path
 from utils.db_schema import (
     QUIZ_HISTORY_OPENAPI_ITEM,
     QUIZ_HISTORY_OPENAPI_LIST,
+    QUIZ_HISTORY_PROMPT_FOLLOWUP_OPENAPI_ITEM,
+    QUIZ_HISTORY_PROMPT_STEM_OPENAPI_ITEM,
+    QUIZ_HISTORY_PROMPT_STEM_OPENAPI_LIST,
+    QUIZ_HISTORY_PROMPT_FOLLOWUP_OPENAPI_LIST,
+    coerce_quiz_history_prompt_text_request,
     coerce_quiz_history_request,
+    parse_quiz_history_prompt_text,
     parse_rag_quiz_history_list,
     resolve_quiz_history_for_generate,
+    serialize_quiz_history_prompt_text,
     serialize_rag_quiz_history_list,
 )
 
@@ -192,6 +200,60 @@ def _coerce_exam_quiz_history_list_validator(v: Any) -> Any:
     return coerce_quiz_history_request(v)
 
 
+def _coerce_exam_quiz_history_prompt_stem_validator(v: Any) -> Any:
+    """正規化 API 傳入的 quiz_history_list_prompt_text（一般出題）。"""
+    return coerce_quiz_history_prompt_text_request(v, followup=False)
+
+
+def _coerce_exam_quiz_history_prompt_followup_validator(v: Any) -> Any:
+    """正規化 API 傳入的 quiz_history_list_prompt_text（追問出題）。"""
+    return coerce_quiz_history_prompt_text_request(v, followup=True)
+
+
+_EXAM_QUIZ_HISTORY_LIST_FIELD = Field(
+    default_factory=list,
+    description="先前問答（八欄位 JSON 物件陣列）；僅寫入 DB",
+)
+_EXAM_QUIZ_HISTORY_LIST_PROMPT_STEM_FIELD = Field(
+    default_factory=list,
+    description="併入 LLM 出題 prompt 的先前題幹（JSON 物件陣列，每筆僅 quiz_content）；寫入 DB",
+)
+_EXAM_QUIZ_HISTORY_LIST_PROMPT_FOLLOWUP_FIELD = Field(
+    default_factory=list,
+    description=(
+        "併入 LLM 追問 prompt 的先前問答（JSON 物件陣列：quiz_content、"
+        "quiz_answer_reference、answer_content、answer_critique）；寫入 DB"
+    ),
+)
+
+
+class ExamQuizHistoryPromptStem(BaseModel):
+    """quiz_history_list_prompt_text 單筆（一般出題）。"""
+
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [QUIZ_HISTORY_PROMPT_STEM_OPENAPI_ITEM]},
+    )
+
+    quiz_content: str = Field(..., description="先前題目題幹")
+
+
+class ExamQuizHistoryPromptFollowup(BaseModel):
+    """quiz_history_list_prompt_text 單筆（追問出題）。"""
+
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [QUIZ_HISTORY_PROMPT_FOLLOWUP_OPENAPI_ITEM]},
+    )
+
+    quiz_content: str = Field(..., description="先前題目題幹")
+    quiz_answer_reference: str = Field("", description="參考答案全文")
+    answer_content: str = Field(
+        "",
+        description="學生先前作答",
+        validation_alias=AliasChoices("answer_content", "quiz_answer", "answer"),
+    )
+    answer_critique: str = Field("", description="批改評語")
+
+
 class ExamCreateLlmGenerateQuizRequest(BaseModel):
     """POST /exam/tab/quiz/create-llm-generate；先 create 再 llm-generate，不需傳 exam_quiz_id。"""
 
@@ -211,15 +273,20 @@ class ExamCreateLlmGenerateQuizRequest(BaseModel):
         gt=0,
         description="Rag_Quiz 主鍵（>0）；出題／作答模板 prompt 由此列讀取並於成功後寫入 Exam_Quiz",
     )
-    quiz_history_list: list[ExamQuizHistoryPair] = Field(
-        default_factory=list,
-        description="先前問答（八欄位物件陣列）；僅使用 API 傳入值",
+    quiz_history_list: list[ExamQuizHistoryPair] = _EXAM_QUIZ_HISTORY_LIST_FIELD
+    quiz_history_list_prompt_text: list[ExamQuizHistoryPromptStem] = (
+        _EXAM_QUIZ_HISTORY_LIST_PROMPT_STEM_FIELD
     )
 
     @field_validator("quiz_history_list", mode="before")
     @classmethod
     def _coerce_quiz_history_list(cls, v: Any) -> Any:
         return _coerce_exam_quiz_history_list_validator(v)
+
+    @field_validator("quiz_history_list_prompt_text", mode="before")
+    @classmethod
+    def _coerce_quiz_history_list_prompt_text(cls, v: Any) -> Any:
+        return _coerce_exam_quiz_history_prompt_stem_validator(v)
 
 
 class ExamLlmGenerateQuizRequest(BaseModel):
@@ -241,15 +308,20 @@ class ExamLlmGenerateQuizRequest(BaseModel):
         gt=0,
         description="Rag_Quiz 主鍵（>0）；出題／作答模板 prompt 由此列讀取並於成功後寫入 Exam_Quiz。列鎖鍵規則同 rag_unit_id",
     )
-    quiz_history_list: list[ExamQuizHistoryPair] = Field(
-        default_factory=list,
-        description="先前問答（八欄位物件陣列）；僅使用 API 傳入值",
+    quiz_history_list: list[ExamQuizHistoryPair] = _EXAM_QUIZ_HISTORY_LIST_FIELD
+    quiz_history_list_prompt_text: list[ExamQuizHistoryPromptStem] = (
+        _EXAM_QUIZ_HISTORY_LIST_PROMPT_STEM_FIELD
     )
 
     @field_validator("quiz_history_list", mode="before")
     @classmethod
     def _coerce_quiz_history_list(cls, v: Any) -> Any:
         return _coerce_exam_quiz_history_list_validator(v)
+
+    @field_validator("quiz_history_list_prompt_text", mode="before")
+    @classmethod
+    def _coerce_quiz_history_list_prompt_text(cls, v: Any) -> Any:
+        return _coerce_exam_quiz_history_prompt_stem_validator(v)
 
 
 class ExamCreateLlmGenerateQuizFollowupRequest(BaseModel):
@@ -281,14 +353,30 @@ class ExamCreateLlmGenerateQuizFollowupRequest(BaseModel):
     )
     quiz_history_list: list[ExamQuizHistoryPair] = Field(
         default_factory=list,
-        description="先前問答（八欄位物件陣列）；僅使用 API 傳入值",
+        description="先前問答（八欄位 JSON 物件陣列）；僅寫入 DB",
         validation_alias=AliasChoices("quiz_history_list", "quizHistoryList"),
+    )
+    quiz_history_list_prompt_text: list[ExamQuizHistoryPromptFollowup] = Field(
+        default_factory=list,
+        description=(
+            "併入 LLM 追問 prompt 的先前問答（JSON 物件陣列：quiz_content、"
+            "quiz_answer_reference、answer_content、answer_critique）；寫入 DB"
+        ),
+        validation_alias=AliasChoices(
+            "quiz_history_list_prompt_text",
+            "quizHistoryListPromptText",
+        ),
     )
 
     @field_validator("quiz_history_list", mode="before")
     @classmethod
     def _coerce_quiz_history_list(cls, v: Any) -> Any:
         return _coerce_exam_quiz_history_list_validator(v)
+
+    @field_validator("quiz_history_list_prompt_text", mode="before")
+    @classmethod
+    def _coerce_quiz_history_list_prompt_text(cls, v: Any) -> Any:
+        return _coerce_exam_quiz_history_prompt_followup_validator(v)
 
 
 class ExamLlmGenerateQuizFollowupRequest(BaseModel):
@@ -318,14 +406,30 @@ class ExamLlmGenerateQuizFollowupRequest(BaseModel):
     )
     quiz_history_list: list[ExamQuizHistoryPair] = Field(
         default_factory=list,
-        description="先前問答（八欄位物件陣列）；僅使用 API 傳入值",
+        description="先前問答（八欄位 JSON 物件陣列）；僅寫入 DB",
         validation_alias=AliasChoices("quiz_history_list", "quizHistoryList"),
+    )
+    quiz_history_list_prompt_text: list[ExamQuizHistoryPromptFollowup] = Field(
+        default_factory=list,
+        description=(
+            "併入 LLM 追問 prompt 的先前問答（JSON 物件陣列：quiz_content、"
+            "quiz_answer_reference、answer_content、answer_critique）；寫入 DB"
+        ),
+        validation_alias=AliasChoices(
+            "quiz_history_list_prompt_text",
+            "quizHistoryListPromptText",
+        ),
     )
 
     @field_validator("quiz_history_list", mode="before")
     @classmethod
     def _coerce_quiz_history_list(cls, v: Any) -> Any:
         return _coerce_exam_quiz_history_list_validator(v)
+
+    @field_validator("quiz_history_list_prompt_text", mode="before")
+    @classmethod
+    def _coerce_quiz_history_list_prompt_text(cls, v: Any) -> Any:
+        return _coerce_exam_quiz_history_prompt_followup_validator(v)
 
 
 class ExamQuizRateRequest(BaseModel):
@@ -786,11 +890,15 @@ Body：`exam_quiz_id`、`rag_page_id`、`rag_unit_id`、`rag_quiz_id` 皆必填�
 `quiz_user_prompt_text`／`answer_user_prompt_text` 僅自 Rag_Quiz（請求中的 `rag_quiz_id`）讀取，不另由 body 帶入文字；出題成功後寫入 Exam_Quiz 以記錄當下模板。
 unit_type 1（rag）時僅依 RAG ZIP／向量檢索出題，不注入 transcript。
 unit_type 2／3／4 時不載入 RAG ZIP，改以 transcript 純 LLM 出題。
-選填 `quiz_history_list`（八欄位物件陣列）：僅使用 API 傳入值；未傳視為空陣列。
+選填 `quiz_history_list`（八欄位 JSON 物件陣列）：僅寫入 DB；未傳視為空陣列。
+選填 `quiz_history_list_prompt_text`（JSON 物件陣列，每筆僅 quiz_content）：併入 LLM 出題 prompt；寫入 DB。
 出題成功後更新該筆 Exam_Quiz（`rag_page_id`、`unit_name`（與 RAG 單元顯示名一致，供 GET /exam/tabs 分群）、`quiz_name`、quiz_content／quiz_hint／quiz_answer_reference、rag_unit_id、rag_quiz_id；自該 `rag_quiz_id` 之 Rag_Quiz 寫入 `quiz_user_prompt_text`、`answer_user_prompt_text` 以記錄當下模板；清空作答欄位）。
 
 **回應 JSON**（除題目欄位外）必含：`quiz_user_prompt_text`、`answer_user_prompt_text`（與寫入 Exam_Quiz 之快照相同，供前端顯示出題／作答模板）；`unit_name` 與資料庫更新後一致。
 """
+
+_EXAM_QUIZ_HISTORY_PROMPT_STEM_EXAMPLE = list(QUIZ_HISTORY_PROMPT_STEM_OPENAPI_LIST)
+_EXAM_QUIZ_HISTORY_PROMPT_FOLLOWUP_EXAMPLE = list(QUIZ_HISTORY_PROMPT_FOLLOWUP_OPENAPI_LIST)
 
 _EXAM_LLM_GENERATE_OPENAPI_EXAMPLES = {
     "exam_quiz_id": 1,
@@ -798,6 +906,7 @@ _EXAM_LLM_GENERATE_OPENAPI_EXAMPLES = {
     "rag_unit_id": 1,
     "rag_quiz_id": 1,
     "quiz_history_list": list(QUIZ_HISTORY_OPENAPI_LIST),
+    "quiz_history_list_prompt_text": _EXAM_QUIZ_HISTORY_PROMPT_STEM_EXAMPLE,
 }
 
 _EXAM_CREATE_LLM_GENERATE_OPENAPI_EXAMPLES = {
@@ -806,6 +915,7 @@ _EXAM_CREATE_LLM_GENERATE_OPENAPI_EXAMPLES = {
     "rag_unit_id": 1,
     "rag_quiz_id": 1,
     "quiz_history_list": list(QUIZ_HISTORY_OPENAPI_LIST),
+    "quiz_history_list_prompt_text": _EXAM_QUIZ_HISTORY_PROMPT_STEM_EXAMPLE,
 }
 
 _EXAM_LLM_GENERATE_FOLLOWUP_OPENAPI_EXAMPLES = {
@@ -817,6 +927,7 @@ _EXAM_LLM_GENERATE_FOLLOWUP_OPENAPI_EXAMPLES = {
     "quiz_history_list": [
         {**QUIZ_HISTORY_OPENAPI_ITEM, "answer_critique": "批改評語（指出答不好之處）"},
     ],
+    "quiz_history_list_prompt_text": _EXAM_QUIZ_HISTORY_PROMPT_FOLLOWUP_EXAMPLE,
 }
 
 
@@ -829,6 +940,7 @@ _EXAM_CREATE_LLM_GENERATE_FOLLOWUP_OPENAPI_EXAMPLES = {
     "quiz_history_list": [
         {**QUIZ_HISTORY_OPENAPI_ITEM, "answer_critique": "批改評語（指出答不好之處）"},
     ],
+    "quiz_history_list_prompt_text": _EXAM_QUIZ_HISTORY_PROMPT_FOLLOWUP_EXAMPLE,
 }
 
 
@@ -880,31 +992,48 @@ def _create_exam_quiz_record(
     return to_json_safe(row)
 
 
-def _prewrite_exam_quiz_history_list(
-    supabase: Any, *, exam_quiz_id: int, qa_dicts: list[dict[str, Any]]
+def _prewrite_exam_quiz_history_fields(
+    supabase: Any,
+    *,
+    exam_quiz_id: int,
+    qa_dicts: list[dict[str, Any]],
+    quiz_history_list_prompt_text: str,
 ) -> None:
-    """出題前寫入 Exam_Quiz.quiz_history_list。"""
-    payload = {
+    """出題前寫入 Exam_Quiz.quiz_history_list 與 quiz_history_list_prompt_text（皆為 JSON 字串）。"""
+    payload: dict[str, Any] = {
         "quiz_history_list": serialize_rag_quiz_history_list(qa_dicts),
+        "quiz_history_list_prompt_text": quiz_history_list_prompt_text or "[]",
         "updated_at": now_taipei_iso(),
     }
     try:
-        for _ in range(2):
+        for _ in range(4):
             try:
                 supabase.table("Exam_Quiz").update(payload).eq("exam_quiz_id", exam_quiz_id).execute()
                 return
             except Exception as upd_err:
-                if _rag_quiz_missing_column_error(upd_err, "quiz_history_list"):
-                    return
+                if _rag_quiz_missing_column_error(upd_err, "quiz_history_list") and "quiz_history_list" in payload:
+                    payload.pop("quiz_history_list")
+                    continue
+                if _rag_quiz_missing_column_error(upd_err, "quiz_history_list_prompt_text") and "quiz_history_list_prompt_text" in payload:
+                    payload.pop("quiz_history_list_prompt_text")
+                    continue
                 raise
     except Exception as e:
         _logger.warning(
-            "Exam_Quiz 預寫 quiz_history_list 略過 exam_quiz_id=%s: %s", exam_quiz_id, e
+            "Exam_Quiz 預寫 quiz_history 欄位略過 exam_quiz_id=%s: %s", exam_quiz_id, e
         )
 
 
 def _exam_quiz_history_qa_dicts(pairs: list[ExamQuizHistoryPair]) -> list[dict[str, Any]]:
     return parse_rag_quiz_history_list([p.model_dump() for p in pairs])
+
+
+def _exam_quiz_history_prompt_dicts(
+    pairs: list[ExamQuizHistoryPromptStem] | list[ExamQuizHistoryPromptFollowup],
+    *,
+    followup: bool,
+) -> list[dict[str, Any]]:
+    return parse_quiz_history_prompt_text([p.model_dump() for p in pairs], followup=followup)
 
 
 def _resolve_exam_followup_mode(
@@ -913,33 +1042,27 @@ def _resolve_exam_followup_mode(
     follow_up_exam_quiz_id: int,
     exam_quiz_id: int,
     quiz_history: list[ExamQuizHistoryPair] | None,
-) -> tuple[bool, bool, int, list[str], list[dict[str, Any]]]:
+    prompt_dicts: list[dict[str, Any]] | None = None,
+) -> tuple[bool, bool, int, list[dict[str, Any]]]:
     """
     follow_up_exam_quiz_id 以請求傳入為準。
-    回傳 (use_followup_llm, mark_follow_up, follow_up_exam_quiz_id, history_stems, qa_dicts)。
+    回傳 (use_followup_llm, mark_follow_up, follow_up_exam_quiz_id, qa_dicts)。
 
     mark_follow_up：followup 端點且 follow_up_exam_quiz_id>0 → 寫入 follow_up=true。
-    use_followup_llm：mark_follow_up 且 quiz_history_list 非空 → 使用追問 LLM prompt。
+    use_followup_llm：mark_follow_up 且 quiz_history_list_prompt_text 非空 → 使用追問 LLM prompt。
     """
     request_qa = _exam_quiz_history_qa_dicts(quiz_history or [])
 
-    def _history_stems(qa: list[dict[str, Any]]) -> list[str]:
-        return [
-            (d.get("quiz_content") or "").strip()
-            for d in qa
-            if (d.get("quiz_content") or "").strip()
-        ]
-
     if not followup_requested:
-        return False, False, 0, _history_stems(request_qa), request_qa
+        return False, False, 0, request_qa
 
     resolved_id = int(follow_up_exam_quiz_id or 0)
     if resolved_id <= 0 or resolved_id == exam_quiz_id:
-        return False, False, 0, _history_stems(request_qa), request_qa
+        return False, False, 0, request_qa
 
     mark_follow_up = True
-    use_followup_llm = bool(request_qa)
-    return use_followup_llm, mark_follow_up, resolved_id, _history_stems(request_qa), request_qa
+    use_followup_llm = bool(prompt_dicts)
+    return use_followup_llm, mark_follow_up, resolved_id, request_qa
 
 
 def _select_rag_unit_for_exam_prompt(
@@ -1063,6 +1186,7 @@ def _exam_llm_generate_quiz_impl(
     course_id: int,
     followup: bool,
     quiz_history: list[ExamQuizHistoryPair] | None = None,
+    quiz_history_list_prompt_items: list[dict[str, Any]] | None = None,
     follow_up_exam_quiz_id: int = 0,
     always_mark_follow_up: bool = False,
 ):
@@ -1099,17 +1223,26 @@ def _exam_llm_generate_quiz_impl(
         raise HTTPException(status_code=403, detail="無權對該 Exam_Quiz 出題")
 
     request_history = _exam_quiz_history_qa_dicts(quiz_history or [])
-    qa_dicts, stems_for_llm = resolve_quiz_history_for_generate(
+    qa_dicts, _ = resolve_quiz_history_for_generate(
         request_history=request_history,
     )
-    _prewrite_exam_quiz_history_list(supabase, exam_quiz_id=exam_quiz_id, qa_dicts=qa_dicts)
+    prompt_dicts = list(quiz_history_list_prompt_items or [])
+    prompt_db_str = serialize_quiz_history_prompt_text(prompt_dicts, followup=followup)
+    prompt_for_llm = format_quiz_history_prompt_for_llm(prompt_dicts, followup=followup)
+    _prewrite_exam_quiz_history_fields(
+        supabase,
+        exam_quiz_id=exam_quiz_id,
+        qa_dicts=qa_dicts,
+        quiz_history_list_prompt_text=prompt_db_str,
+    )
 
-    use_followup_llm, mark_follow_up, resolved_follow_up_id, _, _ = (
+    use_followup_llm, mark_follow_up, resolved_follow_up_id, _ = (
         _resolve_exam_followup_mode(
             followup_requested=followup,
             follow_up_exam_quiz_id=follow_up_exam_quiz_id,
             exam_quiz_id=exam_quiz_id,
             quiz_history=quiz_history,
+            prompt_dicts=prompt_dicts,
         )
     )
     if always_mark_follow_up:
@@ -1119,7 +1252,9 @@ def _exam_llm_generate_quiz_impl(
             resolved_follow_up_id = 0
 
     if followup and mark_follow_up:
-        use_followup_llm = bool(qa_dicts)
+        use_followup_llm = bool(prompt_dicts)
+        if use_followup_llm:
+            prompt_for_llm = format_quiz_history_prompt_for_llm(prompt_dicts, followup=True)
 
     row_ruid = 0
     rag_unit_val = qrow.get("rag_unit_id")
@@ -1330,14 +1465,14 @@ def _exam_llm_generate_quiz_impl(
                     api_key=api_key,
                     transcript=transcript_text,
                     quiz_user_prompt_text=api_instr,
-                    quiz_history_list=qa_dicts,
+                    quiz_history_list_prompt_text=prompt_for_llm,
                 )
             else:
                 result = generate_quiz_transcript_only(
                     api_key=api_key,
                     transcript=transcript_text,
                     quiz_user_prompt_text=api_instr,
-                    quiz_history_list=stems_for_llm,
+                    quiz_history_list_prompt_text=prompt_for_llm,
                 )
         else:
             path = get_zip_path(rag_zip_page_id)
@@ -1348,14 +1483,14 @@ def _exam_llm_generate_quiz_impl(
                     path,
                     api_key=api_key,
                     quiz_user_prompt_text=api_instr,
-                    quiz_history_list=qa_dicts,
+                    quiz_history_list_prompt_text=prompt_for_llm,
                 )
             else:
                 result = generate_quiz(
                     path,
                     api_key=api_key,
                     quiz_user_prompt_text=api_instr,
-                    quiz_history_list=stems_for_llm,
+                    quiz_history_list_prompt_text=prompt_for_llm,
                 )
         result["transcript"] = "" if unit_type_val == 1 else transcript_text
         result["rag_output"] = {"rag_page_id": stem, "unit_name": stem, "filename": f"{stem}.zip"}
@@ -1396,6 +1531,7 @@ def _exam_llm_generate_quiz_impl(
             "answer_content": None,
             "answer_critique": None,
             "quiz_history_list": serialize_rag_quiz_history_list(qa_dicts),
+            "quiz_history_list_prompt_text": prompt_db_str,
             "updated_at": qts,
         }
         if mark_follow_up:
@@ -1408,6 +1544,7 @@ def _exam_llm_generate_quiz_impl(
             quiz_update["follow_up_exam_quiz_id"] = 0
         if qa_dicts:
             result["quiz_history_list"] = qa_dicts
+        result["quiz_history_list_prompt_text"] = prompt_dicts
         result["created_at"] = to_taipei_iso(qrow.get("created_at"))
         result["rag_page_id"] = tab_strip
         result["rag_unit_id"] = int(rag_unit_id)
@@ -1419,13 +1556,16 @@ def _exam_llm_generate_quiz_impl(
         )
         try:
             update_payload = dict(quiz_update)
-            for _ in range(2):
+            for _ in range(4):
                 try:
                     supabase.table("Exam_Quiz").update(update_payload).eq("exam_quiz_id", exam_quiz_id).execute()
                     break
                 except Exception as upd_err:
                     if _rag_quiz_missing_column_error(upd_err, "quiz_history_list") and "quiz_history_list" in update_payload:
                         update_payload.pop("quiz_history_list")
+                        continue
+                    if _rag_quiz_missing_column_error(upd_err, "quiz_history_list_prompt_text") and "quiz_history_list_prompt_text" in update_payload:
+                        update_payload.pop("quiz_history_list_prompt_text")
                         continue
                     raise
         except Exception as e:
@@ -1470,6 +1610,10 @@ def exam_llm_generate_quiz(
         course_id=course_id,
         followup=False,
         quiz_history=body.quiz_history_list,
+        quiz_history_list_prompt_items=_exam_quiz_history_prompt_dicts(
+            body.quiz_history_list_prompt_text,
+            followup=False,
+        ),
     )
 
 
@@ -1480,11 +1624,12 @@ def exam_llm_generate_quiz(
 _EXAM_LLM_GEN_FOLLOWUP_DESCRIPTION = """\
 Body：`exam_quiz_id`、`rag_page_id`、`rag_unit_id`、`rag_quiz_id` 必填。
 **追問鏈結**：請求 `follow_up_exam_quiz_id`（>0）時，出題成功後寫入本列 `follow_up=true` 與該 id（原樣）。
-`quiz_history_list` 非空時才使用追問 LLM prompt；否則仍寫入 follow_up 但出題邏輯同一般 `llm-generate`。
+`quiz_history_list_prompt_text` 非空時才使用追問 LLM prompt；否則仍寫入 follow_up 但出題邏輯同一般 `llm-generate`。
 `follow_up_exam_quiz_id` 為 0 或未傳則視為第一題，**回應不含** `follow_up`／`follow_up_exam_quiz_id`。
-回應可含 `quiz_history_list` 與 `created_at`。
+回應可含 `quiz_history_list`、`quiz_history_list_prompt_text` 與 `created_at`。
 其餘 RAG 綁定、unit_type 出題邏輯同 `POST /exam/tab/quiz/llm-generate`。
-`quiz_history_list` 為物件陣列，每項含 `rag_unit_id`、`quiz_name`、`follow_up`、`quiz_content`、`quiz_hint`、`quiz_answer_reference`、`answer_content`、`answer_critique`；
+`quiz_history_list` 為八欄位 JSON 物件陣列，僅寫入 DB。
+`quiz_history_list_prompt_text` 為四欄位 JSON 物件陣列（quiz_content、quiz_answer_reference、answer_content、answer_critique），併入 LLM prompt。
 使用 `SYSTEM_PROMPT_QUIZ_FOLLOWUP`／`USER_PROMPT_COURSE_FOLLOWUP`：作答不佳則針對弱點追問，作答良好則改出新的不重複題目。
 """
 
@@ -1512,6 +1657,10 @@ def exam_llm_generate_quiz_followup(
         course_id=course_id,
         followup=True,
         quiz_history=body.quiz_history_list,
+        quiz_history_list_prompt_items=_exam_quiz_history_prompt_dicts(
+            body.quiz_history_list_prompt_text,
+            followup=True,
+        ),
         follow_up_exam_quiz_id=body.follow_up_exam_quiz_id,
     )
 
@@ -1564,6 +1713,10 @@ def exam_create_llm_generate_quiz(
         course_id=course_id,
         followup=False,
         quiz_history=body.quiz_history_list,
+        quiz_history_list_prompt_items=_exam_quiz_history_prompt_dicts(
+            body.quiz_history_list_prompt_text,
+            followup=False,
+        ),
     )
 
 
@@ -1575,7 +1728,7 @@ _EXAM_CREATE_LLM_GENERATE_FOLLOWUP_DESCRIPTION = """\
 等同先 POST /exam/tab/quiz/create 再 POST /exam/tab/quiz/llm-generate-followup。
 Body 不需 `exam_quiz_id`（由 create 產生）。
 出題成功後**一律**寫入本列 `follow_up=true`；`follow_up_exam_quiz_id` 以請求傳入為準（可為 0）。
-`quiz_history_list` 非空時使用追問 LLM prompt，否則出題邏輯同一般 llm-generate。
+`quiz_history_list_prompt_text` 非空時使用追問 LLM prompt，否則出題邏輯同一般 llm-generate。
 """
 
 
@@ -1620,6 +1773,10 @@ def exam_create_llm_generate_quiz_followup(
         course_id=course_id,
         followup=True,
         quiz_history=body.quiz_history_list,
+        quiz_history_list_prompt_items=_exam_quiz_history_prompt_dicts(
+            body.quiz_history_list_prompt_text,
+            followup=True,
+        ),
         follow_up_exam_quiz_id=body.follow_up_exam_quiz_id,
         always_mark_follow_up=True,
     )
@@ -1965,6 +2122,12 @@ async def get_exam_grade_result(job_id: str, _person_id: PersonId, course_id: Co
                             if isinstance(exam_quiz_row, dict):
                                 exam_quiz_row["quiz_history_list"] = parse_rag_quiz_history_list(
                                     exam_quiz_row.get("quiz_history_list")
+                                )
+                                exam_quiz_row["quiz_history_list_prompt_text"] = (
+                                    parse_quiz_history_prompt_text(
+                                        exam_quiz_row.get("quiz_history_list_prompt_text"),
+                                        followup=bool(exam_quiz_row.get("follow_up")),
+                                    )
                                 )
                             out["exam_quiz"] = exam_quiz_row
                 except (TypeError, ValueError):
