@@ -63,7 +63,7 @@ from services.grading import (
 from utils.taipei_time import now_taipei_iso, to_taipei_iso
 from utils.retry import call_with_transient_http_retry
 from utils.serialization import to_json_safe
-from utils.llm_key import fetch_api_key_setting_row, get_exam_api_key
+from utils.llm_key import fetch_api_key_setting_row, get_exam_api_key, get_rag_llm_model
 from utils.course_setting import COURSE_SETTING_EXAM_API_KEY
 from routers.course_settings import (
     _require_developer_or_manager_for_analysis_prompt_write,
@@ -104,7 +104,7 @@ _logger = logging.getLogger(__name__)
 # 模型與檢索常數
 # ---------------------------------------------------------------------------
 # 本模組不直接宣告 OpenAI 模型名；出題呼叫 `services.quiz_generation`（`QUIZ_LLM_MODEL`、embedding、k），
-# 批改呼叫 `services.grading`（`GRADE_LLM_MODEL`、檢索與 chunk 常數）。
+# 批改呼叫 `services.grading`（`GRADE_LLM_MODEL`＝`QUIZ_LLM_MODEL`、GET/PUT /rag/llm_model、檢索與 chunk 常數）。
 
 
 # ---------------------------------------------------------------------------
@@ -1402,6 +1402,7 @@ def _exam_llm_generate_quiz_impl(
             status_code=400,
             detail="請設定 Exam API Key：PUT /exam/api_key（Course_Setting key=exam-api-key，依 course_id）",
         )
+    llm_model = get_rag_llm_model(course_id)
 
     rag_rows = select_rag_row_with_transcript_fallback(supabase, rag_id_resolved)
     if not rag_rows.data or len(rag_rows.data) == 0:
@@ -1466,6 +1467,7 @@ def _exam_llm_generate_quiz_impl(
                     transcript=transcript_text,
                     quiz_user_prompt_text=api_instr,
                     quiz_history_list_prompt_text=prompt_for_llm,
+                    llm_model=llm_model,
                 )
             else:
                 result = generate_quiz_transcript_only(
@@ -1473,6 +1475,7 @@ def _exam_llm_generate_quiz_impl(
                     transcript=transcript_text,
                     quiz_user_prompt_text=api_instr,
                     quiz_history_list_prompt_text=prompt_for_llm,
+                    llm_model=llm_model,
                 )
         else:
             path = get_zip_path(rag_zip_page_id)
@@ -1484,6 +1487,7 @@ def _exam_llm_generate_quiz_impl(
                     api_key=api_key,
                     quiz_user_prompt_text=api_instr,
                     quiz_history_list_prompt_text=prompt_for_llm,
+                    llm_model=llm_model,
                 )
             else:
                 result = generate_quiz(
@@ -1491,6 +1495,7 @@ def _exam_llm_generate_quiz_impl(
                     api_key=api_key,
                     quiz_user_prompt_text=api_instr,
                     quiz_history_list_prompt_text=prompt_for_llm,
+                    llm_model=llm_model,
                 )
         result["transcript"] = "" if unit_type_val == 1 else transcript_text
         result["rag_output"] = {"rag_page_id": stem, "unit_name": stem, "filename": f"{stem}.zip"}
@@ -1841,6 +1846,7 @@ async def exam_grade_submission(
                 "error": "請設定 Exam API Key：PUT /exam/api_key（Course_Setting key=exam-api-key，依 course_id）",
             },
         )
+    llm_model = get_rag_llm_model(course_id)
 
     try:
         rag_uid_int = int(rag_unit_id_val) if rag_unit_id_val is not None else 0
@@ -2077,6 +2083,7 @@ async def exam_grade_submission(
         unit_type=exam_grade_unit_type,
         transcript_grade=transcript_grade,
         quiz_user_prompt_text=quiz_user_prompt_exam,
+        llm_model=llm_model,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id})
 

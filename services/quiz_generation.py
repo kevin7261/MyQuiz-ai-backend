@@ -438,7 +438,7 @@ def _normalize_quiz_llm_json(data: dict) -> dict:
     return data
 
 
-def _invoke_quiz_json_llm(client: OpenAI, messages: list) -> dict:
+def _invoke_quiz_json_llm(client: OpenAI, messages: list, *, llm_model: str | None = None) -> dict:
     """
     呼叫 GPT 並解析 JSON 物件回應。
 
@@ -446,7 +446,7 @@ def _invoke_quiz_json_llm(client: OpenAI, messages: list) -> dict:
     - 若 parse 結果非 dict（極少見），當成空 dict 再 normalize，避免呼叫端 KeyError。
     """
     response = client.chat.completions.create(
-        model=QUIZ_LLM_MODEL,
+        model=llm_model or QUIZ_LLM_MODEL,
         messages=messages,
         response_format={"type": "json_object"},
         temperature=0.7,
@@ -465,6 +465,7 @@ def _generate_quiz_from_context(
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[str] | None = None,
     quiz_history_list_prompt_text: str = "",
+    llm_model: str | None = None,
 ) -> dict:
     """FAISS 與逐字稿共用：組 USER_PROMPT_COURSE → 呼叫 LLM。"""
     if not api_key or not api_key.strip():
@@ -486,6 +487,7 @@ def _generate_quiz_from_context(
             {"role": "system", "content": SYSTEM_PROMPT_QUIZ},
             {"role": "user", "content": user_prompt},
         ],
+        llm_model=llm_model,
     )
 
 
@@ -496,6 +498,7 @@ def _generate_quiz_followup_from_context(
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[dict[str, str]] | None = None,
     quiz_history_list_prompt_text: str = "",
+    llm_model: str | None = None,
 ) -> dict:
     """追問出題：組 USER_PROMPT_COURSE_FOLLOWUP → 呼叫 LLM。"""
     if not api_key or not api_key.strip():
@@ -516,6 +519,7 @@ def _generate_quiz_followup_from_context(
             {"role": "system", "content": SYSTEM_PROMPT_QUIZ_FOLLOWUP},
             {"role": "user", "content": user_prompt},
         ],
+        llm_model=llm_model,
     )
 
 
@@ -529,6 +533,7 @@ def generate_quiz_transcript_only(
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[str] | None = None,
     quiz_history_list_prompt_text: str = "",
+    llm_model: str | None = None,
 ) -> dict:
     """
     無 FAISS：與 generate_quiz 相同訊息結構——system 為出題規範；逐字稿置於 user「課程內容」。
@@ -552,6 +557,7 @@ def generate_quiz_transcript_only(
         quiz_user_prompt_text=quiz_user_prompt_text,
         quiz_history_list=quiz_history_list,
         quiz_history_list_prompt_text=quiz_history_list_prompt_text,
+        llm_model=llm_model,
     )
 
 
@@ -561,6 +567,7 @@ def generate_quiz(
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[str] | None = None,
     quiz_history_list_prompt_text: str = "",
+    llm_model: str | None = None,
 ) -> dict:
     """
     有 FAISS RAG ZIP：解壓 → 載入向量庫 → 檢索 → 組 Markdown user → LLM。
@@ -617,6 +624,7 @@ def generate_quiz(
             quiz_user_prompt_text=quiz_user_prompt_text,
             quiz_history_list=quiz_history_list,
             quiz_history_list_prompt_text=quiz_history_list_prompt_text,
+            llm_model=llm_model,
         )
     finally:
         # 暫存目錄必清，避免磁碟堆積與路徑外洩。
@@ -629,6 +637,7 @@ def generate_quiz_followup_transcript_only(
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[dict[str, str]] | None = None,
     quiz_history_list_prompt_text: str = "",
+    llm_model: str | None = None,
 ) -> dict:
     """
     追問出題（無 FAISS）：答不好追問弱點，答好出新題；quiz_history_list 為先前問答（題幹＋作答）列表。
@@ -642,6 +651,7 @@ def generate_quiz_followup_transcript_only(
         quiz_user_prompt_text=quiz_user_prompt_text,
         quiz_history_list=quiz_history_list,
         quiz_history_list_prompt_text=quiz_history_list_prompt_text,
+        llm_model=llm_model,
     )
 
 
@@ -651,6 +661,7 @@ def generate_quiz_followup(
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[dict[str, str]] | None = None,
     quiz_history_list_prompt_text: str = "",
+    llm_model: str | None = None,
 ) -> dict:
     """追問出題（有 FAISS RAG ZIP）：答不好追問弱點，答好出新題。"""
     if not api_key or not api_key.strip():
@@ -691,6 +702,7 @@ def generate_quiz_followup(
             quiz_user_prompt_text=quiz_user_prompt_text,
             quiz_history_list=quiz_history_list,
             quiz_history_list_prompt_text=quiz_history_list_prompt_text,
+            llm_model=llm_model,
         )
     finally:
         shutil.rmtree(extract_folder, ignore_errors=True)

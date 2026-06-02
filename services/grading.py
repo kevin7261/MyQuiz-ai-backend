@@ -30,7 +30,7 @@ from openai import OpenAI
 from postgrest.exceptions import APIError
 
 from utils.taipei_time import now_taipei_iso
-from services.quiz_generation import _context_as_markdown_fenced
+from services.quiz_generation import QUIZ_LLM_MODEL, _context_as_markdown_fenced
 from utils.db_schema import parse_rag_quiz_history_list, quiz_history_item, serialize_rag_quiz_history_list
 from utils.rag_faiss import process_zip_to_docs
 from utils.supabase import get_supabase
@@ -45,7 +45,7 @@ _logger = logging.getLogger(__name__)
 # `GRADE_RETRIEVAL_K`：有 FAISS 或臨時向量時，以題幹為查詢之檢索段數。
 # chunk 參數僅於「ZIP 無 FAISS、改由講義建臨時向量庫」時使用。
 
-GRADE_LLM_MODEL = "gpt-4o"
+GRADE_LLM_MODEL = QUIZ_LLM_MODEL
 GRADE_EMBEDDING_MODEL = "text-embedding-3-small"
 GRADE_RETRIEVAL_K = 5
 GRADE_RAG_CHUNK_SIZE = 1000
@@ -285,6 +285,7 @@ def run_grade_job_transcript_only(
     answer_user_prompt_text: str = "",
     exam_quiz_id: int | None = None,
     rag_quiz_id: int | None = None,
+    llm_model: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     無 RAG ZIP（unit_type 2／3／4）：system = SYSTEM_PROMPT_GRADE；user = USER_PROMPT_GRADE_TRANSCRIPT_COURSE，
@@ -318,7 +319,7 @@ def run_grade_job_transcript_only(
 
     client = OpenAI(api_key=api_key)
     response = client.chat.completions.create(
-        model=GRADE_LLM_MODEL,
+        model=llm_model or GRADE_LLM_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT_GRADE},
             {"role": "user", "content": user_msg},
@@ -353,6 +354,7 @@ def run_grade_job(
     exam_quiz_id: int | None = None,
     rag_quiz_id: int | None = None,
     unit_type: int = 0,
+    llm_model: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     在給定的 work_dir（已含 ref.zip）執行向量檢索 + GPT 評分。回傳 (LLM 訊息原文, 解析後 JSON)。
@@ -425,7 +427,7 @@ def run_grade_job(
 
     client = OpenAI(api_key=api_key)
     response = client.chat.completions.create(
-        model=GRADE_LLM_MODEL,
+        model=llm_model or GRADE_LLM_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT_GRADE},
             {"role": "user", "content": prompt},
@@ -466,6 +468,7 @@ def run_grade_job_background(
     unit_type: int = 0,
     transcript_grade: str | None = None,
     quiz_user_prompt_text: str = "",
+    llm_model: str | None = None,
 ) -> None:
     """
     通用背景評分：執行評分、可選寫入 DB、結果存 results_store。
@@ -484,6 +487,7 @@ def run_grade_job_background(
                 answer_user_prompt_text=answer_user_prompt_text,
                 exam_quiz_id=exam_quiz_id,
                 rag_quiz_id=rag_quiz_id,
+                llm_model=llm_model,
             )
         else:
             _, llm_json = run_grade_job(
@@ -496,6 +500,7 @@ def run_grade_job_background(
                 exam_quiz_id=exam_quiz_id,
                 rag_quiz_id=rag_quiz_id,
                 unit_type=unit_type,
+                llm_model=llm_model,
             )
         # 與 API 回傳欄位對齊；insert_answer_fn 內可能再寫入 critique／分數至 DB。
         result_dict = {

@@ -1471,7 +1471,7 @@ def build_rag_zip(
     **FAISS 建置規則（逐 unit 判斷）**：`user_type==1`（且未強制關閉）且該 unit 之 `unit_type==1 (rag)` → 建 FAISS 並上傳至 rag；`unit_type` 為 2／3／4 時仍 repack 原 ZIP，但 **rag 區上傳內含單一 `transcript.md`（逐字稿全文）之 ZIP**，非 repack 複製；其餘 unit_type==0 等 → repack 同內容複製至 rag。
     可選 query **repack_only=true**：強制全部 unit 不建 FAISS；**不影響** 2／3／4 之逐字稿 rag ZIP 行為。
     可選 body **build_faiss**：`false` 同 repack_only；`true` 強制允許 FAISS（仍需 unit_type==1 觸發）；省略時依 user_type 判定。
-    LLM API Key 僅在「最終會建 FAISS」（do_rag 為 True）時必填（依 course_id 自 Course_Setting key=rag-api-key 取得；見 PUT /rag/api_key）。
+    LLM API Key 僅在「最終會建 FAISS」（do_rag 為 True）時必填（依 course_id 自 Course_Setting key=rag-api-key 取得；見 PUT /rag/llm_api_key）。
     body.unit_types 為選填，與 unit_list 逗號分段對齊；**未傳或該段為 0** 時會依單元 ZIP 推斷（恰一音訊＋一文字檔→3、僅一個 .md 等→2；**YouTube 仍須明確傳 4**）。寫入各 Rag_Unit.unit_type。**推斷為 2** 且來源為 `.md`/`.txt` 時 **Rag_Unit.transcript** 為檔案 UTF-8 全文（含 Markdown）。
     body.transcripts 為選填，與 unit_list 逗號分段同序；索引 i 之字串若非空白，覆寫該單元逐字稿（Markdown UTF-8 原樣），仍自 ZIP 擷取 text_file_name／mp3_file_name／youtube_url。
     body.unit_names 為選填，與 packed 任務同序（逗號字串或 JSON 字串陣列）；該段非空白時覆寫串流 output.unit_name 與寫入之 Rag_Unit.unit_name（顯示名）。output.folder_combination 恒為 repack ZIP 檔名 stem（寫入 Rag_Unit.folder_combination；多資料夾為 ``a/tb/tc``）。
@@ -1527,7 +1527,7 @@ def build_rag_zip(
         _safe_unlink(path)
         raise HTTPException(
             status_code=400,
-            detail="請設定 RAG API Key：PUT /rag/api_key（Course_Setting key=rag-api-key，依 course_id）",
+            detail="請設定 RAG API Key：PUT /rag/llm_api_key（Course_Setting key=rag-api-key，依 course_id）",
         )
 
     total = len(packed)

@@ -11,7 +11,7 @@ RAG 出題、評分、題目標記與課程設定 API（路徑順序見 utils.op
 
 **單元資源**：GET /rag/unit/text、/rag/unit/mp3-file、/rag/unit/youtube-url
 
-**設定**：GET/PUT /rag/api_key；個人／課程分析 prompt 見 course_settings 路由。
+**設定**：GET/PUT /rag/llm_api_key、/rag/llm_model；個人／課程分析 prompt 見 course_settings 路由。
 """
 
 import base64
@@ -48,8 +48,8 @@ from services.grading import (
 )
 from utils.taipei_time import now_taipei_iso
 from utils.serialization import to_json_safe
-from utils.llm_key import fetch_api_key_setting_row, get_rag_api_key
-from utils.course_setting import COURSE_SETTING_RAG_API_KEY
+from utils.llm_key import fetch_api_key_setting_row, get_rag_api_key, get_rag_llm_model
+from utils.course_setting import COURSE_SETTING_RAG_API_KEY, COURSE_SETTING_RAG_LLM_MODEL
 from routers.course_settings import (
     _require_developer_or_manager_for_analysis_prompt_write,
     _upsert_setting_and_get_row,
@@ -812,8 +812,9 @@ def _rag_llm_generate_quiz_impl(
     if not api_key:
         raise HTTPException(
             status_code=400,
-            detail="請設定 RAG API Key：PUT /rag/api_key（Course_Setting key=rag-api-key，依 course_id）",
+            detail="請設定 RAG API Key：PUT /rag/llm_api_key（Course_Setting key=rag-api-key，依 course_id）",
         )
+    llm_model = get_rag_llm_model(course_id)
     transcript_text = transcript_from_row(unit_row)
     if not transcript_text:
         transcript_text = instruction_from_rag_row(row)
@@ -851,6 +852,7 @@ def _rag_llm_generate_quiz_impl(
                     transcript=transcript_text,
                     quiz_user_prompt_text=qup_for_llm,
                     quiz_history_list_prompt_text=prompt_for_llm,
+                    llm_model=llm_model,
                 )
             else:
                 result = generate_quiz_transcript_only(
@@ -858,6 +860,7 @@ def _rag_llm_generate_quiz_impl(
                     transcript=transcript_text,
                     quiz_user_prompt_text=qup_for_llm,
                     quiz_history_list_prompt_text=prompt_for_llm,
+                    llm_model=llm_model,
                 )
         else:
             path = get_zip_path(rag_zip_page_id)
@@ -872,6 +875,7 @@ def _rag_llm_generate_quiz_impl(
                     api_key=api_key,
                     quiz_user_prompt_text=qup_for_llm,
                     quiz_history_list_prompt_text=prompt_for_llm,
+                    llm_model=llm_model,
                 )
             else:
                 result = generate_quiz(
@@ -879,6 +883,7 @@ def _rag_llm_generate_quiz_impl(
                     api_key=api_key,
                     quiz_user_prompt_text=qup_for_llm,
                     quiz_history_list_prompt_text=prompt_for_llm,
+                    llm_model=llm_model,
                 )
         result["transcript"] = "" if unit_type_val == 1 else transcript_text
         result["rag_output"] = {
@@ -1125,9 +1130,10 @@ async def _enqueue_rag_llm_grade_job(
         return JSONResponse(
             status_code=400,
             content={
-                "error": "請設定 RAG API Key：PUT /rag/api_key（Course_Setting key=rag-api-key，依 course_id）",
+                "error": "請設定 RAG API Key：PUT /rag/llm_api_key（Course_Setting key=rag-api-key，依 course_id）",
             },
         )
+    llm_model = get_rag_llm_model(course_id)
 
     def build_grade_quiz_sel(with_course_filter: bool):
         cols = select_without_course_id_if_needed(
@@ -1258,6 +1264,7 @@ async def _enqueue_rag_llm_grade_job(
         unit_type=grade_unit_type,
         transcript_grade=transcript_grade,
         quiz_user_prompt_text=quiz_user_prompt_db,
+        llm_model=llm_model,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id})
 
@@ -1767,12 +1774,12 @@ def rag_unit_youtube_url(
 
 
 # ---------------------------------------------------------------------------
-# GET / PUT /rag/api_key
+# GET / PUT /rag/llm_api_key
 # ---------------------------------------------------------------------------
 
 
 class RagApiKeyResponse(BaseModel):
-    """GET/PUT /rag/api_key 回應（Course_Setting key=rag-api-key）。"""
+    """GET/PUT /rag/llm_api_key 回應（Course_Setting key=rag-api-key）。"""
 
     course_setting_id: Optional[int] = None
     course_id: int
@@ -1780,12 +1787,12 @@ class RagApiKeyResponse(BaseModel):
 
 
 class PutRagApiKeyRequest(BaseModel):
-    """PUT /rag/api_key 的 body。"""
+    """PUT /rag/llm_api_key 的 body。"""
 
     api_key: str = Field(..., description="RAG LLM API Key")
 
 
-@router.get("/api_key", response_model=RagApiKeyResponse)
+@router.get("/llm_api_key", response_model=RagApiKeyResponse)
 def get_rag_api_key_setting(person_id: PersonId, course_id: CourseId):
     """讀取 RAG LLM API Key（Course_Setting key=rag-api-key，依 course_id）。"""
     _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
@@ -1800,7 +1807,7 @@ def get_rag_api_key_setting(person_id: PersonId, course_id: CourseId):
     )
 
 
-@router.put("/api_key", response_model=RagApiKeyResponse)
+@router.put("/llm_api_key", response_model=RagApiKeyResponse)
 def put_rag_api_key_setting(
     body: openapi_body(PutRagApiKeyRequest, {"api_key": "sk-..."}),
     person_id: PersonId,
@@ -1824,6 +1831,74 @@ def put_rag_api_key_setting(
             course_setting_id=row.get("course_setting_id"),
             course_id=course_id,
             api_key=saved or None,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+# ---------------------------------------------------------------------------
+# GET / PUT /rag/llm_model
+# ---------------------------------------------------------------------------
+
+
+class RagLlmModelResponse(BaseModel):
+    """GET/PUT /rag/llm_model 回應（Course_Setting key=rag-llm-model；出題、批改、弱點分析共用）。"""
+
+    course_setting_id: Optional[int] = None
+    course_id: int
+    llm_model: Optional[str] = None
+
+
+class PutRagLlmModelRequest(BaseModel):
+    """PUT /rag/llm_model 的 body。"""
+
+    llm_model: str = Field(
+        ...,
+        description="RAG 出題／批改／弱點分析 LLM 模型名（對應 QUIZ_LLM_MODEL／GRADE_LLM_MODEL／WEAKNESS_LLM_MODEL，預設 gpt-5.4）",
+    )
+
+
+@router.get("/llm_model", response_model=RagLlmModelResponse)
+def get_rag_llm_model_setting(person_id: PersonId, course_id: CourseId):
+    """讀取 RAG 出題／批改／弱點分析 LLM 模型（Course_Setting key=rag-llm-model，依 course_id）。"""
+    _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
+    row = fetch_api_key_setting_row(COURSE_SETTING_RAG_LLM_MODEL, course_id)
+    if not row:
+        return RagLlmModelResponse(course_id=course_id)
+    value = (row.get("value") or "").strip()
+    return RagLlmModelResponse(
+        course_setting_id=row.get("course_setting_id"),
+        course_id=course_id,
+        llm_model=value or None,
+    )
+
+
+@router.put("/llm_model", response_model=RagLlmModelResponse)
+def put_rag_llm_model_setting(
+    body: openapi_body(PutRagLlmModelRequest, {"llm_model": "gpt-5.4"}),
+    person_id: PersonId,
+    course_id: CourseId,
+):
+    """寫入 RAG 出題／批改／弱點分析 LLM 模型（Course_Setting key=rag-llm-model，依 course_id）。"""
+    _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
+    value_to_save = (body.llm_model or "").strip()
+    try:
+        supabase = get_supabase()
+        row = _upsert_setting_and_get_row(
+            supabase,
+            COURSE_SETTING_RAG_LLM_MODEL,
+            value_to_save,
+            course_id,
+        )
+        if not row:
+            return RagLlmModelResponse(course_id=course_id, llm_model=value_to_save or None)
+        saved = (row.get("value") or "").strip()
+        return RagLlmModelResponse(
+            course_setting_id=row.get("course_setting_id"),
+            course_id=course_id,
+            llm_model=saved or None,
         )
     except HTTPException:
         raise

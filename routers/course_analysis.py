@@ -35,7 +35,7 @@ from services.exam_queries import (
 )
 from services.weakness_report import generate_weakness_report_md, quiz_has_answer
 from utils.serialization import to_json_safe
-from utils.llm_key import get_exam_api_key
+from utils.llm_key import get_exam_api_key, get_rag_llm_model
 
 router = APIRouter(prefix="/course-analysis", tags=["course analysis"])
 
@@ -96,6 +96,7 @@ def list_exam_quizzes(_person_id: PersonId, course_id: CourseId):
                 api_key,
                 setting_prompt,
                 analysis_label=ANALYSIS_LABEL_COURSE,
+                llm_model=get_rag_llm_model(course_id),
             )
         return ListQuizzesResponse(exams=data, count=len(data), weakness_report=weakness_report)
     except Exception as e:

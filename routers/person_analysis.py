@@ -36,7 +36,7 @@ from services.exam_queries import (
 )
 from services.weakness_report import generate_weakness_report_md, quiz_has_answer
 from utils.serialization import to_json_safe
-from utils.llm_key import get_exam_api_key
+from utils.llm_key import get_exam_api_key, get_rag_llm_model
 
 router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
 
@@ -105,6 +105,7 @@ def list_quizzes_by_person(
                 api_key,
                 setting_prompt,
                 analysis_label=ANALYSIS_LABEL_PERSON,
+                llm_model=get_rag_llm_model(course_id),
             )
         return ListQuizzesByPersonResponse(exams=data, count=len(data), weakness_report=weakness_report)
     except HTTPException:

@@ -11,7 +11,9 @@ from typing import Any, Optional
 
 from openai import OpenAI
 
-WEAKNESS_LLM_MODEL = "gpt-4o"
+from services.quiz_generation import QUIZ_LLM_MODEL
+
+WEAKNESS_LLM_MODEL = QUIZ_LLM_MODEL
 PERSON_ANALYSIS_LABEL = "個人分析"
 COURSE_ANALYSIS_LABEL = "課程分析"
 
@@ -198,6 +200,7 @@ def generate_weakness_report_md(
     analysis_user_prompt_text: str,
     *,
     analysis_label: str,
+    llm_model: str | None = None,
 ) -> Optional[str]:
     """
     呼叫 LLM 產生弱點報告 Markdown。
@@ -229,7 +232,7 @@ def generate_weakness_report_md(
     client = OpenAI(api_key=api_key)
     try:
         r = client.chat.completions.create(
-            model=WEAKNESS_LLM_MODEL,
+            model=llm_model or WEAKNESS_LLM_MODEL,
             messages=[
                 {"role": "system", "content": _system_prompt_weakness_report(analysis_label)},
                 {"role": "user", "content": user_content},
