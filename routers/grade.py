@@ -49,7 +49,7 @@ from services.grading import (
 from utils.taipei_time import now_taipei_iso
 from utils.serialization import to_json_safe
 from utils.llm_key import fetch_api_key_setting_row, get_rag_api_key, get_rag_llm_model
-from utils.course_setting import COURSE_SETTING_RAG_API_KEY, COURSE_SETTING_RAG_LLM_MODEL
+from utils.course_setting import COURSE_SETTING_RAG_API_KEY, COURSE_SETTING_LLM_MODEL
 from routers.course_settings import (
     _require_developer_or_manager_for_analysis_prompt_write,
     _upsert_setting_and_get_row,
@@ -906,6 +906,7 @@ def _rag_llm_generate_quiz_impl(
         )
         result["quiz_name"] = resolved_quiz_name
         result["follow_up"] = followup
+        result["quiz_llm_model"] = llm_model
         if qa_dicts:
             result["quiz_history_list"] = qa_dicts
         result["quiz_history_list_prompt_text"] = prompt_dicts
@@ -1266,7 +1267,7 @@ async def _enqueue_rag_llm_grade_job(
         quiz_user_prompt_text=quiz_user_prompt_db,
         llm_model=llm_model,
     )
-    return JSONResponse(status_code=202, content={"job_id": job_id})
+    return JSONResponse(status_code=202, content={"job_id": job_id, "grade_llm_model": llm_model})
 
 
 @router.post("/tab/unit/quiz/llm-grade", summary="Rag Grade Quiz")
@@ -1844,7 +1845,7 @@ def put_rag_api_key_setting(
 
 
 class RagLlmModelResponse(BaseModel):
-    """GET/PUT /rag/llm_model 回應（Course_Setting key=rag-llm-model；出題、批改、弱點分析共用）。"""
+    """GET/PUT /rag/llm_model 回應（Course_Setting key=llm-model；出題、批改、弱點分析共用）。"""
 
     course_setting_id: Optional[int] = None
     course_id: int
@@ -1862,9 +1863,9 @@ class PutRagLlmModelRequest(BaseModel):
 
 @router.get("/llm_model", response_model=RagLlmModelResponse)
 def get_rag_llm_model_setting(person_id: PersonId, course_id: CourseId):
-    """讀取 RAG 出題／批改／弱點分析 LLM 模型（Course_Setting key=rag-llm-model，依 course_id）。"""
+    """讀取 RAG 出題／批改／弱點分析 LLM 模型（Course_Setting key=llm-model，依 course_id）。"""
     _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
-    row = fetch_api_key_setting_row(COURSE_SETTING_RAG_LLM_MODEL, course_id)
+    row = fetch_api_key_setting_row(COURSE_SETTING_LLM_MODEL, course_id)
     if not row:
         return RagLlmModelResponse(course_id=course_id)
     value = (row.get("value") or "").strip()
@@ -1881,14 +1882,14 @@ def put_rag_llm_model_setting(
     person_id: PersonId,
     course_id: CourseId,
 ):
-    """寫入 RAG 出題／批改／弱點分析 LLM 模型（Course_Setting key=rag-llm-model，依 course_id）。"""
+    """寫入 RAG 出題／批改／弱點分析 LLM 模型（Course_Setting key=llm-model，依 course_id）。"""
     _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
     value_to_save = (body.llm_model or "").strip()
     try:
         supabase = get_supabase()
         row = _upsert_setting_and_get_row(
             supabase,
-            COURSE_SETTING_RAG_LLM_MODEL,
+            COURSE_SETTING_LLM_MODEL,
             value_to_save,
             course_id,
         )

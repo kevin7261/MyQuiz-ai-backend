@@ -13,7 +13,7 @@ COURSE_SETTING_COLUMNS = "course_setting_id, course_id, key, value"
 COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY = "person_analysis_user_prompt_text"
 COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY = "course_analysis_user_prompt_text"
 COURSE_SETTING_RAG_API_KEY = "rag-api-key"
-COURSE_SETTING_RAG_LLM_MODEL = "rag-llm-model"
+COURSE_SETTING_LLM_MODEL = "llm-model"
 COURSE_SETTING_EXAM_API_KEY = "exam-api-key"
 
 

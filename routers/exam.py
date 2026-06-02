@@ -1554,6 +1554,7 @@ def _exam_llm_generate_quiz_impl(
         result["rag_page_id"] = tab_strip
         result["rag_unit_id"] = int(rag_unit_id)
         result["rag_quiz_id"] = int(rag_quiz_id)
+        result["quiz_llm_model"] = llm_model
         log_path = (
             "/exam/tab/quiz/llm-generate-followup"
             if use_followup_llm
@@ -2085,7 +2086,7 @@ async def exam_grade_submission(
         quiz_user_prompt_text=quiz_user_prompt_exam,
         llm_model=llm_model,
     )
-    return JSONResponse(status_code=202, content={"job_id": job_id})
+    return JSONResponse(status_code=202, content={"job_id": job_id, "grade_llm_model": llm_model})
 
 
 # ---------------------------------------------------------------------------
