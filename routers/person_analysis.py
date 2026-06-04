@@ -1,32 +1,20 @@
 """
-個人分析 API 模組。
-依 person_id、course_id 查詢 Exam_Quiz 資料。新 schema 答案欄位直接內嵌於 Exam_Quiz（answer_content, answer_critique），不再有獨立的 Exam_Answer 表。
-- GET /person-analysis/quizzes/{person_id}：依 person_id、course_id 取得已作答的 Exam_Quiz（answer_content 非空），
-  依 exam_page_id 分群回傳 Exam；每筆 Exam 的題目結構與 GET /exam/pages 相同（quizzes[]，Exam_Quiz 含 follow_up 鏈，含 enrich／rag 鍵）。
-  另帶 weakness_report：每次請求皆呼叫 LLM 產生弱點報告（有 LLM API Key 且成功呼叫時為模型回覆原文，否則 null）。
+個人分析 API 模組（資料皆在 Person_Analysis_Setting，不再使用 Course_Setting／System_Setting）。
 
-重要：弱點報告與出題／批改相同，系統與使用者訊息皆為 **Markdown**；本路由**不**使用 `response_format=json_object`。
-**個人分析 user prompt** 取自 `Course_Setting.key=person_analysis_user_prompt_text`（與 GET/PUT `/rag/person_analysis_user_prompt_text` 同源），嵌入 user 訊息之 **`## 個人分析 user prompt`**。
+- GET /person-analysis/analysis：query person_id、course_id，回傳最新一筆。
+- PUT /person-analysis/analysis：寫入教師分析指令（analysis_prompt_text 純文字）。
+- GET /person-analysis/llm-analysis：依作答產生弱點報告並寫入 Person_Analysis_Setting。
 """
 
-from typing import Optional
+import logging
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException, Path as PathParam
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
-from pydantic import BaseModel, Field
-
-from utils.course_setting import (
-    COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY,
-    fetch_course_setting_text,
-)
-
-# 向後相容別名
-SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY = (
-    COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY
-)
-fetch_system_setting_text = fetch_course_setting_text
+from routers.course_settings import _require_developer_or_manager_for_analysis_prompt_write
 from services.exam_queries import (
     exams_by_page_ids,
     enrich_exam_quizzes_rag_tab_from_units,
@@ -34,17 +22,82 @@ from services.exam_queries import (
     exam_tab_quizzes_response,
     quizzes_by_person_id,
 )
+from services.person_analysis_setting import (
+    COURSE_WIDE_PERSON_ANALYSIS_PERSON_ID,
+    fetch_latest_person_analysis_instruction_row,
+    fetch_latest_person_analysis_result_row,
+    fetch_person_analysis_instruction_text,
+    fetch_person_analysis_user_prompt_for_llm,
+    resolve_login_person_id,
+    save_person_analysis_prompt_instruction,
+    save_person_analysis_setting,
+)
 from services.weakness_report import generate_weakness_report_md, quiz_has_answer
+from utils.llm_key import get_person_analysis_api_key, get_rag_llm_model
+from utils.openapi import openapi_body
 from utils.serialization import to_json_safe
-from utils.llm_key import get_exam_api_key, get_rag_llm_model
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
 
 ANALYSIS_LABEL_PERSON = "個人分析"
 
 
-class ListQuizzesByPersonResponse(BaseModel):
-    """GET /person-analysis/quizzes/{person_id} 回應。exams[] 每筆與 GET /exam/pages 相同含 quizzes[]；weakness_report 為 LLM 弱點報告（失敗時為 null）。"""
+def require_target_person_id(
+    person_id_q: Optional[str] = Query(
+        None,
+        alias="person_id",
+        description="學生登入帳號；課程共用指令請傳空字串",
+    ),
+) -> str:
+    if person_id_q is None:
+        raise HTTPException(status_code=400, detail="請傳入 query 參數 person_id")
+    return str(person_id_q).strip()
+
+
+TargetPersonId = Annotated[str, Depends(require_target_person_id)]
+
+
+def _login_person_id_or_404(person_id: str) -> str:
+    if person_id == COURSE_WIDE_PERSON_ANALYSIS_PERSON_ID:
+        return COURSE_WIDE_PERSON_ANALYSIS_PERSON_ID
+    login = resolve_login_person_id(person_id)
+    if not login:
+        raise HTTPException(status_code=404, detail=f"找不到使用者 person_id={person_id}")
+    return login
+
+
+class PersonStoredAnalysisResponse(BaseModel):
+    """GET /person-analysis/analysis 回應；無紀錄時各欄位為 null。"""
+    person_analysis_id: Optional[int] = Field(
+        default=None, description="Person_Analysis_Setting 主鍵"
+    )
+    person_id: Optional[str] = Field(default=None, description="登入帳號；課程共用為空字串")
+    course_id: Optional[int] = None
+    analysis_user_prompt_text: Optional[str] = Field(
+        default=None,
+        description="教師分析指令（純文字；僅來自 analysis_text 為空的指令列）",
+    )
+    analysis_prompt_text: Optional[str] = Field(
+        default=None,
+        description="LLM 結果列：送交 LLM 的 prompt JSON；指令列時同 analysis_user_prompt_text",
+    )
+    analysis_text: Optional[str] = Field(
+        default=None, description="已儲存的弱點報告 Markdown 全文",
+    )
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class PutPersonAnalysisPromptRequest(BaseModel):
+    """PUT /person-analysis/analysis 的 body。"""
+
+    analysis_prompt_text: str = Field(..., description="個人分析使用者 Prompt 文字（純文字）")
+
+
+class PersonLlmAnalysisResponse(BaseModel):
+    """GET /person-analysis/llm-analysis 回應。"""
     exams: list[dict]
     count: int
     weakness_report: Optional[str] = Field(
@@ -53,30 +106,104 @@ class ListQuizzesByPersonResponse(BaseModel):
     )
     analysis_llm_model: str = Field(
         ...,
-        description="本次弱點分析實際使用的 LLM 模型（Course_Setting key=llm-model；未設定時為程式預設 gpt-5.4）",
+        description="本次弱點分析實際使用的 LLM 模型（Course_Setting key=llm-model）。API Key 為 exam-api-key",
     )
 
 
-@router.get("/quizzes/{person_id}", response_model=ListQuizzesByPersonResponse)
-def list_quizzes_by_person(
-    caller_person_id: PersonId,
+@router.get("/analysis", response_model=PersonStoredAnalysisResponse)
+def get_person_stored_analysis(
+    person_id: TargetPersonId,
     course_id: CourseId,
-    person_id: str = PathParam(..., description="要查詢的 person_id"),
 ):
     """
-    依 person_id、course_id 取得已作答的 Exam_Quiz（answer_content 非空），依 exam_page_id 分群後對應 Exam；
-    每筆 Exam 的 quizzes 形狀與 GET /exam/pages 一致（題目為完整 Exam_Quiz 列，含作答欄位）。
-    weakness_report：每次請求皆嘗試呼叫 LLM 產生；成功時為 `message.content` 原文，否則為 null。
-    弱點報告 user 訊息會併入 Course_Setting `person_analysis_user_prompt_text`
-    （與 `/rag/person_analysis_user_prompt_text` 同源）。
-    query 的 person_id 須與路徑 {person_id} 一致；必填 query course_id。
+    取值：不呼叫 LLM。必填 query `person_id`、`course_id`。
+    `analysis_user_prompt_text` 僅來自教師指令列；`analysis_text`／`analysis_prompt_text`（JSON）來自最新 LLM 結果列。
+    DB 無任何列時各欄位為 null（不會回傳程式內建 prompt 模板）。
     """
     try:
-        path_pid = (person_id or "").strip()
-        if path_pid != caller_person_id:
-            raise HTTPException(status_code=403, detail="路徑 person_id 與 query 不一致")
+        db_pid = _login_person_id_or_404(person_id)
+        instr_id, instr_text = fetch_person_analysis_instruction_text(db_pid, course_id)
+        result_row = fetch_latest_person_analysis_result_row(db_pid, course_id)
+        if not instr_text and not result_row:
+            return PersonStoredAnalysisResponse()
+        safe_result = to_json_safe(result_row) if result_row else {}
+        return PersonStoredAnalysisResponse(
+            person_analysis_id=safe_result.get("person_analysis_id") or instr_id,
+            person_id=safe_result.get("person_id") or db_pid,
+            course_id=safe_result.get("course_id") or course_id,
+            analysis_user_prompt_text=instr_text or None,
+            analysis_prompt_text=safe_result.get("analysis_prompt_text")
+            or (instr_text if instr_text else None),
+            analysis_text=safe_result.get("analysis_text"),
+            created_at=safe_result.get("created_at"),
+            updated_at=safe_result.get("updated_at"),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
-        quizzes = quizzes_by_person_id(path_pid, course_id=course_id)
+
+@router.put("/analysis", response_model=PersonStoredAnalysisResponse)
+def put_person_analysis_prompt(
+    body: openapi_body(
+        PutPersonAnalysisPromptRequest,
+        {"analysis_prompt_text": "string"},
+    ),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    person_id: TargetPersonId,
+):
+    """
+    寫入教師分析指令至 Person_Analysis_Setting（純文字，不呼叫 LLM）。
+    query `person_id` 空字串為課程共用；否則為該生登入帳號。僅開發者／管理者可寫入。
+    """
+    _require_developer_or_manager_for_analysis_prompt_write(caller_person_id, course_id)
+    try:
+        db_pid = _login_person_id_or_404(person_id)
+        row = save_person_analysis_prompt_instruction(
+            db_pid, course_id, body.analysis_prompt_text
+        )
+        if not row:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "寫入 Person_Analysis_Setting 失敗；"
+                    "請確認 Supabase 已將 person_id 改為 varchar(255)，"
+                    "或查看伺服器 log（legacy bigint 會自動改用 user_id 寫入）"
+                ),
+            )
+        safe = to_json_safe(row)
+        prompt_text = (safe.get("analysis_prompt_text") or "").strip() or None
+        return PersonStoredAnalysisResponse(
+            person_analysis_id=safe.get("person_analysis_id"),
+            person_id=safe.get("person_id"),
+            course_id=safe.get("course_id"),
+            analysis_user_prompt_text=prompt_text,
+            analysis_prompt_text=prompt_text,
+            analysis_text=safe.get("analysis_text"),
+            created_at=safe.get("created_at"),
+            updated_at=safe.get("updated_at"),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/llm-analysis", response_model=PersonLlmAnalysisResponse)
+def person_llm_analysis(
+    person_id: TargetPersonId,
+    course_id: CourseId,
+):
+    """
+    必填 query `person_id`（學生登入帳號）、`course_id`。
+    教師指令自 Person_Analysis_Setting 讀取（該生優先，其次課程共用 person_id 空字串）。
+    成功後將 prompt JSON 與報告寫入 Person_Analysis_Setting。
+    """
+    try:
+        login_pid = _login_person_id_or_404(person_id)
+        quizzes = quizzes_by_person_id(login_pid, course_id=course_id)
         quizzes_with_answers = [q for q in quizzes if quiz_has_answer(q)]
 
         page_ids: list[str] = list(dict.fromkeys(
@@ -100,19 +227,38 @@ def list_quizzes_by_person(
         data = to_json_safe(exam_rows)
         analysis_llm_model = get_rag_llm_model(course_id)
         weakness_report: Optional[str] = None
-        api_key = get_exam_api_key(course_id)
+        api_key = get_person_analysis_api_key(course_id)
         if api_key:
-            setting_prompt = fetch_system_setting_text(
-                SYSTEM_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY, course_id
-            )
-            weakness_report = generate_weakness_report_md(
+            setting_prompt = fetch_person_analysis_user_prompt_for_llm(login_pid, course_id)
+            weakness_report, analysis_prompt_text = generate_weakness_report_md(
                 to_json_safe(quizzes_with_answers),
                 api_key,
                 setting_prompt,
                 analysis_label=ANALYSIS_LABEL_PERSON,
                 llm_model=analysis_llm_model,
             )
-        return ListQuizzesByPersonResponse(
+            if weakness_report and analysis_prompt_text:
+                saved = save_person_analysis_setting(
+                    login_pid,
+                    course_id,
+                    analysis_prompt_text,
+                    weakness_report,
+                )
+                if not saved:
+                    logger.error(
+                        "person_llm_analysis: LLM ok but Person_Analysis_Setting insert failed "
+                        "person_id=%s course_id=%s",
+                        login_pid,
+                        course_id,
+                    )
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            f"弱點報告已產生但寫入 Person_Analysis_Setting 失敗 "
+                            f"(person_id={login_pid}, course_id={course_id})"
+                        ),
+                    )
+        return PersonLlmAnalysisResponse(
             exams=data,
             count=len(data),
             weakness_report=weakness_report,
@@ -121,4 +267,4 @@ def list_quizzes_by_person(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e

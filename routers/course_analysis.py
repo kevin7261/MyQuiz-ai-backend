@@ -96,7 +96,7 @@ def list_exam_quizzes(_person_id: PersonId, course_id: CourseId):
             setting_prompt = fetch_system_setting_text(
                 SYSTEM_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY, course_id
             )
-            weakness_report = generate_weakness_report_md(
+            weakness_report, _ = generate_weakness_report_md(
                 to_json_safe(quizzes_with_answers),
                 api_key,
                 setting_prompt,

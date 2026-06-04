@@ -1,8 +1,8 @@
 """
 課程設定（Course_Setting）API 模組，掛載於 /rag。
 - GET /rag/course-members：依 course_id 列出該課程所有使用者；須為有效登入使用者；必填 query course_id。
-- GET /rag/person_analysis_user_prompt_text：取得 person_analysis_user_prompt_text；須為有效登入使用者；必填 query course_id。
-- PUT /rag/person_analysis_user_prompt_text：寫入；僅 user_type 1／2。
+- GET /rag/person_analysis_user_prompt_text：取得個人分析指令（Person_Analysis_Setting 課程共用列）；須為有效登入使用者；必填 query course_id。
+- PUT /rag/person_analysis_user_prompt_text：寫入 Person_Analysis_Setting；僅 user_type 1／2。
 - GET /rag/course_analysis_user_prompt_text：取得 course_analysis_user_prompt_text；須為有效登入使用者；必填 query course_id。
 - PUT /rag/course_analysis_user_prompt_text：寫入；僅 user_type 1／2。
 
@@ -16,10 +16,14 @@ from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
+from services.person_analysis_setting import (
+    COURSE_WIDE_PERSON_ANALYSIS_PERSON_ID,
+    fetch_person_analysis_instruction_text,
+    save_person_analysis_prompt_instruction,
+)
 from utils.course_setting import (
     COURSE_SETTING_COLUMNS,
     COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY,
-    COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY,
     COURSE_SETTING_TABLE,
     upsert_course_setting_and_get_row,
 )
@@ -99,9 +103,11 @@ _upsert_setting_and_get_row = upsert_course_setting_and_get_row
 
 
 class PersonAnalysisUserPromptTextResponse(BaseModel):
-    """GET/PUT /rag/person_analysis_user_prompt_text 回應。"""
+    """GET/PUT /rag/person_analysis_user_prompt_text 回應（資料來自 Person_Analysis_Setting）。"""
 
-    course_setting_id: Optional[int] = None
+    person_analysis_id: Optional[int] = Field(
+        default=None, description="Person_Analysis_Setting 主鍵"
+    )
     course_id: Optional[int] = None
     person_analysis_user_prompt_text: Optional[str] = None
 
@@ -218,25 +224,16 @@ def list_course_members(person_id: PersonId, course_id: CourseId):
 
 @router.get("/person_analysis_user_prompt_text", response_model=PersonAnalysisUserPromptTextResponse)
 def get_person_analysis_user_prompt_text_setting(person_id: PersonId, course_id: CourseId):
-    """取得 person_analysis_user_prompt_text（Course_Setting key=person_analysis_user_prompt_text）。"""
+    """取得課程共用個人分析指令（Person_Analysis_Setting，person_id 空字串）。"""
     _require_active_person(person_id)
     try:
-        supabase = get_supabase()
-        resp = (
-            supabase.table(COURSE_SETTING_TABLE)
-            .select(COURSE_SETTING_COLUMNS)
-            .eq("key", COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY)
-            .eq("course_id", course_id)
-            .limit(1)
-            .execute()
+        row_id, text = fetch_person_analysis_instruction_text(
+            COURSE_WIDE_PERSON_ANALYSIS_PERSON_ID, course_id
         )
-        if not resp.data or len(resp.data) == 0:
-            return PersonAnalysisUserPromptTextResponse(course_id=course_id)
-        row = resp.data[0]
         return PersonAnalysisUserPromptTextResponse(
-            course_setting_id=row.get("course_setting_id"),
-            course_id=row.get("course_id"),
-            person_analysis_user_prompt_text=row.get("value"),
+            person_analysis_id=row_id,
+            course_id=course_id,
+            person_analysis_user_prompt_text=text or None,
         )
     except HTTPException:
         raise
@@ -253,26 +250,21 @@ def put_person_analysis_user_prompt_text_setting(
     person_id: PersonId,
     course_id: CourseId,
 ):
-    """寫入 person_analysis_user_prompt_text（Course_Setting key=person_analysis_user_prompt_text）。"""
+    """寫入課程共用個人分析指令至 Person_Analysis_Setting（person_id 空字串）。"""
     _require_developer_or_manager_for_course_setting_write(person_id, course_id)
     value_to_save = (body.person_analysis_user_prompt_text or "").strip()
     try:
-        supabase = get_supabase()
-        row = upsert_course_setting_and_get_row(
-            supabase,
-            COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY,
-            value_to_save,
+        row = save_person_analysis_prompt_instruction(
+            COURSE_WIDE_PERSON_ANALYSIS_PERSON_ID,
             course_id,
+            value_to_save,
         )
         if not row:
-            return PersonAnalysisUserPromptTextResponse(
-                course_id=course_id,
-                person_analysis_user_prompt_text=value_to_save or None,
-            )
+            raise HTTPException(status_code=500, detail="寫入 Person_Analysis_Setting 失敗")
         return PersonAnalysisUserPromptTextResponse(
-            course_setting_id=row.get("course_setting_id"),
-            course_id=row.get("course_id"),
-            person_analysis_user_prompt_text=row.get("value"),
+            person_analysis_id=row.get("person_analysis_id"),
+            course_id=course_id,
+            person_analysis_user_prompt_text=value_to_save or None,
         )
     except HTTPException:
         raise

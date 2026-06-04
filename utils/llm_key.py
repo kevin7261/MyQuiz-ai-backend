@@ -29,8 +29,18 @@ def get_rag_llm_model(course_id: int) -> str:
 
 
 def get_exam_api_key(course_id: int) -> Optional[str]:
-    """Exam 出題／批改及 exam 弱點分析用。"""
+    """Exam 出題／批改、個人／課程弱點分析（Course_Setting key=exam-api-key）。"""
     return fetch_course_setting_value(COURSE_SETTING_EXAM_API_KEY, course_id)
+
+
+def get_person_analysis_api_key(course_id: int) -> Optional[str]:
+    """個人弱點分析 LLM：僅 Course_Setting key=exam-api-key。"""
+    return get_exam_api_key(course_id)
+
+
+def get_weakness_analysis_api_key(course_id: int) -> Optional[str]:
+    """課程弱點分析：僅 exam-api-key（與個人分析相同）。"""
+    return get_exam_api_key(course_id)
 
 
 def fetch_api_key_setting_row(key: str, course_id: int) -> Optional[dict[str, Any]]:

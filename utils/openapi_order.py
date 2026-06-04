@@ -72,7 +72,8 @@ _API_PATH_ORDER: tuple[str, ...] = (
     # --- Exam：課程設定 ---
     "/exam/llm_api_key",
     # --- 弱點分析 ---
-    "/person-analysis/quizzes/{person_id}",
+    "/person-analysis/analysis",
+    "/person-analysis/llm-analysis",
     "/course-analysis/quizzes",
     # --- 帳號／個人檔案 ---
     "/profile/users",

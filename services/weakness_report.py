@@ -194,17 +194,15 @@ def _build_quiz_context_block(quizzes: list[dict]) -> str:
     return "\n\n".join(parts) if parts else ""
 
 
-def generate_weakness_report_md(
+def build_weakness_report_prompts(
     quizzes: list[dict],
-    api_key: str,
     analysis_user_prompt_text: str,
     *,
     analysis_label: str,
-    llm_model: str | None = None,
-) -> Optional[str]:
+) -> Optional[tuple[str, str]]:
     """
-    呼叫 LLM 產生弱點報告 Markdown。
-    analysis_label：個人分析、課程分析（對應 user prompt 區段標題與 system 說明）。
+    組裝弱點分析送交 LLM 的 system／user 訊息。
+    回傳 (system_content, user_content)；無可分析素材時回傳 None。
     """
     if not (quizzes or []):
         return None
@@ -229,19 +227,54 @@ def generate_weakness_report_md(
         analysis_user_prompt_text=analysis_user_prompt_display(analysis_user_prompt_text),
         material_md=material_md,
     )
+    system_content = _system_prompt_weakness_report(analysis_label)
+    return system_content, user_content
+
+
+def serialize_weakness_report_llm_prompt(system_content: str, user_content: str) -> str:
+    """將 system／user 訊息序列化為 JSON 字串，供 Person_Analysis_Setting.analysis_prompt_text 儲存。"""
+    return json.dumps(
+        {"system": system_content, "user": user_content},
+        ensure_ascii=False,
+    )
+
+
+def generate_weakness_report_md(
+    quizzes: list[dict],
+    api_key: str,
+    analysis_user_prompt_text: str,
+    *,
+    analysis_label: str,
+    llm_model: str | None = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    呼叫 LLM 產生弱點報告 Markdown。
+    analysis_label：個人分析、課程分析（對應 user prompt 區段標題與 system 說明）。
+    回傳 (analysis_text, analysis_prompt_text)；失敗或無素材時兩者皆可能為 None。
+    analysis_prompt_text 為送交 LLM 之 system／user JSON 字串。
+    """
+    built = build_weakness_report_prompts(
+        quizzes,
+        analysis_user_prompt_text,
+        analysis_label=analysis_label,
+    )
+    if not built:
+        return None, None
+    system_content, user_content = built
+    prompt_text = serialize_weakness_report_llm_prompt(system_content, user_content)
     client = OpenAI(api_key=api_key)
     try:
         r = client.chat.completions.create(
             model=llm_model or WEAKNESS_LLM_MODEL,
             messages=[
-                {"role": "system", "content": _system_prompt_weakness_report(analysis_label)},
+                {"role": "system", "content": system_content},
                 {"role": "user", "content": user_content},
             ],
             temperature=0.3,
         )
         msg = r.choices[0].message
-        if msg is None:
-            return None
-        return msg.content
+        if msg is None or not (msg.content or "").strip():
+            return None, prompt_text
+        return msg.content, prompt_text
     except Exception:
-        return None
+        return None, prompt_text
