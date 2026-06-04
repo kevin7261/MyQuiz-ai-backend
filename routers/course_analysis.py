@@ -1,31 +1,24 @@
 """
-課程分析 API 模組。
-依 course_id 查詢 Exam_Quiz 資料。新 schema 中答案欄位（answer_content／answer_critique）
-直接內嵌於 Exam_Quiz，不再有獨立的 Exam_Answer 表。
-- GET /course-analysis/quizzes：依 course_id 取得已作答的 Exam_Quiz（answer_content 非空），
-  依 exam_page_id 分群對應 Exam；每筆 Exam 的題目結構與 GET /exam/pages 相同（quizzes[]，Exam_Quiz 含 follow_up 鏈；作答內嵌於各題列）。
-  另帶 weakness_report：每次請求皆呼叫 LLM 產生弱點報告（有 LLM API Key 且成功呼叫時為模型回覆原文，否則 null）。
+課程分析 API 模組（資料皆在 Course_Analysis，不再使用 Course_Setting）。
 
-**課程分析 user prompt** 取自 `Course_Setting.key=course_analysis_user_prompt_text`（與 GET/PUT `/rag/course_analysis_user_prompt_text` 同源）。
+- GET /course-analysis/analysis：query course_id，回傳最新一筆。
+- GET /course-analysis/llm-analysis：依全課程作答產生弱點報告並寫入 Course_Analysis。
 """
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
-from pydantic import BaseModel, Field
-
-from utils.course_setting import (
-    COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY,
-    fetch_course_setting_text,
+from services.course_analysis_setting import (
+    fetch_course_analysis_instruction_text,
+    fetch_course_analysis_user_prompt_for_llm,
+    fetch_latest_course_analysis_result_row,
+    save_course_analysis_setting,
 )
-
-SYSTEM_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY = (
-    COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY
-)
-fetch_system_setting_text = fetch_course_setting_text
 from services.exam_queries import (
     exams_by_page_ids,
     enrich_exam_quizzes_rag_tab_from_units,
@@ -34,16 +27,39 @@ from services.exam_queries import (
     quizzes_by_course_id,
 )
 from services.weakness_report import generate_weakness_report_md, quiz_has_answer
+from utils.llm_key import get_rag_llm_model, get_weakness_analysis_api_key
 from utils.serialization import to_json_safe
-from utils.llm_key import get_exam_api_key, get_rag_llm_model
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/course-analysis", tags=["course analysis"])
 
 ANALYSIS_LABEL_COURSE = "課程分析"
 
 
-class ListQuizzesResponse(BaseModel):
-    """GET /course-analysis/quizzes 回應。exams[] 每筆與 GET /exam/pages 相同含 quizzes[]；weakness_report 為 LLM 弱點報告（失敗時為 null）。"""
+class CourseStoredAnalysisResponse(BaseModel):
+    """GET /course-analysis/analysis 回應；無紀錄時各欄位為 null。"""
+    course_analysis_id: Optional[int] = Field(
+        default=None, description="Course_Analysis 主鍵"
+    )
+    course_id: Optional[int] = None
+    analysis_user_prompt_text: Optional[str] = Field(
+        default=None,
+        description="教師分析指令（純文字；僅來自 analysis_text 為空的指令列）",
+    )
+    analysis_prompt_text: Optional[str] = Field(
+        default=None,
+        description="教師分析指令（純文字；與 analysis_user_prompt_text 同源，僅來自 API 寫入之指令列）",
+    )
+    analysis_text: Optional[str] = Field(
+        default=None, description="已儲存的弱點報告 Markdown 全文",
+    )
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class CourseLlmAnalysisResponse(BaseModel):
+    """GET /course-analysis/llm-analysis 回應。"""
     exams: list[dict]
     count: int
     weakness_report: Optional[str] = Field(
@@ -52,18 +68,43 @@ class ListQuizzesResponse(BaseModel):
     )
     analysis_llm_model: str = Field(
         ...,
-        description="本次弱點分析實際使用的 LLM 模型（Course_Setting key=llm-model；未設定時為程式預設 gpt-5.4）",
+        description="本次弱點分析實際使用的 LLM 模型（Course_Setting key=llm-model）。API Key 為 exam-api-key",
     )
 
 
-@router.get("/quizzes", response_model=ListQuizzesResponse)
-def list_exam_quizzes(_person_id: PersonId, course_id: CourseId):
+@router.get("/analysis", response_model=CourseStoredAnalysisResponse)
+def get_course_stored_analysis(course_id: CourseId):
     """
-    依 course_id 取得已作答的 Exam_Quiz（answer_content 非空），依 exam_page_id 分群；
-    每筆 Exam 的 quizzes 形狀與 GET /exam/pages 一致。
-    weakness_report：每次請求皆嘗試呼叫 LLM 產生；弱點報告 user 訊息會併入 Course_Setting
-    `course_analysis_user_prompt_text`（與 `/rag/course_analysis_user_prompt_text` 同源）。
-    必填 query course_id。
+    取值：不呼叫 LLM。必填 query `course_id`。
+    `analysis_user_prompt_text`／`analysis_prompt_text` 僅來自教師指令列（API 寫入）；`analysis_text` 來自最新 LLM 結果列。
+    DB 無任何列時各欄位為 null。
+    """
+    try:
+        instr_id, instr_text = fetch_course_analysis_instruction_text(course_id)
+        result_row = fetch_latest_course_analysis_result_row(course_id)
+        if not instr_text and not result_row:
+            return CourseStoredAnalysisResponse()
+        safe_result = to_json_safe(result_row) if result_row else {}
+        return CourseStoredAnalysisResponse(
+            course_analysis_id=safe_result.get("course_analysis_id") or instr_id,
+            course_id=safe_result.get("course_id") or course_id,
+            analysis_user_prompt_text=instr_text or None,
+            analysis_prompt_text=instr_text or None,
+            analysis_text=safe_result.get("analysis_text"),
+            created_at=safe_result.get("created_at"),
+            updated_at=safe_result.get("updated_at"),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/llm-analysis", response_model=CourseLlmAnalysisResponse)
+def course_llm_analysis(_person_id: PersonId, course_id: CourseId):
+    """
+    必填 query `course_id`。
+    教師指令自 Course_Analysis 讀取；成功後將報告寫入 Course_Analysis（結果列不寫入 analysis_prompt_text）。
     """
     try:
         quizzes = quizzes_by_course_id(course_id)
@@ -72,7 +113,6 @@ def list_exam_quizzes(_person_id: PersonId, course_id: CourseId):
         page_ids: list[str] = list(dict.fromkeys(
             str(q.get("exam_page_id")) for q in quizzes_with_answers if q.get("exam_page_id") is not None
         ))
-
         exam_rows = exams_by_page_ids(page_ids)
         quizzes_by_tab: dict[str, list[dict]] = {tid: [] for tid in page_ids}
         for q in quizzes_with_answers:
@@ -91,11 +131,9 @@ def list_exam_quizzes(_person_id: PersonId, course_id: CourseId):
         data = to_json_safe(exam_rows)
         analysis_llm_model = get_rag_llm_model(course_id)
         weakness_report: Optional[str] = None
-        api_key = get_exam_api_key(course_id)
+        api_key = get_weakness_analysis_api_key(course_id)
         if api_key:
-            setting_prompt = fetch_system_setting_text(
-                SYSTEM_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY, course_id
-            )
+            setting_prompt = fetch_course_analysis_user_prompt_for_llm(course_id)
             weakness_report, _ = generate_weakness_report_md(
                 to_json_safe(quizzes_with_answers),
                 api_key,
@@ -103,11 +141,25 @@ def list_exam_quizzes(_person_id: PersonId, course_id: CourseId):
                 analysis_label=ANALYSIS_LABEL_COURSE,
                 llm_model=analysis_llm_model,
             )
-        return ListQuizzesResponse(
+            if weakness_report:
+                saved = save_course_analysis_setting(course_id, weakness_report)
+                if not saved:
+                    logger.error(
+                        "course_llm_analysis: LLM ok but Course_Analysis insert failed "
+                        "course_id=%s",
+                        course_id,
+                    )
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"弱點報告已產生但寫入 Course_Analysis 失敗 (course_id={course_id})",
+                    )
+        return CourseLlmAnalysisResponse(
             exams=data,
             count=len(data),
             weakness_report=weakness_report,
             analysis_llm_model=analysis_llm_model,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e

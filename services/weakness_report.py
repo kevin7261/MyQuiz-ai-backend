@@ -232,7 +232,7 @@ def build_weakness_report_prompts(
 
 
 def serialize_weakness_report_llm_prompt(system_content: str, user_content: str) -> str:
-    """將 system／user 訊息序列化為 JSON 字串，供 Person_Analysis_Setting.analysis_prompt_text 儲存。"""
+    """將 system／user 訊息序列化為 JSON 字串（僅供除錯／日後擴充，不寫入 DB analysis_prompt_text）。"""
     return json.dumps(
         {"system": system_content, "user": user_content},
         ensure_ascii=False,
@@ -250,8 +250,8 @@ def generate_weakness_report_md(
     """
     呼叫 LLM 產生弱點報告 Markdown。
     analysis_label：個人分析、課程分析（對應 user prompt 區段標題與 system 說明）。
-    回傳 (analysis_text, analysis_prompt_text)；失敗或無素材時兩者皆可能為 None。
-    analysis_prompt_text 為送交 LLM 之 system／user JSON 字串。
+    回傳 (analysis_text, llm_prompt_json)；失敗或無素材時兩者皆可能為 None。
+    llm_prompt_json 為送交 LLM 之 system／user JSON 字串（不寫入 DB；DB 的 analysis_prompt_text 僅存 API 教師指令）。
     """
     built = build_weakness_report_prompts(
         quizzes,

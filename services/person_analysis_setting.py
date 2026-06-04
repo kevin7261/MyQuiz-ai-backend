@@ -1,9 +1,7 @@
 """
-Person_Analysis_Setting：個人／課程 LLM 分析設定與結果。
+Person_Analysis：個人／課程 LLM 分析設定與結果。
 
-person_id 欄位：
-- 新 schema：varchar(255) 登入帳號；課程共用為空字串
-- 舊 schema（尚未 ALTER）：bigint，存 User.user_id；課程共用為 0
+person_id：varchar(255) 登入帳號；課程共用指令為空字串（查詢仍相容 legacy bigint user_id）。
 """
 
 from __future__ import annotations
@@ -18,8 +16,8 @@ from utils.supabase import get_supabase
 
 logger = logging.getLogger(__name__)
 
-PERSON_ANALYSIS_SETTING_TABLE = "Person_Analysis_Setting"
-PERSON_ANALYSIS_SETTING_COLUMNS = (
+PERSON_ANALYSIS_TABLE = "Person_Analysis"
+PERSON_ANALYSIS_COLUMNS = (
     "person_analysis_id, person_id, course_id, analysis_prompt_text, analysis_text, "
     "deleted, updated_at, created_at"
 )
@@ -164,7 +162,7 @@ def _insert_person_analysis_row(row: dict[str, Any]) -> Optional[dict[str, Any]]
     for pid in person_id_db_lookup_keys(login_key):
         try:
             payload = {**base, "person_id": pid}
-            resp = supabase.table(PERSON_ANALYSIS_SETTING_TABLE).insert(payload).execute()
+            resp = supabase.table(PERSON_ANALYSIS_TABLE).insert(payload).execute()
             if resp.data:
                 return _normalize_row_person_id(resp.data[0])
             errors.append(f"person_id={pid!r}: insert returned no data")
@@ -172,7 +170,7 @@ def _insert_person_analysis_row(row: dict[str, Any]) -> Optional[dict[str, Any]]
             errors.append(f"person_id={pid!r}: {e}")
             if not _is_person_id_type_error(e):
                 logger.exception(
-                    "Person_Analysis_Setting insert failed person_id=%s course_id=%s",
+                    "Person_Analysis insert failed person_id=%s course_id=%s",
                     pid,
                     row.get("course_id"),
                 )
@@ -180,14 +178,14 @@ def _insert_person_analysis_row(row: dict[str, Any]) -> Optional[dict[str, Any]]
         except Exception as e:
             errors.append(f"person_id={pid!r}: {e}")
             logger.exception(
-                "Person_Analysis_Setting insert failed person_id=%s course_id=%s",
+                "Person_Analysis insert failed person_id=%s course_id=%s",
                 pid,
                 row.get("course_id"),
             )
             break
 
     logger.error(
-        "Person_Analysis_Setting insert exhausted keys login=%s course_id=%s errors=%s",
+        "Person_Analysis insert exhausted keys login=%s course_id=%s errors=%s",
         login_key,
         row.get("course_id"),
         "; ".join(errors),
@@ -216,8 +214,8 @@ def fetch_latest_person_analysis_instruction_row(
     for pid in person_id_db_lookup_keys(person_id):
         try:
             resp = (
-                supabase.table(PERSON_ANALYSIS_SETTING_TABLE)
-                .select(PERSON_ANALYSIS_SETTING_COLUMNS)
+                supabase.table(PERSON_ANALYSIS_TABLE)
+                .select(PERSON_ANALYSIS_COLUMNS)
                 .eq("person_id", pid)
                 .eq("course_id", int(course_id))
                 .eq("deleted", False)
@@ -260,8 +258,8 @@ def fetch_latest_person_analysis_result_row(
     for pid in person_id_db_lookup_keys(person_id):
         try:
             resp = (
-                supabase.table(PERSON_ANALYSIS_SETTING_TABLE)
-                .select(PERSON_ANALYSIS_SETTING_COLUMNS)
+                supabase.table(PERSON_ANALYSIS_TABLE)
+                .select(PERSON_ANALYSIS_COLUMNS)
                 .eq("person_id", pid)
                 .eq("course_id", int(course_id))
                 .eq("deleted", False)
@@ -303,8 +301,8 @@ def fetch_latest_person_analysis_setting(
     for pid in person_id_db_lookup_keys(person_id):
         try:
             resp = (
-                supabase.table(PERSON_ANALYSIS_SETTING_TABLE)
-                .select(PERSON_ANALYSIS_SETTING_COLUMNS)
+                supabase.table(PERSON_ANALYSIS_TABLE)
+                .select(PERSON_ANALYSIS_COLUMNS)
                 .eq("person_id", pid)
                 .eq("course_id", int(course_id))
                 .eq("deleted", False)
@@ -393,16 +391,16 @@ def save_person_analysis_prompt_instruction(
 def save_person_analysis_setting(
     person_id: str | int,
     course_id: int | str,
-    analysis_prompt_text: str,
     analysis_text: str,
 ) -> Optional[dict[str, Any]]:
-    if not (analysis_prompt_text or "").strip() or not (analysis_text or "").strip():
+    """寫入 LLM 分析結果列；analysis_prompt_text 僅存於教師指令列（API PUT）。"""
+    if not (analysis_text or "").strip():
         return None
     return _insert_person_analysis_row(
         {
             "person_id": _person_id_for_db(person_id),
             "course_id": int(course_id),
-            "analysis_prompt_text": analysis_prompt_text,
+            "analysis_prompt_text": None,
             "analysis_text": analysis_text,
             "deleted": False,
         }
