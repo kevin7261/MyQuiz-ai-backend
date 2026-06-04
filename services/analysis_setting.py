@@ -1,23 +1,32 @@
 """
-Person_Analysis：個人／課程 LLM 分析設定與結果。
+弱點分析設定與結果的資料存取（API 回應欄位名稱不變）。
 
-person_id：varchar(255) 登入帳號；課程共用指令為空字串（查詢仍相容 legacy bigint user_id）。
+- 個人：Supabase `Person_Analysis_Setting`（person_id 登入帳號；課程共用為空字串）
+- 課程：Supabase `Course_Setting`（key=`course_analysis_user_prompt_text` 指令；
+  key=`course_analysis_text` 已儲存報告）。回傳列中的 `course_analysis_id` 對應 `course_setting_id`。
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional, Union
+from typing import Any, Literal, Optional, Union
 
 from postgrest.exceptions import APIError
 
+from utils.course_setting import (
+    COURSE_SETTING_COURSE_ANALYSIS_TEXT_KEY,
+    COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY,
+    fetch_course_setting_row,
+    upsert_course_setting_and_get_row,
+)
 from utils.db_schema import ACTIVE_DELETED_FILTER, USER_TABLE
 from utils.supabase import get_supabase
 
 logger = logging.getLogger(__name__)
 
-PERSON_ANALYSIS_TABLE = "Person_Analysis"
-PERSON_ANALYSIS_COLUMNS = (
+# --- Person_Analysis_Setting ---
+PERSON_ANALYSIS_SETTING_TABLE = "Person_Analysis_Setting"
+PERSON_ANALYSIS_SETTING_COLUMNS = (
     "person_analysis_id, person_id, course_id, analysis_prompt_text, analysis_text, "
     "deleted, updated_at, created_at"
 )
@@ -162,7 +171,11 @@ def _insert_person_analysis_row(row: dict[str, Any]) -> Optional[dict[str, Any]]
     for pid in person_id_db_lookup_keys(login_key):
         try:
             payload = {**base, "person_id": pid}
-            resp = supabase.table(PERSON_ANALYSIS_TABLE).insert(payload).execute()
+            resp = (
+                supabase.table(PERSON_ANALYSIS_SETTING_TABLE)
+                .insert(payload)
+                .execute()
+            )
             if resp.data:
                 return _normalize_row_person_id(resp.data[0])
             errors.append(f"person_id={pid!r}: insert returned no data")
@@ -170,7 +183,7 @@ def _insert_person_analysis_row(row: dict[str, Any]) -> Optional[dict[str, Any]]
             errors.append(f"person_id={pid!r}: {e}")
             if not _is_person_id_type_error(e):
                 logger.exception(
-                    "Person_Analysis insert failed person_id=%s course_id=%s",
+                    "Person_Analysis_Setting insert failed person_id=%s course_id=%s",
                     pid,
                     row.get("course_id"),
                 )
@@ -178,14 +191,14 @@ def _insert_person_analysis_row(row: dict[str, Any]) -> Optional[dict[str, Any]]
         except Exception as e:
             errors.append(f"person_id={pid!r}: {e}")
             logger.exception(
-                "Person_Analysis insert failed person_id=%s course_id=%s",
+                "Person_Analysis_Setting insert failed person_id=%s course_id=%s",
                 pid,
                 row.get("course_id"),
             )
             break
 
     logger.error(
-        "Person_Analysis insert exhausted keys login=%s course_id=%s errors=%s",
+        "Person_Analysis_Setting insert exhausted keys login=%s course_id=%s errors=%s",
         login_key,
         row.get("course_id"),
         "; ".join(errors),
@@ -199,7 +212,6 @@ def _is_instruction_only_row(row: dict[str, Any]) -> bool:
 
 
 def _instruction_text_from_row(row: dict[str, Any]) -> str:
-    """僅從指令列取純文字 analysis_prompt_text（不解析 LLM 結果 JSON）。"""
     if not _is_instruction_only_row(row):
         return ""
     return (row.get("analysis_prompt_text") or "").strip()
@@ -214,8 +226,8 @@ def fetch_latest_person_analysis_instruction_row(
     for pid in person_id_db_lookup_keys(person_id):
         try:
             resp = (
-                supabase.table(PERSON_ANALYSIS_TABLE)
-                .select(PERSON_ANALYSIS_COLUMNS)
+                supabase.table(PERSON_ANALYSIS_SETTING_TABLE)
+                .select(PERSON_ANALYSIS_SETTING_COLUMNS)
                 .eq("person_id", pid)
                 .eq("course_id", int(course_id))
                 .eq("deleted", False)
@@ -258,8 +270,8 @@ def fetch_latest_person_analysis_result_row(
     for pid in person_id_db_lookup_keys(person_id):
         try:
             resp = (
-                supabase.table(PERSON_ANALYSIS_TABLE)
-                .select(PERSON_ANALYSIS_COLUMNS)
+                supabase.table(PERSON_ANALYSIS_SETTING_TABLE)
+                .select(PERSON_ANALYSIS_SETTING_COLUMNS)
                 .eq("person_id", pid)
                 .eq("course_id", int(course_id))
                 .eq("deleted", False)
@@ -285,46 +297,6 @@ def fetch_latest_person_analysis_result_row(
         except Exception:
             logger.exception(
                 "fetch_latest_person_analysis_result_row failed person_id=%s course_id=%s key=%s",
-                person_id,
-                course_id,
-                pid,
-            )
-            return None
-    return None
-
-
-def fetch_latest_person_analysis_setting(
-    person_id: str | int,
-    course_id: int | str,
-) -> Optional[dict[str, Any]]:
-    supabase = get_supabase()
-    for pid in person_id_db_lookup_keys(person_id):
-        try:
-            resp = (
-                supabase.table(PERSON_ANALYSIS_TABLE)
-                .select(PERSON_ANALYSIS_COLUMNS)
-                .eq("person_id", pid)
-                .eq("course_id", int(course_id))
-                .eq("deleted", False)
-                .order("created_at", desc=True)
-                .limit(1)
-                .execute()
-            )
-            if resp.data:
-                return _normalize_row_person_id(resp.data[0])
-        except APIError as e:
-            if _is_person_id_type_error(e):
-                continue
-            logger.exception(
-                "fetch_latest_person_analysis_setting failed person_id=%s course_id=%s key=%s",
-                person_id,
-                course_id,
-                pid,
-            )
-            return None
-        except Exception:
-            logger.exception(
-                "fetch_latest_person_analysis_setting failed person_id=%s course_id=%s key=%s",
                 person_id,
                 course_id,
                 pid,
@@ -393,7 +365,7 @@ def save_person_analysis_setting(
     course_id: int | str,
     analysis_text: str,
 ) -> Optional[dict[str, Any]]:
-    """寫入 LLM 分析結果列；analysis_prompt_text 僅存於教師指令列（API PUT）。"""
+    """寫入 LLM 分析結果列；analysis_prompt_text 僅存於教師指令列。"""
     if not (analysis_text or "").strip():
         return None
     return _insert_person_analysis_row(
@@ -404,4 +376,130 @@ def save_person_analysis_setting(
             "analysis_text": analysis_text,
             "deleted": False,
         }
+    )
+
+
+# --- Course_Setting（課程分析）---
+
+
+def _course_setting_as_analysis_row(
+    setting_row: dict[str, Any],
+    *,
+    value_as: Literal["prompt", "text"],
+) -> dict[str, Any]:
+    """將 Course_Setting 列轉成與舊 Course_Analysis 相容的 dict（供路由沿用）。"""
+    val = (setting_row.get("value") or "").strip()
+    cid = int(setting_row["course_id"])
+    base = {
+        "course_analysis_id": setting_row.get("course_setting_id"),
+        "person_id": "",
+        "course_id": cid,
+        "deleted": False,
+        "created_at": setting_row.get("created_at"),
+        "updated_at": setting_row.get("updated_at"),
+    }
+    if value_as == "prompt":
+        return {**base, "analysis_prompt_text": val, "analysis_text": None}
+    return {**base, "analysis_prompt_text": None, "analysis_text": val}
+
+
+def _upsert_course_analysis_setting(
+    course_id: int | str,
+    key: str,
+    value: str,
+) -> Optional[dict[str, Any]]:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        supabase = get_supabase()
+        row = upsert_course_setting_and_get_row(supabase, key, text, int(course_id))
+        if not row:
+            logger.error(
+                "Course_Setting upsert returned no row course_id=%s key=%s",
+                course_id,
+                key,
+            )
+            return None
+        value_as: Literal["prompt", "text"] = (
+            "prompt"
+            if key == COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY
+            else "text"
+        )
+        return _course_setting_as_analysis_row(row, value_as=value_as)
+    except Exception:
+        logger.exception(
+            "Course_Setting upsert failed course_id=%s key=%s",
+            course_id,
+            key,
+        )
+        return None
+
+
+def fetch_latest_course_analysis_instruction_row(
+    course_id: int | str,
+) -> Optional[dict[str, Any]]:
+    """課程分析教師指令（Course_Setting key=course_analysis_user_prompt_text）。"""
+    row = fetch_course_setting_row(
+        COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY,
+        int(course_id),
+    )
+    if not row or not (row.get("value") or "").strip():
+        return None
+    return _course_setting_as_analysis_row(row, value_as="prompt")
+
+
+def fetch_latest_course_analysis_result_row(
+    course_id: int | str,
+) -> Optional[dict[str, Any]]:
+    """已儲存課程弱點報告（Course_Setting key=course_analysis_text）。"""
+    row = fetch_course_setting_row(
+        COURSE_SETTING_COURSE_ANALYSIS_TEXT_KEY,
+        int(course_id),
+    )
+    if not row or not (row.get("value") or "").strip():
+        return None
+    return _course_setting_as_analysis_row(row, value_as="text")
+
+
+def fetch_course_analysis_instruction_text(
+    course_id: int | str,
+) -> tuple[Optional[int], str]:
+    """讀取教師分析指令。回傳 (course_analysis_id, instruction_text)。"""
+    row = fetch_latest_course_analysis_instruction_row(course_id)
+    if not row:
+        return None, ""
+    text = _instruction_text_from_row(row)
+    if not text:
+        return None, ""
+    raw_id = row.get("course_analysis_id")
+    return (int(raw_id) if raw_id is not None else None), text
+
+
+def fetch_course_analysis_user_prompt_for_llm(course_id: int | str) -> str:
+    """LLM 用教師指令（僅指令，不從結果反推）。"""
+    _, text = fetch_course_analysis_instruction_text(course_id)
+    return text
+
+
+def save_course_analysis_prompt_instruction(
+    course_id: int | str,
+    analysis_prompt_text: str,
+) -> Optional[dict[str, Any]]:
+    return _upsert_course_analysis_setting(
+        course_id,
+        COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY,
+        analysis_prompt_text,
+    )
+
+
+def save_course_analysis_setting(
+    course_id: int | str,
+    analysis_text: str,
+) -> Optional[dict[str, Any]]:
+    """寫入 LLM 課程弱點報告（Course_Setting key=course_analysis_text）。"""
+    return _upsert_course_analysis_setting(
+        course_id,
+        COURSE_SETTING_COURSE_ANALYSIS_TEXT_KEY,
+        analysis_text,
     )

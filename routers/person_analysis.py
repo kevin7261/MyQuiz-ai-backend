@@ -1,8 +1,8 @@
 """
-個人分析 API 模組（資料皆在 Person_Analysis，不再使用 Course_Setting／System_Setting）。
+個人分析 API 模組（資料存於 Person_Analysis_Setting；見 services.analysis_setting）。
 
 - GET /person-analysis/analysis：query person_id、course_id，回傳最新一筆。
-- GET /person-analysis/llm-analysis：依作答產生弱點報告並寫入 Person_Analysis。
+- GET /person-analysis/llm-analysis：依作答產生弱點報告並寫入 Person_Analysis_Setting。
 """
 
 import logging
@@ -19,7 +19,7 @@ from services.exam_queries import (
     exam_tab_quizzes_response,
     quizzes_by_person_id,
 )
-from services.person_analysis_setting import (
+from services.analysis_setting import (
     COURSE_WIDE_PERSON_ANALYSIS_PERSON_ID,
     fetch_latest_person_analysis_result_row,
     fetch_person_analysis_instruction_text,
@@ -65,7 +65,7 @@ def _login_person_id_or_404(person_id: str) -> str:
 class PersonStoredAnalysisResponse(BaseModel):
     """GET /person-analysis/analysis 回應；無紀錄時各欄位為 null。"""
     person_analysis_id: Optional[int] = Field(
-        default=None, description="Person_Analysis 主鍵"
+        default=None, description="Person_Analysis_Setting 主鍵"
     )
     person_id: Optional[str] = Field(default=None, description="登入帳號；課程共用為空字串")
     course_id: Optional[int] = None
@@ -138,8 +138,8 @@ def person_llm_analysis(
 ):
     """
     必填 query `person_id`（學生登入帳號）、`course_id`。
-    教師指令自 Person_Analysis 讀取（該生優先，其次課程共用 person_id 空字串）。
-    成功後將報告寫入 Person_Analysis（結果列不寫入 analysis_prompt_text）。
+    教師指令自 Person_Analysis_Setting 讀取（該生優先，其次課程共用 person_id 空字串）。
+    成功後將報告寫入 Person_Analysis_Setting（結果列不寫入 analysis_prompt_text）。
     """
     try:
         login_pid = _login_person_id_or_404(person_id)
@@ -185,7 +185,7 @@ def person_llm_analysis(
                 )
                 if not saved:
                     logger.error(
-                        "person_llm_analysis: LLM ok but Person_Analysis insert failed "
+                        "person_llm_analysis: LLM ok but Person_Analysis_Setting insert failed "
                         "person_id=%s course_id=%s",
                         login_pid,
                         course_id,
@@ -193,7 +193,7 @@ def person_llm_analysis(
                     raise HTTPException(
                         status_code=500,
                         detail=(
-                            f"弱點報告已產生但寫入 Person_Analysis 失敗 "
+                            f"弱點報告已產生但寫入 Person_Analysis_Setting 失敗 "
                             f"(person_id={login_pid}, course_id={course_id})"
                         ),
                     )

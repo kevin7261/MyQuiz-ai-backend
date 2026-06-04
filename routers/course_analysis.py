@@ -1,8 +1,8 @@
 """
-課程分析 API 模組（資料皆在 Course_Analysis，不再使用 Course_Setting）。
+課程分析 API 模組（指令／報告存於 Course_Setting；key 見 services.analysis_setting）。
 
 - GET /course-analysis/analysis：query course_id，回傳最新一筆。
-- GET /course-analysis/llm-analysis：依全課程作答產生弱點報告並寫入 Course_Analysis。
+- GET /course-analysis/llm-analysis：依全課程作答產生弱點報告並寫入 Course_Setting。
 """
 
 import logging
@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
-from services.course_analysis_setting import (
+from services.analysis_setting import (
     fetch_course_analysis_instruction_text,
     fetch_course_analysis_user_prompt_for_llm,
     fetch_latest_course_analysis_result_row,
@@ -40,7 +40,7 @@ ANALYSIS_LABEL_COURSE = "課程分析"
 class CourseStoredAnalysisResponse(BaseModel):
     """GET /course-analysis/analysis 回應；無紀錄時各欄位為 null。"""
     course_analysis_id: Optional[int] = Field(
-        default=None, description="Course_Analysis 主鍵"
+        default=None, description="課程分析設定識別（Course_Setting.course_setting_id）"
     )
     course_id: Optional[int] = None
     analysis_user_prompt_text: Optional[str] = Field(
@@ -104,7 +104,7 @@ def get_course_stored_analysis(course_id: CourseId):
 def course_llm_analysis(_person_id: PersonId, course_id: CourseId):
     """
     必填 query `course_id`。
-    教師指令自 Course_Analysis 讀取；成功後將報告寫入 Course_Analysis（結果列不寫入 analysis_prompt_text）。
+    教師指令自 Course_Setting 讀取；成功後將報告寫入 Course_Setting（key=course_analysis_text）。
     """
     try:
         quizzes = quizzes_by_course_id(course_id)
@@ -145,13 +145,13 @@ def course_llm_analysis(_person_id: PersonId, course_id: CourseId):
                 saved = save_course_analysis_setting(course_id, weakness_report)
                 if not saved:
                     logger.error(
-                        "course_llm_analysis: LLM ok but Course_Analysis insert failed "
+                        "course_llm_analysis: LLM ok but Course_Setting save failed "
                         "course_id=%s",
                         course_id,
                     )
                     raise HTTPException(
                         status_code=500,
-                        detail=f"弱點報告已產生但寫入 Course_Analysis 失敗 (course_id={course_id})",
+                        detail=f"弱點報告已產生但寫入 Course_Setting 失敗 (course_id={course_id})",
                     )
         return CourseLlmAnalysisResponse(
             exams=data,
