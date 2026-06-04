@@ -27,7 +27,7 @@ from services.exam_queries import (
     quizzes_by_course_id,
 )
 from services.weakness_report import generate_weakness_report_md, quiz_has_answer
-from utils.llm_key import get_rag_llm_model, get_weakness_analysis_api_key
+from utils.llm_key import get_course_analysis_api_key, get_rag_llm_model
 from utils.serialization import to_json_safe
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ class CourseLlmAnalysisResponse(BaseModel):
     )
     analysis_llm_model: str = Field(
         ...,
-        description="本次弱點分析實際使用的 LLM 模型（Course_Setting key=llm-model）。API Key 為 exam-api-key",
+        description="本次弱點分析實際使用的 LLM 模型（Course_Setting key=llm-model）。API Key 為 rag-api-key",
     )
 
 
@@ -131,7 +131,7 @@ def course_llm_analysis(_person_id: PersonId, course_id: CourseId):
         data = to_json_safe(exam_rows)
         analysis_llm_model = get_rag_llm_model(course_id)
         weakness_report: Optional[str] = None
-        api_key = get_weakness_analysis_api_key(course_id)
+        api_key = get_course_analysis_api_key(course_id)
         if api_key:
             setting_prompt = fetch_course_analysis_user_prompt_for_llm(course_id)
             weakness_report, _ = generate_weakness_report_md(

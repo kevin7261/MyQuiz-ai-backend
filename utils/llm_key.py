@@ -2,7 +2,8 @@
 LLM API Key／出題模型：依 course_id 自 Course_Setting 讀取。
 - RAG Key：key=rag-api-key（GET/PUT /rag/llm_api_key）
 - LLM 模型（出題、批改、弱點分析共用）：key=llm-model（GET/PUT /rag/llm_model；未設定時 fallback `QUIZ_LLM_MODEL`）
-- Exam Key：key=exam-api-key（GET/PUT /exam/llm_api_key）
+- Exam Key：key=exam-api-key（GET/PUT /exam/llm_api_key；個人弱點分析）
+- 課程弱點分析：與 RAG 相同，使用 rag-api-key
 """
 
 from typing import Any, Optional
@@ -29,18 +30,18 @@ def get_rag_llm_model(course_id: int) -> str:
 
 
 def get_exam_api_key(course_id: int) -> Optional[str]:
-    """Exam 出題／批改、個人／課程弱點分析（Course_Setting key=exam-api-key）。"""
+    """Exam 出題／批改、個人弱點分析（Course_Setting key=exam-api-key）。"""
     return fetch_course_setting_value(COURSE_SETTING_EXAM_API_KEY, course_id)
 
 
 def get_person_analysis_api_key(course_id: int) -> Optional[str]:
-    """個人弱點分析 LLM：僅 Course_Setting key=exam-api-key。"""
+    """個人弱點分析（/person-analysis/llm-analysis）：exam-api-key。"""
     return get_exam_api_key(course_id)
 
 
-def get_weakness_analysis_api_key(course_id: int) -> Optional[str]:
-    """課程弱點分析：僅 exam-api-key（與個人分析相同）。"""
-    return get_exam_api_key(course_id)
+def get_course_analysis_api_key(course_id: int) -> Optional[str]:
+    """課程弱點分析（/course-analysis/llm-analysis）：rag-api-key。"""
+    return get_rag_api_key(course_id)
 
 
 def fetch_api_key_setting_row(key: str, course_id: int) -> Optional[dict[str, Any]]:
