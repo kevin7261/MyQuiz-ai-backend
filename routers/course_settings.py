@@ -1,6 +1,10 @@
 """
 課程設定（Course_Setting）API 模組，掛載於 /rag。
 - GET /rag/course-members：依 course_id 列出該課程所有使用者；須為有效登入使用者；必填 query course_id。
+- POST /rag/course-members/add：新增一筆課程成員（person_id、name、user_type）；僅 user_type 1／2。
+  User 表已有相同 college_id + person_id 時僅新增選課，否則先建立 User 再加入課程。
+- PUT /rag/course-members/edit/{person_id}：編輯課程成員（name、user_type）；僅 user_type 1／2。
+- PUT /rag/course-members/delete/{person_id}：自課程移除成員（User_Course_Relation deleted=true）；僅 user_type 1／2。
 - GET /rag/person_analysis_user_prompt_text：取得個人分析指令（Person_Analysis_Setting 課程共用列）；須為有效登入使用者；必填 query course_id。
 - PUT /rag/person_analysis_user_prompt_text：寫入 Person_Analysis_Setting；僅 user_type 1／2。
 - GET /rag/course_analysis_user_prompt_text：取得課程分析指令（Course_Setting）；須為有效登入使用者；必填 query course_id。
@@ -9,9 +13,9 @@
 LLM API Key 亦存於 Course_Setting（rag-api-key／exam-api-key）；見 GET/PUT /rag/llm_api_key、/rag/llm_model、/exam/llm_api_key。
 """
 
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path
 from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
@@ -24,9 +28,18 @@ from services.analysis_setting import (
     save_person_analysis_prompt_instruction,
 )
 from utils.course_setting import upsert_course_setting_and_get_row
-from utils.db_schema import ACTIVE_DELETED_FILTER, USER_COURSE_RELATION_TABLE, USER_TABLE
+from utils.db_schema import (
+    ACTIVE_DELETED_FILTER,
+    COLLEGE_TABLE,
+    COURSE_TABLE,
+    USER_COURSE_RELATION_TABLE,
+    USER_TABLE,
+)
 from utils.openapi import openapi_body
 from utils.supabase import get_supabase
+from utils.taipei_time import now_taipei_iso
+
+DEFAULT_NEW_MEMBER_PASSWORD = "0000"
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -151,6 +164,282 @@ class ListCourseMembersResponse(BaseModel):
     count: int
 
 
+class AddCourseMemberRequest(BaseModel):
+    """POST /rag/course-members/add 的 body。"""
+
+    person_id: str = Field(..., description="登入帳號（id）")
+    name: str = Field(..., description="姓名")
+    user_type: int = Field(..., description="身份：1 開發者、2 管理者、3 學生")
+
+
+class EditCourseMemberRequest(BaseModel):
+    """PUT /rag/course-members/edit/{person_id} 的 body。"""
+
+    name: str = Field(..., description="姓名")
+    user_type: int = Field(..., description="身份：1 開發者、2 管理者、3 學生")
+
+
+def _validate_course_member_fields(
+    target_person_id: str,
+    name: str,
+    user_type: int,
+) -> tuple[str, str]:
+    pid = (target_person_id or "").strip()
+    display_name = (name or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="person_id 不可為空")
+    if not display_name:
+        raise HTTPException(status_code=400, detail="name 不可為空")
+    if user_type not in (1, 2, 3):
+        raise HTTPException(status_code=400, detail="user_type 須為 1、2 或 3")
+    return pid, display_name
+
+
+def _get_active_course_member_relation(
+    supabase,
+    course_id: int,
+    target_person_id: str,
+) -> dict:
+    pid = (target_person_id or "").strip()
+    resp = (
+        supabase.table(USER_COURSE_RELATION_TABLE)
+        .select("course_user_id, user_id, person_id, name, user_type, college_id")
+        .eq("person_id", pid)
+        .eq("course_id", course_id)
+        .or_(ACTIVE_DELETED_FILTER)
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="找不到該課程成員")
+    return resp.data[0]
+
+
+def _fetch_user_row_for_member(supabase, user_id: int) -> dict | None:
+    resp = (
+        supabase.table(USER_TABLE)
+        .select("user_id, person_id, name, password, college_id")
+        .eq("user_id", user_id)
+        .or_(ACTIVE_DELETED_FILTER)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def _course_member_item_from_rows(rel: dict, user_row: dict | None) -> CourseMemberItem:
+    uid = int(rel["user_id"])
+    college_raw = rel.get("college_id")
+    college_id = int(college_raw) if college_raw is not None and int(college_raw or 0) != 0 else None
+    if user_row:
+        name = (user_row.get("name") or "").strip() or (rel.get("name") or "").strip() or None
+        pid = (user_row.get("person_id") or rel.get("person_id") or "").strip() or None
+        password = user_row.get("password")
+    else:
+        name = (rel.get("name") or "").strip() or None
+        pid = (rel.get("person_id") or "").strip() or None
+        password = None
+    return CourseMemberItem(
+        course_user_id=int(rel["course_user_id"]),
+        user_id=uid,
+        person_id=pid,
+        name=name,
+        password=password,
+        user_type=rel.get("user_type"),
+        college_id=college_id,
+    )
+
+
+def _fetch_course_college(supabase, course_id: int) -> tuple[int, str | None]:
+    course_resp = (
+        supabase.table(COURSE_TABLE)
+        .select("course_id, college_id")
+        .eq("course_id", course_id)
+        .or_(ACTIVE_DELETED_FILTER)
+        .limit(1)
+        .execute()
+    )
+    if not course_resp.data:
+        raise HTTPException(status_code=400, detail="找不到指定課程")
+    college_id = int(course_resp.data[0].get("college_id") or 0)
+    if not college_id:
+        raise HTTPException(status_code=400, detail="課程未設定所屬學院")
+    college_resp = (
+        supabase.table(COLLEGE_TABLE)
+        .select("college_id, college_name")
+        .eq("college_id", college_id)
+        .or_(ACTIVE_DELETED_FILTER)
+        .limit(1)
+        .execute()
+    )
+    if not college_resp.data:
+        raise HTTPException(status_code=400, detail="找不到所屬學院")
+    college_name = (college_resp.data[0].get("college_name") or "").strip() or None
+    return college_id, college_name
+
+
+def _add_course_member(
+    supabase,
+    *,
+    course_id: int,
+    target_person_id: str,
+    name: str,
+    user_type: int,
+) -> CourseMemberItem:
+    pid, display_name = _validate_course_member_fields(target_person_id, name, user_type)
+
+    college_id, college_name = _fetch_course_college(supabase, course_id)
+
+    existing_rel = (
+        supabase.table(USER_COURSE_RELATION_TABLE)
+        .select("course_user_id")
+        .eq("person_id", pid)
+        .eq("course_id", course_id)
+        .or_(ACTIVE_DELETED_FILTER)
+        .limit(1)
+        .execute()
+    )
+    if existing_rel.data:
+        raise HTTPException(status_code=409, detail="該使用者已在課程中")
+
+    user_resp = (
+        supabase.table(USER_TABLE)
+        .select("user_id, person_id, name, password, college_id")
+        .eq("person_id", pid)
+        .eq("college_id", college_id)
+        .or_(ACTIVE_DELETED_FILTER)
+        .limit(1)
+        .execute()
+    )
+    ts = now_taipei_iso()
+    if user_resp.data:
+        user_row = user_resp.data[0]
+        user_id = int(user_row["user_id"])
+        password = user_row.get("password")
+        member_name = (user_row.get("name") or "").strip() or display_name
+    else:
+        other_college = (
+            supabase.table(USER_TABLE)
+            .select("user_id, college_id")
+            .eq("person_id", pid)
+            .or_(ACTIVE_DELETED_FILTER)
+            .limit(1)
+            .execute()
+        )
+        if other_college.data:
+            raise HTTPException(
+                status_code=409,
+                detail="person_id 已存在於其他學院，無法加入此課程",
+            )
+        ins = (
+            supabase.table(USER_TABLE)
+            .insert(
+                {
+                    "person_id": pid,
+                    "name": display_name,
+                    "password": DEFAULT_NEW_MEMBER_PASSWORD,
+                    "college_id": college_id,
+                    **({"college_name": college_name} if college_name else {}),
+                    "deleted": False,
+                    "updated_at": ts,
+                    "created_at": ts,
+                }
+            )
+            .execute()
+        )
+        user_row = ins.data[0] if ins.data else None
+        if not user_row:
+            raise HTTPException(status_code=500, detail="新增使用者失敗")
+        user_id = int(user_row["user_id"])
+        password = DEFAULT_NEW_MEMBER_PASSWORD
+        member_name = display_name
+
+    rel_ins = (
+        supabase.table(USER_COURSE_RELATION_TABLE)
+        .insert(
+            {
+                "user_id": user_id,
+                "person_id": pid,
+                "name": display_name,
+                "course_id": course_id,
+                "college_id": college_id,
+                "user_type": user_type,
+                "deleted": False,
+                "updated_at": ts,
+                "created_at": ts,
+            }
+        )
+        .execute()
+    )
+    rel_row = rel_ins.data[0] if rel_ins.data else None
+    if not rel_row:
+        raise HTTPException(status_code=500, detail="新增課程成員失敗")
+
+    return CourseMemberItem(
+        course_user_id=int(rel_row["course_user_id"]),
+        user_id=user_id,
+        person_id=pid,
+        name=member_name,
+        password=password,
+        user_type=user_type,
+        college_id=college_id,
+    )
+
+
+def _edit_course_member(
+    supabase,
+    *,
+    course_id: int,
+    target_person_id: str,
+    name: str,
+    user_type: int,
+) -> CourseMemberItem:
+    pid, display_name = _validate_course_member_fields(target_person_id, name, user_type)
+    rel = _get_active_course_member_relation(supabase, course_id, pid)
+    user_id = int(rel["user_id"])
+    ts = now_taipei_iso()
+
+    supabase.table(USER_COURSE_RELATION_TABLE).update(
+        {
+            "name": display_name,
+            "user_type": user_type,
+            "updated_at": ts,
+        }
+    ).eq("course_user_id", rel["course_user_id"]).execute()
+
+    user_row = _fetch_user_row_for_member(supabase, user_id)
+    if user_row:
+        supabase.table(USER_TABLE).update(
+            {"name": display_name, "updated_at": ts}
+        ).eq("user_id", user_id).execute()
+        user_row = {**user_row, "name": display_name}
+
+    rel_out = {
+        **rel,
+        "name": display_name,
+        "user_type": user_type,
+    }
+    return _course_member_item_from_rows(rel_out, user_row)
+
+
+def _soft_delete_course_member(
+    supabase,
+    *,
+    course_id: int,
+    target_person_id: str,
+) -> CourseMemberItem:
+    pid = (target_person_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="person_id 不可為空")
+    rel = _get_active_course_member_relation(supabase, course_id, pid)
+    user_row = _fetch_user_row_for_member(supabase, int(rel["user_id"]))
+    ts = now_taipei_iso()
+    supabase.table(USER_COURSE_RELATION_TABLE).update(
+        {"deleted": True, "updated_at": ts}
+    ).eq("course_user_id", rel["course_user_id"]).execute()
+    return _course_member_item_from_rows(rel, user_row)
+
+
 def _fetch_course_members(supabase, course_id: int) -> list[CourseMemberItem]:
     """依 course_id 自 User_Course_Relation 與 User 組出課程成員列表。"""
     rel_resp = (
@@ -215,6 +504,95 @@ def list_course_members(person_id: PersonId, course_id: CourseId):
         supabase = get_supabase()
         members = _fetch_course_members(supabase, course_id)
         return ListCourseMembersResponse(course_id=course_id, members=members, count=len(members))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/course-members/add", response_model=CourseMemberItem)
+def add_course_member(
+    body: openapi_body(
+        AddCourseMemberRequest,
+        {"person_id": "string", "name": "string", "user_type": 3},
+    ),
+    person_id: PersonId,
+    course_id: CourseId,
+):
+    """Add course member：新增一筆課程成員（person_id、name、user_type）。
+    User 表已有相同 college_id + person_id 時僅新增選課；否則建立 User（預設密碼 0000）後再加入課程。"""
+    _require_developer_or_manager_for_course_setting_write(person_id, course_id)
+    try:
+        supabase = get_supabase()
+        return _add_course_member(
+            supabase,
+            course_id=course_id,
+            target_person_id=body.person_id,
+            name=body.name,
+            user_type=body.user_type,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.put(
+    "/course-members/edit/{person_id}",
+    response_model=CourseMemberItem,
+    summary="Edit course member",
+    operation_id="rag_course_members_edit",
+)
+def edit_course_member(
+    target_person_id: Annotated[
+        str, Path(alias="person_id", description="要編輯的 person_id")
+    ],
+    body: openapi_body(
+        EditCourseMemberRequest,
+        {"name": "string", "user_type": 3},
+    ),
+    person_id: PersonId,
+    course_id: CourseId,
+):
+    """Edit course member：更新課程成員 name、user_type（以 path person_id 識別成員）。"""
+    _require_developer_or_manager_for_course_setting_write(person_id, course_id)
+    try:
+        supabase = get_supabase()
+        return _edit_course_member(
+            supabase,
+            course_id=course_id,
+            target_person_id=target_person_id,
+            name=body.name,
+            user_type=body.user_type,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.put(
+    "/course-members/delete/{person_id}",
+    response_model=CourseMemberItem,
+    summary="Remove course member",
+    operation_id="rag_course_members_delete",
+)
+def soft_delete_course_member(
+    target_person_id: Annotated[
+        str, Path(alias="person_id", description="要移出課程的 person_id")
+    ],
+    person_id: PersonId,
+    course_id: CourseId,
+):
+    """Remove course member：自課程軟刪除成員（User_Course_Relation deleted=true，不刪 User 表）。"""
+    _require_developer_or_manager_for_course_setting_write(person_id, course_id)
+    try:
+        supabase = get_supabase()
+        return _soft_delete_course_member(
+            supabase,
+            course_id=course_id,
+            target_person_id=target_person_id,
+        )
     except HTTPException:
         raise
     except Exception as e:
