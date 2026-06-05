@@ -533,6 +533,7 @@ async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseI
         "status": data["status"],
         "result": data.get("result"),
         "error": data.get("error"),
+        "llm_error": data.get("llm_error"),
     }
     rag_quiz_row: dict[str, Any] | None = None
     if data["status"] == "ready":

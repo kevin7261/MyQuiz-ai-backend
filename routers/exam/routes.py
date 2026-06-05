@@ -949,7 +949,7 @@ async def exam_grade_submission(
             safe_unlink(rag_zip_path)
 
     job_id = str(uuid.uuid4())
-    _exam_grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
+    _exam_grade_job_results[job_id] = {"status": "pending", "result": None, "error": None, "llm_error": None}
     exam_quiz_id_int = int(body.exam_quiz_id)
     def insert_fn(rd, qa):
         return update_exam_quiz_with_grade(
@@ -995,7 +995,12 @@ async def get_exam_grade_result(job_id: str, _person_id: PersonId, course_id: Co
             },
         )
     data = _exam_grade_job_results[job_id]
-    out: dict[str, Any] = {"status": data["status"], "result": data.get("result"), "error": data.get("error")}
+    out: dict[str, Any] = {
+        "status": data["status"],
+        "result": data.get("result"),
+        "error": data.get("error"),
+        "llm_error": data.get("llm_error"),
+    }
     if data["status"] == "ready":
         res = data.get("result")
         if isinstance(res, dict):

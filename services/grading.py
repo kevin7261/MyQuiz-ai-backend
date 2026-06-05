@@ -29,6 +29,7 @@ from openai import OpenAI
 
 from postgrest.exceptions import APIError
 
+from utils.llm_error import LlmCallError, format_llm_error, is_llm_call_error
 from utils.taipei_time import now_taipei_iso
 from services.quiz_generation import QUIZ_LLM_MODEL, _context_as_markdown_fenced
 from utils.db_schema import parse_rag_quiz_history_list, quiz_history_item, serialize_rag_quiz_history_list
@@ -318,15 +319,20 @@ def run_grade_job_transcript_only(
     )
 
     client = OpenAI(api_key=api_key)
-    response = client.chat.completions.create(
-        model=llm_model or GRADE_LLM_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT_GRADE},
-            {"role": "user", "content": user_msg},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.3,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=llm_model or GRADE_LLM_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_GRADE},
+                {"role": "user", "content": user_msg},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+        )
+    except Exception as e:
+        if is_llm_call_error(e):
+            raise LlmCallError(format_llm_error(e)) from e
+        raise
     llm_raw = response.choices[0].message.content or ""
     try:
         llm_json = json.loads(llm_raw)
@@ -426,15 +432,20 @@ def run_grade_job(
     )
 
     client = OpenAI(api_key=api_key)
-    response = client.chat.completions.create(
-        model=llm_model or GRADE_LLM_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT_GRADE},
-            {"role": "user", "content": prompt},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.3,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=llm_model or GRADE_LLM_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_GRADE},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+        )
+    except Exception as e:
+        if is_llm_call_error(e):
+            raise LlmCallError(format_llm_error(e)) from e
+        raise
     llm_raw = response.choices[0].message.content or ""
     try:
         llm_json = json.loads(llm_raw)
@@ -511,7 +522,7 @@ def run_grade_job_background(
             result_dict[inserted[0]] = inserted[1]
             if inserted[0] == "rag_quiz_id":
                 result_dict["rag_answer_id"] = inserted[1]
-            results_store[job_id] = {"status": "ready", "result": result_dict, "error": None}
+            results_store[job_id] = {"status": "ready", "result": result_dict, "error": None, "llm_error": None}
             _logger.info(
                 "批改完成 job_id=%s 回傳結果: %s",
                 job_id,
@@ -523,9 +534,24 @@ def run_grade_job_background(
                 "quiz_id 無對應列或已刪除、或欄位 answer_content／answer_critique 與表不符。請見伺服器日誌。"
             )
             _logger.warning("批改 LLM 已完成但寫入答案表失敗 job_id=%s：%s", job_id, err_detail)
-            results_store[job_id] = {"status": "error", "result": None, "error": err_detail}
+            results_store[job_id] = {"status": "error", "result": None, "error": err_detail, "llm_error": None}
+    except LlmCallError as e:
+        msg = format_llm_error(e)
+        err_result: dict[str, Any] = {"llm_error": msg, "quiz_comments": []}
+        if rag_quiz_id is not None and rag_quiz_id > 0:
+            err_result["rag_quiz_id"] = rag_quiz_id
+            err_result["rag_answer_id"] = rag_quiz_id
+        if exam_quiz_id is not None and exam_quiz_id > 0:
+            err_result["exam_quiz_id"] = exam_quiz_id
+        results_store[job_id] = {
+            "status": "ready",
+            "result": err_result,
+            "error": None,
+            "llm_error": msg,
+        }
+        _logger.error("批改 LLM 失敗 job_id=%s: %s", job_id, msg)
     except Exception as e:
-        results_store[job_id] = {"status": "error", "result": None, "error": str(e)}
+        results_store[job_id] = {"status": "error", "result": None, "error": str(e), "llm_error": None}
         _logger.error("批改失敗 job_id=%s: %s", job_id, e, exc_info=True)
     finally:
         cleanup_grade_workspace(work_dir)

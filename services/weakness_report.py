@@ -12,6 +12,7 @@ from typing import Any, Optional
 from openai import OpenAI
 
 from services.quiz_generation import QUIZ_LLM_MODEL
+from utils.llm_error import format_llm_error, is_llm_call_error
 
 WEAKNESS_LLM_MODEL = QUIZ_LLM_MODEL
 PERSON_ANALYSIS_LABEL = "個人分析"
@@ -67,8 +68,21 @@ def _user_prompt_weakness_report(analysis_label: str) -> str:
 
 
 def quiz_has_answer(quiz: dict) -> bool:
-    """有作答內容才納入弱點分析（避免空列干擾 LLM）。"""
-    return bool((quiz.get("answer_content") or "").strip())
+    """有作答、評語或已標記 quiz_rate（±1）才納入弱點分析。"""
+    if (quiz.get("answer_content") or "").strip():
+        return True
+    if (quiz.get("quiz_answer") or "").strip():
+        return True
+    if quiz.get("answer_critique"):
+        return True
+    rate = quiz.get("quiz_rate")
+    if rate is not None:
+        try:
+            if int(rate) != 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
 
 
 def analysis_user_prompt_display(raw: Optional[str]) -> str:
@@ -246,12 +260,12 @@ def generate_weakness_report_md(
     *,
     analysis_label: str,
     llm_model: str | None = None,
-) -> tuple[Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """
     呼叫 LLM 產生弱點報告 Markdown。
     analysis_label：個人分析、課程分析（對應 user prompt 區段標題與 system 說明）。
-    回傳 (analysis_text, llm_prompt_json)；失敗或無素材時兩者皆可能為 None。
-    llm_prompt_json 為送交 LLM 之 system／user JSON 字串（不寫入 DB；DB 的 analysis_prompt_text 僅存 API 教師指令）。
+    回傳 (analysis_text, llm_prompt_json, llm_error)；失敗或無素材時 analysis_text 為 None，llm_error 說明原因。
+    DB 的 analysis_prompt_text 僅存教師指令（對應 answer_user_prompt_text）；完整 LLM prompt 模板在程式碼中組裝。
     """
     built = build_weakness_report_prompts(
         quizzes,
@@ -259,7 +273,9 @@ def generate_weakness_report_md(
         analysis_label=analysis_label,
     )
     if not built:
-        return None, None
+        if not (quizzes or []):
+            return None, None, "無已作答或已評級題目，無法產生弱點報告"
+        return None, None, "無可分析素材，無法產生弱點報告"
     system_content, user_content = built
     prompt_text = serialize_weakness_report_llm_prompt(system_content, user_content)
     client = OpenAI(api_key=api_key)
@@ -274,7 +290,9 @@ def generate_weakness_report_md(
         )
         msg = r.choices[0].message
         if msg is None or not (msg.content or "").strip():
-            return None, prompt_text
-        return msg.content, prompt_text
-    except Exception:
-        return None, prompt_text
+            return None, prompt_text, "LLM 回傳內容為空"
+        return msg.content, prompt_text, None
+    except Exception as e:
+        if is_llm_call_error(e):
+            return None, prompt_text, format_llm_error(e)
+        return None, prompt_text, str(e) or "弱點分析 LLM 呼叫失敗"

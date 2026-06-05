@@ -27,8 +27,9 @@ from services.grading import (
     update_rag_quiz_with_grade,
     _rag_quiz_missing_column_error,
 )
-from utils.taipei_time import now_taipei_iso
+from utils.llm_error import format_llm_error, is_llm_call_error, llm_error_json_response
 from utils.llm_key import get_rag_api_key, get_rag_llm_model
+from utils.taipei_time import now_taipei_iso
 from utils.rag_stem import get_rag_stem_from_rag_id, instruction_from_rag_row, transcript_from_row
 from utils.rag_transcript import (
     read_single_transcript_text_from_upload_zip,
@@ -451,6 +452,18 @@ def _rag_llm_generate_quiz_impl(
     except HTTPException:
         raise
     except Exception as e:
+        if is_llm_call_error(e):
+            return llm_error_json_response(
+                {
+                    "llm_error": format_llm_error(e),
+                    "rag_quiz_id": rag_quiz_id,
+                    "quiz_content": "",
+                    "quiz_hint": "",
+                    "quiz_answer_reference": "",
+                    "follow_up": followup,
+                    "quiz_llm_model": llm_model,
+                }
+            )
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if path is not None:
@@ -619,7 +632,7 @@ async def _enqueue_rag_llm_grade_job(
             safe_unlink(rag_zip_path)
 
     job_id = str(uuid.uuid4())
-    _grade_job_results[job_id] = {"status": "pending", "result": None, "error": None}
+    _grade_job_results[job_id] = {"status": "pending", "result": None, "error": None, "llm_error": None}
     def insert_fn(rd, qa):
         return update_rag_quiz_with_grade(
             rd,

@@ -35,12 +35,12 @@ def get_exam_api_key(course_id: int) -> Optional[str]:
 
 
 def get_person_analysis_api_key(course_id: int) -> Optional[str]:
-    """個人弱點分析（/person-analysis/llm-analysis）：exam-api-key。"""
+    """個人弱點分析（POST /person-analysis/llm-analysis）：exam-api-key。"""
     return get_exam_api_key(course_id)
 
 
 def get_course_analysis_api_key(course_id: int) -> Optional[str]:
-    """課程弱點分析（/course-analysis/llm-analysis）：rag-api-key。"""
+    """課程弱點分析（POST /course-analysis/llm-analysis）：rag-api-key。"""
     return get_rag_api_key(course_id)
 
 

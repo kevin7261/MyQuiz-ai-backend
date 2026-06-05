@@ -28,6 +28,7 @@ from services.exam_queries import (
 from services.grading import (
     _rag_quiz_missing_column_error,
 )
+from utils.llm_error import format_llm_error, is_llm_call_error, llm_error_json_response
 from utils.taipei_time import now_taipei_iso, to_taipei_iso
 from utils.serialization import to_json_safe
 from utils.llm_key import get_exam_api_key, get_rag_llm_model
@@ -779,6 +780,22 @@ def _exam_llm_generate_quiz_impl(
     except HTTPException:
         raise
     except Exception as e:
+        if is_llm_call_error(e):
+            err_payload: dict[str, Any] = {
+                "llm_error": format_llm_error(e),
+                "exam_quiz_id": exam_quiz_id,
+                "quiz_content": "",
+                "quiz_hint": "",
+                "quiz_answer_reference": "",
+                "rag_page_id": tab_strip,
+                "rag_unit_id": int(rag_unit_id),
+                "rag_quiz_id": int(rag_quiz_id),
+                "quiz_llm_model": llm_model,
+            }
+            if mark_follow_up:
+                err_payload["follow_up"] = True
+                err_payload["follow_up_exam_quiz_id"] = resolved_follow_up_id
+            return llm_error_json_response(err_payload)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if path is not None:

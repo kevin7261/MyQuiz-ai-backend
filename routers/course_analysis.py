@@ -1,8 +1,9 @@
 """
-課程分析 API 模組（指令／報告存於 Course_Setting；key 見 services.analysis_setting）。
+課程分析 API 模組（資料存於 Course_Analysis；見 services.analysis_setting）。
 
-- GET /course-analysis/analysis：query course_id，回傳最新一筆。
-- GET /course-analysis/llm-analysis：依全課程作答產生弱點報告並寫入 Course_Setting。
+person_id 一律為呼叫 API 的登入帳號。
+- analysis_prompt_text ↔ answer_user_prompt_text（PUT /rag/course_analysis_user_prompt_text）
+- analysis_text ↔ answer_critique（POST /course-analysis/llm-analysis）
 """
 
 import logging
@@ -14,9 +15,9 @@ from pydantic import BaseModel, Field
 from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
 from services.analysis_setting import (
-    fetch_course_analysis_instruction_text,
+    fetch_course_analysis_stored,
     fetch_course_analysis_user_prompt_for_llm,
-    fetch_latest_course_analysis_result_row,
+    resolve_login_person_id,
     save_course_analysis_setting,
 )
 from services.exam_queries import (
@@ -37,34 +38,46 @@ router = APIRouter(prefix="/course-analysis", tags=["course analysis"])
 ANALYSIS_LABEL_COURSE = "課程分析"
 
 
+def _caller_person_id_or_404(person_id: str) -> str:
+    login = resolve_login_person_id(person_id)
+    if not login:
+        raise HTTPException(status_code=404, detail=f"找不到使用者 person_id={person_id}")
+    return login
+
+
 class CourseStoredAnalysisResponse(BaseModel):
     """GET /course-analysis/analysis 回應；無紀錄時各欄位為 null。"""
     course_analysis_id: Optional[int] = Field(
-        default=None, description="課程分析設定識別（Course_Setting.course_setting_id）"
+        default=None, description="Course_Analysis 主鍵"
     )
+    person_id: Optional[str] = Field(default=None, description="呼叫者登入帳號")
     course_id: Optional[int] = None
     analysis_user_prompt_text: Optional[str] = Field(
         default=None,
-        description="教師分析指令（純文字；僅來自 analysis_text 為空的指令列）",
+        description="教師分析指令（對應 answer_user_prompt_text）",
     )
     analysis_prompt_text: Optional[str] = Field(
         default=None,
-        description="教師分析指令（純文字；與 analysis_user_prompt_text 同源，僅來自 API 寫入之指令列）",
+        description="與 analysis_user_prompt_text 同源（DB 欄位 analysis_prompt_text）",
     )
     analysis_text: Optional[str] = Field(
-        default=None, description="已儲存的弱點報告 Markdown 全文",
+        default=None, description="弱點報告 Markdown（對應 answer_critique）",
     )
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
 
 class CourseLlmAnalysisResponse(BaseModel):
-    """GET /course-analysis/llm-analysis 回應。"""
+    """POST /course-analysis/llm-analysis 回應。"""
     exams: list[dict]
     count: int
     weakness_report: Optional[str] = Field(
         default=None,
-        description="弱點報告：LLM `message.content` 原文 Markdown；未設定 API Key、呼叫失敗或無內容時為 null",
+        description="弱點報告：LLM message.content 原文 Markdown；未設定 API Key、呼叫失敗或無內容時為 null",
+    )
+    llm_error: Optional[str] = Field(
+        default=None,
+        description="LLM 呼叫失敗或未設定 API Key 時的錯誤原因；成功時為 null",
     )
     analysis_llm_model: str = Field(
         ...,
@@ -72,41 +85,46 @@ class CourseLlmAnalysisResponse(BaseModel):
     )
 
 
+def _stored_to_response(stored: Optional[dict]) -> CourseStoredAnalysisResponse:
+    if not stored:
+        return CourseStoredAnalysisResponse()
+    safe = to_json_safe(stored)
+    prompt = safe.get("analysis_prompt_text")
+    return CourseStoredAnalysisResponse(
+        course_analysis_id=safe.get("course_analysis_id"),
+        person_id=safe.get("person_id"),
+        course_id=safe.get("course_id"),
+        analysis_user_prompt_text=prompt,
+        analysis_prompt_text=prompt,
+        analysis_text=safe.get("analysis_text"),
+        created_at=safe.get("created_at"),
+        updated_at=safe.get("updated_at"),
+    )
+
+
 @router.get("/analysis", response_model=CourseStoredAnalysisResponse)
-def get_course_stored_analysis(course_id: CourseId):
+def get_course_stored_analysis(person_id: PersonId, course_id: CourseId):
     """
-    取值：不呼叫 LLM。必填 query `course_id`。
-    `analysis_user_prompt_text`／`analysis_prompt_text` 僅來自教師指令列（API 寫入）；`analysis_text` 來自最新 LLM 結果列。
-    DB 無任何列時各欄位為 null。
+    取值：不呼叫 LLM。必填 query `person_id`（呼叫者）、`course_id`。
     """
     try:
-        instr_id, instr_text = fetch_course_analysis_instruction_text(course_id)
-        result_row = fetch_latest_course_analysis_result_row(course_id)
-        if not instr_text and not result_row:
-            return CourseStoredAnalysisResponse()
-        safe_result = to_json_safe(result_row) if result_row else {}
-        return CourseStoredAnalysisResponse(
-            course_analysis_id=safe_result.get("course_analysis_id") or instr_id,
-            course_id=safe_result.get("course_id") or course_id,
-            analysis_user_prompt_text=instr_text or None,
-            analysis_prompt_text=instr_text or None,
-            analysis_text=safe_result.get("analysis_text"),
-            created_at=safe_result.get("created_at"),
-            updated_at=safe_result.get("updated_at"),
-        )
+        caller = _caller_person_id_or_404(person_id)
+        stored = fetch_course_analysis_stored(caller, course_id)
+        return _stored_to_response(stored)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.get("/llm-analysis", response_model=CourseLlmAnalysisResponse)
-def course_llm_analysis(_person_id: PersonId, course_id: CourseId):
+@router.post("/llm-analysis", response_model=CourseLlmAnalysisResponse)
+def course_llm_analysis(person_id: PersonId, course_id: CourseId):
     """
-    必填 query `course_id`。
-    教師指令自 Course_Setting 讀取；成功後將報告寫入 Course_Setting（key=course_analysis_text）。
+    必填 query `person_id`（呼叫者）、`course_id`。
+    成功後 UPDATE 呼叫者 Course_Analysis 列 analysis_text。
     """
     try:
+        caller = _caller_person_id_or_404(person_id)
         quizzes = quizzes_by_course_id(course_id)
         quizzes_with_answers = [q for q in quizzes if quiz_has_answer(q)]
 
@@ -131,32 +149,44 @@ def course_llm_analysis(_person_id: PersonId, course_id: CourseId):
         data = to_json_safe(exam_rows)
         analysis_llm_model = get_rag_llm_model(course_id)
         weakness_report: Optional[str] = None
+        llm_error: Optional[str] = None
+        if not quizzes_with_answers:
+            llm_error = "無已作答或已評級題目，無法產生弱點報告（未寫入 Course_Analysis）"
         api_key = get_course_analysis_api_key(course_id)
-        if api_key:
-            setting_prompt = fetch_course_analysis_user_prompt_for_llm(course_id)
-            weakness_report, _ = generate_weakness_report_md(
+        if not llm_error and not api_key:
+            llm_error = "未設定 API Key：PUT /rag/llm_api_key（Course_Setting key=rag-api-key，依 course_id）"
+        elif not llm_error:
+            setting_prompt = fetch_course_analysis_user_prompt_for_llm(caller, course_id)
+            weakness_report, _, llm_err = generate_weakness_report_md(
                 to_json_safe(quizzes_with_answers),
                 api_key,
                 setting_prompt,
                 analysis_label=ANALYSIS_LABEL_COURSE,
                 llm_model=analysis_llm_model,
             )
+            if llm_err:
+                llm_error = llm_err
             if weakness_report:
-                saved = save_course_analysis_setting(course_id, weakness_report)
+                saved = save_course_analysis_setting(caller, course_id, weakness_report)
                 if not saved:
                     logger.error(
-                        "course_llm_analysis: LLM ok but Course_Setting save failed "
-                        "course_id=%s",
+                        "course_llm_analysis: LLM ok but Course_Analysis update failed "
+                        "person_id=%s course_id=%s",
+                        caller,
                         course_id,
                     )
                     raise HTTPException(
                         status_code=500,
-                        detail=f"弱點報告已產生但寫入 Course_Setting 失敗 (course_id={course_id})",
+                        detail=(
+                            f"弱點報告已產生但寫入 Course_Analysis 失敗 "
+                            f"(person_id={caller}, course_id={course_id})"
+                        ),
                     )
         return CourseLlmAnalysisResponse(
             exams=data,
             count=len(data),
             weakness_report=weakness_report,
+            llm_error=llm_error,
             analysis_llm_model=analysis_llm_model,
         )
     except HTTPException:
