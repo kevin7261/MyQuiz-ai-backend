@@ -1,6 +1,6 @@
 """
 評分管線 service。包含 LLM JSON 解析、RAG ZIP 批改、逐字稿批改、DB 寫回輔助。
-routers/grade.py 與 routers/exam.py 共用，不含任何 FastAPI 路由。
+routers/grade 與 routers/exam 共用，不含任何 FastAPI 路由。
 
 檔案結構（由上而下）：
 1. 模型／檢索（及講義臨時向量）常數

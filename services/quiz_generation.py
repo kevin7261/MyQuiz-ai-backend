@@ -524,7 +524,7 @@ def _generate_quiz_followup_from_context(
 
 
 # ---------------------------------------------------------------------------
-# 公開 API（由 routers/exam.py、routers/grade.py 動態 import）
+# 公開 API（由 routers/exam、routers/grade 動態 import）
 # ---------------------------------------------------------------------------
 
 def generate_quiz_transcript_only(

@@ -1,6 +1,6 @@
 """
 Exam / Exam_Quiz 資料存取 service。包含 DB 查詢輔助、資料組裝輔助。
-routers/exam.py、routers/course_analysis.py、routers/person_analysis.py 共用，不含任何 FastAPI 路由。
+routers/exam、routers/course_analysis.py、routers/person_analysis.py 共用，不含任何 FastAPI 路由。
 """
 
 from typing import Any

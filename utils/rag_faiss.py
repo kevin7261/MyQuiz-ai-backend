@@ -23,7 +23,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from utils.zip_utils import fix_encoding
 
-# unit_type 常數（與 routers/zip.py 及 Rag_Unit.unit_type 一致）
+# unit_type 常數（與 routers/zip 及 Rag_Unit.unit_type 一致）
 UNIT_TYPE_DEFAULT = 0
 UNIT_TYPE_RAG = 1
 UNIT_TYPE_TEXT = 2
