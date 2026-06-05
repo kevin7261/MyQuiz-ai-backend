@@ -1,22 +1,20 @@
 """
 使用者相關 API 模組。
 提供：
-- GET /profile/users：列出 User 表（含 password），含各使用者選課 courses 列表
-- POST /profile/users：新增單一使用者（person_id、name、course_id、user_type；college_id 自 Course 帶入）
-- POST /profile/users/batch：批次新增使用者（每筆僅 person_id、name；user_type 固定為 3；password 預設 0000）
-- PUT /profile/users/delete：軟刪除（body.person_id 指定對象，將 deleted 設為 true）
-- PATCH /profile/password：修改指定使用者密碼（body 僅 person_id、password）
+- GET /profile/users：列出 User 表（含 password），含各使用者選課 courses 列表（唯讀）
 - POST /profile/login：以 person_id + password 登入（成功時另回傳該帳號之 User_Course_Relation 課程列表）
+
+新增／編輯／刪除使用者請用 /rag/course-members/*。
 """
 
-from typing import Annotated, Any, Optional
+from typing import Any, Optional
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, HTTPException
 
 from dependencies.person_id import PersonId
 from pydantic import BaseModel, Field
 
-from utils.taipei_time import now_taipei_iso, to_taipei_iso
+from utils.taipei_time import to_taipei_iso
 from utils.db_schema import (
     ACTIVE_DELETED_FILTER,
     COLLEGE_TABLE,
@@ -166,30 +164,6 @@ def _user_public_dict(
     return out
 
 
-def _insert_user_course_relation(
-    supabase,
-    *,
-    user_id: int,
-    person_id: str,
-    name: str,
-    user_type: int,
-    ts: str,
-    college_id: int = 0,
-    course_id: int = 0,
-) -> None:
-    supabase.table(USER_COURSE_RELATION_TABLE).insert({
-        "user_id": user_id,
-        "person_id": person_id,
-        "name": (name or "").strip() or "",
-        "course_id": course_id,
-        "college_id": college_id,
-        "user_type": user_type,
-        "deleted": False,
-        "updated_at": ts,
-        "created_at": ts,
-    }).execute()
-
-
 class UserListItem(BaseModel):
     """單筆使用者；user_type 見 courses 各項。password 僅 GET /profile/users 回傳。"""
     user_id: int
@@ -235,48 +209,6 @@ class LoginResponse(BaseModel):
     courses: list[UserCourseItem] = Field(default_factory=list)
 
 
-class UploadUserRequest(BaseModel):
-    """POST /profile/users 請求：新增使用者並建立一筆選課；query person_id 須與 body.person_id 一致。"""
-    person_id: str
-    name: str
-    course_id: int
-    user_type: int
-
-
-BATCH_UPLOAD_USER_TYPE = 3
-BATCH_UPLOAD_DEFAULT_PASSWORD = "0000"
-
-
-class BatchUserRow(BaseModel):
-    """批次新增單筆：僅 person_id、name；密碼固定寫入 BATCH_UPLOAD_DEFAULT_PASSWORD（0000）。"""
-    person_id: str
-    name: str
-
-
-class BatchUserFailure(BaseModel):
-    person_id: str
-    detail: str
-
-
-class BatchCreateUsersResponse(BaseModel):
-    """POST /profile/users/batch 回應。"""
-    created: list[UserListItem]
-    failed: list[BatchUserFailure]
-    created_count: int
-    failed_count: int
-
-
-class DeleteUserRequest(BaseModel):
-    """PUT /profile/users/delete：要軟刪除的使用者 person_id。"""
-    person_id: str
-
-
-class UpdatePasswordRequest(BaseModel):
-    """PATCH /profile/password：要修改密碼的使用者 person_id 與新 password。"""
-    person_id: str
-    password: str
-
-
 def _courses_for_users(
     supabase,
     user_ids: list[int],
@@ -310,70 +242,10 @@ def _user_list_item(
     )
 
 
-def _insert_user_upload(
-    supabase,
-    person_id: str,
-    name: str,
-    user_type: int,
-    *,
-    college_id: int = 0,
-    course_id: int = 0,
-    password: str = "",
-) -> UserListItem:
-    exist = (
-        supabase.table(USER_TABLE)
-        .select("user_id")
-        .eq("person_id", person_id)
-        .or_(ACTIVE_DELETED_FILTER)
-        .limit(1)
-        .execute()
-    )
-    if exist.data:
-        raise HTTPException(status_code=409, detail="person_id 已存在")
-    ts = now_taipei_iso()
-    row_in = {
-        "person_id": person_id,
-        "name": (name or "").strip() or None,
-        "password": password,
-        "deleted": False,
-        "updated_at": ts,
-        "created_at": ts,
-    }
-    if college_id:
-        row_in["college_id"] = college_id
-    ins = supabase.table(USER_TABLE).insert(row_in).execute()
-    user_row = ins.data[0] if ins.data else None
-    if not user_row:
-        resp = (
-            supabase.table(USER_TABLE)
-            .select(USER_TABLE_COLUMNS)
-            .eq("person_id", person_id)
-            .limit(1)
-            .execute()
-        )
-        user_row = resp.data[0] if resp.data else None
-    if not user_row:
-        raise HTTPException(status_code=500, detail="新增使用者成功但未回傳資料")
-    uid = user_row["user_id"]
-    _insert_user_course_relation(
-        supabase,
-        user_id=uid,
-        person_id=person_id,
-        name=name,
-        user_type=user_type,
-        ts=ts,
-        college_id=college_id,
-        course_id=course_id,
-    )
-    college_map = _fetch_colleges_by_ids(supabase, [_normalize_college_id(user_row.get("college_id"))])
-    courses_map = _courses_for_users(supabase, [uid])
-    return _user_list_item(user_row, college_map, courses_map.get(uid, []))
-
-
 @router.get("/users", response_model=ListUsersResponse)
 def list_users(_person_id: PersonId):
     """
-    列出 User 表內容（含 password）；僅 deleted = false。新增請用 POST /profile/users 或 POST /profile/users/batch。
+    列出 User 表內容（含 password）；僅 deleted = false。唯讀；新增／編輯／刪除請用 /rag/course-members/*。
     """
     try:
         supabase = get_supabase()
@@ -409,216 +281,6 @@ def list_users(_person_id: PersonId):
                 status_code=503,
                 detail="無法連線至 Supabase，請確認 .env 的 SUPABASE_URL 正確且網路可連線。",
             )
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-def _soft_delete_user(supabase, target_person_id: str) -> LoginResponse:
-    resp = (
-        supabase.table(USER_TABLE)
-        .select(USER_TABLE_COLUMNS)
-        .eq("person_id", target_person_id)
-        .or_(ACTIVE_DELETED_FILTER)
-        .limit(1)
-        .execute()
-    )
-    if not resp.data:
-        raise HTTPException(status_code=404, detail="找不到該使用者或已刪除")
-    row = resp.data[0]
-    user_id = row.get("user_id")
-    pid = row.get("person_id")
-    ts = now_taipei_iso()
-    supabase.table(USER_TABLE).update({"deleted": True, "updated_at": ts}).eq("user_id", user_id).eq("person_id", pid).execute()
-    supabase.table(USER_COURSE_RELATION_TABLE).update({"deleted": True, "updated_at": ts}).eq("user_id", user_id).execute()
-    row_out = {**row, "deleted": True}
-    college_map = _fetch_colleges_by_ids(supabase, [_normalize_college_id(row_out.get("college_id"))])
-    courses = _courses_for_users(supabase, [int(user_id)]).get(int(user_id), []) if user_id is not None else []
-    return LoginResponse(user=_user_list_item(row_out, college_map, courses), courses=courses)
-
-
-def _update_user_password(supabase, target_person_id: str, new_password: str) -> LoginResponse:
-    target = (target_person_id or "").strip()
-    pwd = (new_password or "").strip()
-    if not target:
-        raise HTTPException(status_code=400, detail="person_id 不可為空")
-    if not pwd:
-        raise HTTPException(status_code=400, detail="password 不可為空")
-    resp = (
-        supabase.table(USER_TABLE)
-        .select(USER_TABLE_COLUMNS)
-        .eq("person_id", target)
-        .or_(ACTIVE_DELETED_FILTER)
-        .limit(1)
-        .execute()
-    )
-    if not resp.data:
-        raise HTTPException(status_code=404, detail="找不到該使用者或已刪除")
-    row = resp.data[0]
-    user_id = row.get("user_id")
-    pid = row.get("person_id")
-    ts = now_taipei_iso()
-    supabase.table(USER_TABLE).update({"password": pwd, "updated_at": ts}).eq("user_id", user_id).eq(
-        "person_id", pid
-    ).execute()
-    resp2 = (
-        supabase.table(USER_TABLE)
-        .select(USER_TABLE_COLUMNS)
-        .eq("user_id", user_id)
-        .eq("person_id", pid)
-        .or_(ACTIVE_DELETED_FILTER)
-        .execute()
-    )
-    out_row = resp2.data[0] if resp2.data else {**row, "updated_at": ts}
-    college_map = _fetch_colleges_by_ids(supabase, [_normalize_college_id(out_row.get("college_id"))])
-    courses = _courses_for_users(supabase, [int(user_id)]).get(int(user_id), []) if user_id is not None else []
-    return LoginResponse(user=_user_list_item(out_row, college_map, courses), courses=courses)
-
-
-@router.put("/users/delete", response_model=LoginResponse, summary="Soft delete user", operation_id="profile_users_delete")
-def soft_delete_user(
-    body: openapi_body(DeleteUserRequest, {"person_id": "string"}),
-    _person_id: PersonId,
-):
-    """
-    PUT /profile/users/delete。軟刪除：將指定 person_id 之使用者 deleted 設為 true（需帶 query person_id）。
-    """
-    target = (body.person_id or "").strip()
-    if not target:
-        raise HTTPException(status_code=400, detail="person_id 不可為空")
-
-    try:
-        supabase = get_supabase()
-        return _soft_delete_user(supabase, target)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.patch(
-    "/password",
-    response_model=LoginResponse,
-    summary="Update user password",
-    operation_id="profile_password",
-)
-def update_user_password(
-    body: openapi_body(UpdatePasswordRequest, {"person_id": "string", "password": "string"}),
-    _person_id: PersonId,
-):
-    """
-    PATCH /profile/password。修改指定 person_id 之密碼；body 僅傳 person_id、password（新密碼）。
-    需帶 query person_id（呼叫者身分）。
-    """
-    try:
-        supabase = get_supabase()
-        return _update_user_password(supabase, body.person_id, body.password)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/users", response_model=LoginResponse)
-def upload_user(
-    body: openapi_body(
-        UploadUserRequest,
-        {
-            "person_id": "string",
-            "name": "string",
-            "course_id": 1,
-            "user_type": 3,
-        },
-    ),
-    person_id: PersonId,
-):
-    """
-    新增單一使用者：body 傳入 person_id、name、course_id、user_type（選課身份）；
-    college_id 依 course_id 自 Course 表帶入。
-    query 的 person_id 須與 body.person_id 一致。
-    """
-    body_pid = (body.person_id or "").strip()
-    if body_pid != person_id:
-        raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
-    if not body.course_id:
-        raise HTTPException(status_code=400, detail="course_id 不可為空")
-
-    try:
-        supabase = get_supabase()
-        course_by_id = _fetch_courses_by_ids(supabase, [body.course_id])
-        course_row = course_by_id.get(body.course_id)
-        if not course_row:
-            raise HTTPException(status_code=400, detail="找不到指定課程")
-        college_id = int(course_row.get("college_id") or 0)
-        if not college_id:
-            raise HTTPException(status_code=400, detail="課程未設定所屬學院")
-        user = _insert_user_upload(
-            supabase,
-            person_id,
-            body.name,
-            body.user_type,
-            college_id=college_id,
-            course_id=body.course_id,
-        )
-        return LoginResponse(user=user, courses=user.courses)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-def _batch_upload_users(supabase, rows: list[BatchUserRow]) -> BatchCreateUsersResponse:
-    created: list[UserListItem] = []
-    failed: list[BatchUserFailure] = []
-    for row in rows:
-        pid = (row.person_id or "").strip()
-        if not pid:
-            failed.append(
-                BatchUserFailure(
-                    person_id=row.person_id if row.person_id is not None else "",
-                    detail="person_id 不可為空",
-                )
-            )
-            continue
-        try:
-            u = _insert_user_upload(
-                supabase,
-                pid,
-                row.name,
-                BATCH_UPLOAD_USER_TYPE,
-                password=BATCH_UPLOAD_DEFAULT_PASSWORD,
-            )
-            created.append(u)
-        except HTTPException as he:
-            failed.append(BatchUserFailure(person_id=pid, detail=str(he.detail)))
-        except Exception as e:
-            failed.append(BatchUserFailure(person_id=pid, detail=str(e)))
-    return BatchCreateUsersResponse(
-        created=created,
-        failed=failed,
-        created_count=len(created),
-        failed_count=len(failed),
-    )
-
-
-@router.post("/users/batch", response_model=BatchCreateUsersResponse)
-def batch_upload_users(
-    body: Annotated[
-        list[BatchUserRow],
-        Body(openapi_examples={"default": {"summary": "Default", "value": [{"person_id": "string", "name": "string"}]}}),
-    ],
-    _person_id: PersonId,
-):
-    """
-    批次新增使用者：body 為陣列，每筆僅 person_id、name；user_type 固定為 3；
-    密碼預設為 0000（與登入 API 相同之純文字儲存）。
-    已存在之 person_id 會列入 failed，其餘仍會繼續寫入。
-    """
-    if not body:
-        raise HTTPException(status_code=400, detail="請至少傳入一筆使用者")
-
-    try:
-        supabase = get_supabase()
-        return _batch_upload_users(supabase, body)
-    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 

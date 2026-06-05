@@ -43,6 +43,7 @@ _API_PATH_ORDER: tuple[str, ...] = (
     # --- RAG：課程設定 ---
     "/rag/course-members",
     "/rag/course-members/add",
+    "/rag/course-members/add-batch",
     "/rag/course-members/edit/{person_id}",
     "/rag/course-members/delete/{person_id}",
     "/rag/llm_api_key",
@@ -78,9 +79,6 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/course-analysis/llm-analysis",
     # --- 帳號／個人檔案 ---
     "/profile/users",
-    "/profile/users/batch",
-    "/profile/users/delete",
-    "/profile/password",
     "/profile/login",
 )
 

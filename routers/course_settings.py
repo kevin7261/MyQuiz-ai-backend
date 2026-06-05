@@ -3,6 +3,7 @@
 - GET /rag/course-members：依 course_id 列出該課程所有使用者；須為有效登入使用者；必填 query course_id。
 - POST /rag/course-members/add：新增一筆課程成員（person_id、name、user_type）；僅 user_type 1／2。
   User 表已有相同 college_id + person_id 時僅新增選課，否則先建立 User 再加入課程。
+- POST /rag/course-members/add-batch：批次新增該課程學生（每筆 person_id、name；user_type 固定 3）；僅 user_type 1／2。
 - PUT /rag/course-members/edit/{person_id}：編輯課程成員（name、user_type）；僅 user_type 1／2。
 - PUT /rag/course-members/delete/{person_id}：自課程移除成員（User_Course_Relation deleted=true）；僅 user_type 1／2。
 - GET /rag/person_analysis_user_prompt_text：取得個人分析指令（Person_Analysis_Setting 課程共用列）；須為有效登入使用者；必填 query course_id。
@@ -15,7 +16,7 @@ LLM API Key 亦存於 Course_Setting（rag-api-key／exam-api-key）；見 GET/P
 
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, Body, HTTPException, Path
 from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
@@ -177,6 +178,27 @@ class EditCourseMemberRequest(BaseModel):
 
     name: str = Field(..., description="姓名")
     user_type: int = Field(..., description="身份：1 開發者、2 管理者、3 學生")
+
+
+class BatchCourseMemberRow(BaseModel):
+    """批次新增單筆：僅 person_id、name；user_type 固定為 3（學生）。"""
+
+    person_id: str
+    name: str
+
+
+class BatchCourseMemberFailure(BaseModel):
+    person_id: str
+    detail: str
+
+
+class BatchAddCourseMembersResponse(BaseModel):
+    """POST /rag/course-members/add-batch 回應。"""
+
+    created: list[CourseMemberItem]
+    failed: list[BatchCourseMemberFailure]
+    created_count: int
+    failed_count: int
 
 
 def _validate_course_member_fields(
@@ -531,6 +553,77 @@ def add_course_member(
             name=body.name,
             user_type=body.user_type,
         )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+def _batch_add_course_members(
+    supabase,
+    *,
+    course_id: int,
+    rows: list[BatchCourseMemberRow],
+) -> BatchAddCourseMembersResponse:
+    created: list[CourseMemberItem] = []
+    failed: list[BatchCourseMemberFailure] = []
+    for row in rows:
+        pid = (row.person_id or "").strip()
+        if not pid:
+            failed.append(
+                BatchCourseMemberFailure(
+                    person_id=row.person_id if row.person_id is not None else "",
+                    detail="person_id 不可為空",
+                )
+            )
+            continue
+        try:
+            member = _add_course_member(
+                supabase,
+                course_id=course_id,
+                target_person_id=pid,
+                name=row.name,
+                user_type=3,
+            )
+            created.append(member)
+        except HTTPException as he:
+            failed.append(BatchCourseMemberFailure(person_id=pid, detail=str(he.detail)))
+        except Exception as e:
+            failed.append(BatchCourseMemberFailure(person_id=pid, detail=str(e)))
+    return BatchAddCourseMembersResponse(
+        created=created,
+        failed=failed,
+        created_count=len(created),
+        failed_count=len(failed),
+    )
+
+
+@router.post("/course-members/add-batch", response_model=BatchAddCourseMembersResponse)
+def batch_add_course_members(
+    body: Annotated[
+        list[BatchCourseMemberRow],
+        Body(
+            openapi_examples={
+                "default": {
+                    "summary": "Default",
+                    "value": [{"person_id": "string", "name": "string"}],
+                }
+            }
+        ),
+    ],
+    person_id: PersonId,
+    course_id: CourseId,
+):
+    """Add course members (batch)：批次新增該課程學生（每筆 person_id、name；user_type 固定 3）。
+    User 表已有相同 college_id + person_id 時僅新增選課；否則建立 User（預設密碼 0000）後再加入課程。
+    已存在於課程或失敗之 person_id 會列入 failed，其餘仍會繼續寫入。"""
+    _require_developer_or_manager_for_course_setting_write(person_id, course_id)
+    if not body:
+        raise HTTPException(status_code=400, detail="請至少傳入一筆學生")
+
+    try:
+        supabase = get_supabase()
+        return _batch_add_course_members(supabase, course_id=course_id, rows=body)
     except HTTPException:
         raise
     except Exception as e:
