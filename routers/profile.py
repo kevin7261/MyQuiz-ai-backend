@@ -144,6 +144,7 @@ def _build_user_course_items(
             "course_id": course_id,
             "college_id": college_id,
             "course_name": (course_row.get("course_name") or "").strip() or None,
+            "semester": (course_row.get("semester") or "").strip() or None,
             "user_type": r.get("user_type"),
         })
     return items
@@ -221,11 +222,12 @@ class LoginRequest(BaseModel):
 
 
 class UserCourseItem(BaseModel):
-    """User_Course_Relation 單筆課程／選課資訊（含 user_type；course_name 自 Course 表串接）。"""
+    """User_Course_Relation 單筆課程／選課資訊（含 user_type；course_name / semester 自 Course 表串接）。"""
     course_user_id: int
     course_id: int
     college_id: Optional[int] = None
     course_name: Optional[str] = None
+    semester: Optional[str] = None
     user_type: Optional[int] = None
 
 
