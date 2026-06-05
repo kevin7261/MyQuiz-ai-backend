@@ -15,7 +15,6 @@ _API_PATH_ORDER: tuple[str, ...] = (
     # --- RAG：分頁 ---
     "/rag/pages",
     "/rag/page/units",
-    "/rag/page/add",
     "/rag/page/add-upload-zip",
     "/rag/page/tab-name",
     "/rag/page/delete/{rag_page_id}",

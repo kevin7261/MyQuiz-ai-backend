@@ -29,14 +29,6 @@ class RagUnitYoutubeUrlResponse(BaseModel):
     transcript: str = ""
 
 
-class CreateRagRequest(BaseModel):
-    """POST /rag/page/add：欄位順序同 public.Rag（rag_page_id, person_id, tab_name, local；不含 rag_id／course_id／deleted／時間戳）。"""
-    rag_page_id: str = Field(..., description="Rag 的 tab 識別，對應 Rag 表 rag_page_id 欄位")
-    person_id: str = Field(..., description="使用者/路徑識別")
-    tab_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 tab_name 欄位")
-    local: bool = Field(False, description="是否為本機 RAG，寫入 Rag 表 local 欄位")
-
-
 class UpdateRagUnitNameRequest(BaseModel):
     """PUT /rag/page/tab-name：請求僅含 rag_id（主鍵）、tab_name；勿傳 rag_page_id。"""
     rag_id: int = Field(..., description="Rag 表主鍵（整數）；辨識請用 rag_id，非 rag_page_id")

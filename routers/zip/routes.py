@@ -42,7 +42,6 @@ from utils.rag_transcript import (
 
 from utils.fs import safe_unlink
 from .schemas import (
-    CreateRagRequest,
     InsertRagQuizRowRequest,
     ListRagResponse,
     PackRequest,
@@ -182,40 +181,6 @@ def list_rag(
         raise HTTPException(status_code=500, detail=f"列出 Rag 失敗: {e!s}")
 
 
-@router.post("/page/add")
-def create_unit(
-    body: openapi_body(
-        CreateRagRequest,
-        {"rag_page_id": "string", "person_id": "string", "tab_name": "string", "local": False},
-    ),
-    caller_person_id: PersonId,
-    course_id: CourseId,
-):
-    """
-    只建立一筆 Rag 資料，接受 rag_page_id、person_id、tab_name（必填）、local（選填，預設 false）。
-    須傳 query course_id，寫入 Rag.course_id。
-    回傳新增的 rag_id、rag_page_id、person_id、course_id、tab_name、local、created_at。
-    """
-    fid, pid, tab_name = _validate_rag_tab_create_fields(
-        rag_page_id=body.rag_page_id,
-        person_id=body.person_id,
-        tab_name=body.tab_name,
-        caller_person_id=caller_person_id,
-    )
-    try:
-        return _create_rag_record(
-            rag_page_id=fid,
-            person_id=pid,
-            tab_name=tab_name,
-            course_id=course_id,
-            local=body.local,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.put("/page/tab-name")
 def update_unit_tab_name(
     body: openapi_body(UpdateRagUnitNameRequest, {"rag_id": 1, "tab_name": "新名稱"}),
@@ -298,7 +263,7 @@ async def create_upload_zip(
     local: bool = Form(False, description="是否為本機 RAG，寫入 Rag 表 local 欄位"),
 ):
     """
-    建立 Rag 並上傳 ZIP（先 page/add，再 page/upload-zip）。
+    建立 Rag 並上傳 ZIP。
     multipart/form-data：file、rag_page_id、person_id、tab_name、local（選填，預設 false）。
     須傳 query course_id、person_id。
     回傳 create 欄位與 file_metadata。
@@ -345,12 +310,11 @@ async def upload_zip(
     caller_person_id: PersonId,
     course_id: CourseId,
     file: UploadFile = File(...),
-    rag_page_id: str = Form(..., description="對應 page/add 建立的 rag_page_id，ZIP 會存於此路徑"),
-    person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 page/add 一致"),
+    rag_page_id: str = Form(..., description="對應既有 Rag 的 rag_page_id，ZIP 會存於此路徑"),
+    person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與該 Rag 一致"),
 ):
     """
-    Upload Zip：只做上傳並寫入資料庫。需先以 page/add 建立該 rag_page_id 的 Rag 資料。
-    亦可改用 POST /rag/page/add-upload-zip 一次完成建立與上傳。
+    Upload Zip：只做上傳並寫入資料庫。該 rag_page_id 須已有 Rag 資料（新建請用 POST /rag/page/add-upload-zip）。
     會更新該筆 Rag 的 file_metadata（filename、second_folders、file_size 等）與 file_size 欄位（皆為 MB）。
     回傳 file_metadata。
     """

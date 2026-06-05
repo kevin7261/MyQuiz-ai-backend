@@ -1,9 +1,10 @@
 """
-每次「實際業務」API 請求寫入 public.Log：person_id、course_id、api（路徑 URL）、api_metadata（api、method、parameters）。
+每次業務 API 請求寫入 public.Log：person_id、course_id、api（路徑 URL）、api_metadata（api、method、parameters）。
 
+除 GET /log/logs（查詢紀錄本身不寫入，避免遞迴堆疊）外，其餘業務 API 皆記錄。
 不記錄 OPTIONS／HEAD：瀏覽器跨域會先送 CORS preflight（OPTIONS），沒有 JSON body，
 若一併記錄會變成「前端呼叫 1 次卻出現 2 筆 log、且 parameters 只有 person_id」。
-寫入失敗不影響原請求回應。
+Swagger／OpenAPI 文件路徑亦不記錄。寫入失敗不影響原請求回應。
 """
 
 from __future__ import annotations
@@ -31,8 +32,7 @@ _SKIP_PATH_PREFIXES = (
 
 # 不寫入 Log 的「方法 + 路徑」（精確比對 path，不含 query）
 _SKIP_LOG_ROUTES = frozenset({
-    ("GET", "/rag/person_analysis_user_prompt_text"),
-    ("GET", "/rag/course_analysis_user_prompt_text"),
+    ("GET", "/log/logs"),
 })
 
 # parameters 內敏感欄位遮罩

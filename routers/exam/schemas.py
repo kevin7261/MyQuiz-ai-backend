@@ -166,7 +166,7 @@ class ExamCreateLlmGenerateQuizRequest(BaseModel):
     rag_page_id: str = Field(
         ...,
         min_length=1,
-        description="Rag.rag_page_id（與 POST /rag/page/add 等相同之 tab 識別字串）",
+        description="Rag.rag_page_id（與 POST /rag/page/add-upload-zip 等相同之 tab 識別字串）",
     )
     rag_unit_id: int = Field(
         ...,
@@ -201,7 +201,7 @@ class ExamLlmGenerateQuizRequest(BaseModel):
     rag_page_id: str = Field(
         ...,
         min_length=1,
-        description="Rag.rag_page_id（與 POST /rag/page/add 等相同之 tab 識別字串）",
+        description="Rag.rag_page_id（與 POST /rag/page/add-upload-zip 等相同之 tab 識別字串）",
     )
     rag_unit_id: int = Field(
         ...,
@@ -238,7 +238,7 @@ class ExamCreateLlmGenerateQuizFollowupRequest(BaseModel):
     rag_page_id: str = Field(
         ...,
         min_length=1,
-        description="Rag.rag_page_id（與 POST /rag/page/add 等相同之 tab 識別字串）",
+        description="Rag.rag_page_id（與 POST /rag/page/add-upload-zip 等相同之 tab 識別字串）",
     )
     rag_unit_id: int = Field(
         ...,
@@ -291,7 +291,7 @@ class ExamLlmGenerateQuizFollowupRequest(BaseModel):
     rag_page_id: str = Field(
         ...,
         min_length=1,
-        description="Rag.rag_page_id（與 POST /rag/page/add 等相同之 tab 識別字串）",
+        description="Rag.rag_page_id（與 POST /rag/page/add-upload-zip 等相同之 tab 識別字串）",
     )
     rag_unit_id: int = Field(
         ...,
