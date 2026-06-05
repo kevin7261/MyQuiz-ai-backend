@@ -1,8 +1,8 @@
 """
 LLM API Key／出題模型：依 course_id 自 Course_Setting 讀取。
-- RAG Key：key=rag-api-key（GET/PUT /rag/llm_api_key）
+- RAG Key：key=rag-api-key（GET/PUT /rag/llm_api_key；GET /rag/llm_api_key/exists 查是否已設定）
 - LLM 模型（出題、批改、弱點分析共用）：key=llm-model（GET/PUT /rag/llm_model；未設定時 fallback `QUIZ_LLM_MODEL`）
-- Exam Key：key=exam-api-key（GET/PUT /exam/llm_api_key；個人弱點分析）
+- Exam Key：key=exam-api-key（GET/PUT /exam/llm_api_key；GET /exam/llm_api_key/exists 查是否已設定；個人弱點分析）
 - 課程弱點分析：與 RAG 相同，使用 rag-api-key
 """
 
@@ -47,3 +47,9 @@ def get_course_analysis_api_key(course_id: int) -> Optional[str]:
 def fetch_api_key_setting_row(key: str, course_id: int) -> Optional[dict[str, Any]]:
     """讀取 Course_Setting 整列（course_id + key）；無列時回傳 None。"""
     return fetch_course_setting_row(key, course_id)
+
+
+def course_api_key_exists(key: str, course_id: int) -> bool:
+    """Course_Setting 是否已有非空 API Key（value 經 strip 後非空）。"""
+    value = fetch_course_setting_value(key, course_id)
+    return bool((value or "").strip())

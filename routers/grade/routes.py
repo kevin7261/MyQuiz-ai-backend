@@ -15,9 +15,10 @@ from fastapi.responses import JSONResponse
 
 from utils.taipei_time import now_taipei_iso
 from utils.serialization import to_json_safe
-from utils.llm_key import fetch_api_key_setting_row
+from utils.llm_key import course_api_key_exists, fetch_api_key_setting_row
 from utils.course_setting import COURSE_SETTING_RAG_API_KEY, COURSE_SETTING_LLM_MODEL
 from routers.course_settings import (
+    _require_active_person,
     _require_developer_or_manager_for_analysis_prompt_write,
     _upsert_setting_and_get_row,
 )
@@ -56,6 +57,7 @@ from .schemas import (
     PutRagLlmModelRequest,
     QuizGradeDbOnlyRequest,
     QuizGradeRequest,
+    RagApiKeyExistsResponse,
     RagApiKeyResponse,
     RagLlmModelResponse,
     RagQuizFollowupRequest,
@@ -821,6 +823,16 @@ def rag_unit_youtube_url(
         youtube_url=f"https://www.youtube.com/watch?v={vid}",
         text_file_name=Path(inner_path).name,
         transcript=transcript,
+    )
+
+
+@router.get("/llm_api_key/exists", response_model=RagApiKeyExistsResponse)
+def get_rag_api_key_exists(person_id: PersonId, course_id: CourseId):
+    """查詢 RAG LLM API Key 是否已設定（Course_Setting key=rag-api-key，依 course_id）；不回傳 key 內容。"""
+    _require_active_person(person_id)
+    return RagApiKeyExistsResponse(
+        course_id=course_id,
+        exists=course_api_key_exists(COURSE_SETTING_RAG_API_KEY, course_id),
     )
 
 

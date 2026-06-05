@@ -376,3 +376,10 @@ class PutExamApiKeyRequest(BaseModel):
     """PUT /exam/llm_api_key 的 body。"""
 
     api_key: str = Field(..., description="Exam LLM API Key")
+
+
+class ExamApiKeyExistsResponse(BaseModel):
+    """GET /exam/llm_api_key/exists 回應。"""
+
+    course_id: int
+    exists: bool = Field(..., description="該課程是否已設定非空 exam-api-key")

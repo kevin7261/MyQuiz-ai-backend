@@ -35,9 +35,10 @@ from services.grading import (
 from utils.taipei_time import now_taipei_iso, to_taipei_iso
 from utils.retry import call_with_transient_http_retry
 from utils.serialization import to_json_safe
-from utils.llm_key import fetch_api_key_setting_row, get_exam_api_key, get_rag_llm_model
+from utils.llm_key import course_api_key_exists, fetch_api_key_setting_row, get_exam_api_key, get_rag_llm_model
 from utils.course_setting import COURSE_SETTING_EXAM_API_KEY
 from routers.course_settings import (
+    _require_active_person,
     _require_developer_or_manager_for_analysis_prompt_write,
     _upsert_setting_and_get_row,
 )
@@ -63,6 +64,7 @@ from utils.db_schema import (
 from utils.fs import safe_unlink
 from .schemas import (
     CreateExamRequest,
+    ExamApiKeyExistsResponse,
     ExamApiKeyResponse,
     ExamCreateLlmGenerateQuizFollowupRequest,
     ExamCreateLlmGenerateQuizRequest,
@@ -1195,6 +1197,16 @@ def delete_exam_quiz(
     except Exception as e:
         _logger.exception("PUT /exam/page/quiz/delete/{exam_quiz_id} 錯誤")
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/llm_api_key/exists", response_model=ExamApiKeyExistsResponse)
+def get_exam_api_key_exists(person_id: PersonId, course_id: CourseId):
+    """查詢 Exam LLM API Key 是否已設定（Course_Setting key=exam-api-key，依 course_id）；不回傳 key 內容。"""
+    _require_active_person(person_id)
+    return ExamApiKeyExistsResponse(
+        course_id=course_id,
+        exists=course_api_key_exists(COURSE_SETTING_EXAM_API_KEY, course_id),
+    )
 
 
 @router.get("/llm_api_key", response_model=ExamApiKeyResponse)

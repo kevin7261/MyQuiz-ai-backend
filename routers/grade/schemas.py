@@ -343,6 +343,13 @@ class PutRagApiKeyRequest(BaseModel):
     api_key: str = Field(..., description="RAG LLM API Key")
 
 
+class RagApiKeyExistsResponse(BaseModel):
+    """GET /rag/llm_api_key/exists 回應。"""
+
+    course_id: int
+    exists: bool = Field(..., description="該課程是否已設定非空 rag-api-key")
+
+
 # ---------------------------------------------------------------------------
 # GET / PUT /rag/llm_model
 # ---------------------------------------------------------------------------

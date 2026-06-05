@@ -46,6 +46,7 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/rag/course-members/edit/{person_id}",
     "/rag/course-members/delete/{person_id}",
     "/rag/llm_api_key",
+    "/rag/llm_api_key/exists",
     "/rag/llm_model",
     "/rag/person_analysis_user_prompt_text",
     "/rag/course_analysis_user_prompt_text",
@@ -69,6 +70,7 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/exam/page/quiz/grade-rate",
     # --- Exam：課程設定 ---
     "/exam/llm_api_key",
+    "/exam/llm_api_key/exists",
     # --- 弱點分析 ---
     "/person-analysis/analysis",
     "/person-analysis/llm-analysis",
