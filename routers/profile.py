@@ -118,10 +118,6 @@ def _fetch_course_relations_by_user_ids(supabase, user_ids: list[int]) -> dict[i
     return out
 
 
-def _fetch_all_course_relations_for_user(supabase, user_id: int) -> list[dict]:
-    return _fetch_course_relations_by_user_ids(supabase, [user_id]).get(user_id, [])
-
-
 def _build_user_course_items(
     relations: list[dict],
     course_by_id: dict[int, dict] | None = None,
