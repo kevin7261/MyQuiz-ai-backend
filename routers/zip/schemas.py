@@ -21,14 +21,6 @@ class RagUnitMp3FileResponse(BaseModel):
     transcript: str = ""
 
 
-class RagUnitYoutubeUrlResponse(BaseModel):
-    """GET /rag/page/unit/youtube-url 回應。"""
-    rag_unit_id: int
-    rag_page_id: str
-    youtube_url: str
-    transcript: str = ""
-
-
 class UpdateRagUnitNameRequest(BaseModel):
     """PUT /rag/page/tab-name：請求僅含 rag_id（主鍵）、tab_name；勿傳 rag_page_id。"""
     rag_id: int = Field(..., description="Rag 表主鍵（整數）；辨識請用 rag_id，非 rag_page_id")
@@ -98,12 +90,6 @@ class PackRequest(BaseModel):
         if isinstance(v, str):
             return v.strip()
         return str(v)
-
-
-class UpdateRagUnitUnitNameRequest(BaseModel):
-    """PUT /rag/page/unit/unit-name：更新 Rag_Unit 的 unit_name。"""
-    rag_unit_id: int = Field(..., description="Rag_Unit 表主鍵")
-    unit_name: str = Field(..., description="新的 unit_name")
 
 
 class InsertRagQuizRowRequest(BaseModel):

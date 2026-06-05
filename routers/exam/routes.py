@@ -66,7 +66,6 @@ from .schemas import (
     ExamApiKeyResponse,
     ExamCreateLlmGenerateQuizFollowupRequest,
     ExamCreateLlmGenerateQuizRequest,
-    ExamCreateQuizRequest,
     ExamLlmGenerateQuizFollowupRequest,
     ExamLlmGenerateQuizRequest,
     ExamQuizGradeRateRequest,
@@ -407,30 +406,6 @@ def delete_exam(
         raise HTTPException(status_code=403, detail="無權刪除該 Exam")
     supabase.table("Exam").update({"deleted": True, "updated_at": now_taipei_iso()}).eq("exam_page_id", fid).eq("course_id", course_id).eq("deleted", False).execute()
     return {"message": "已將 Exam 標記為刪除", "exam_page_id": fid, "person_id": pid}
-
-
-# ---------------------------------------------------------------------------
-# POST /exam/page/quiz/add
-# ---------------------------------------------------------------------------
-
-@router.post("/page/quiz/add", summary="Exam Create Quiz (no LLM)", operation_id="exam_create_quiz")
-def exam_insert_empty_quiz(
-    body: openapi_body(ExamCreateQuizRequest, {"exam_page_id": "string"}),
-    caller_person_id: PersonId,
-    course_id: CourseId,
-):
-    """新增一筆空白 Exam_Quiz，不呼叫 LLM；body 僅需 exam_page_id。亦可改用 POST /exam/page/quiz/create-llm-generate 一次完成建立與出題。"""
-    try:
-        return _create_exam_quiz_record(
-            exam_page_id=body.exam_page_id,
-            caller_person_id=caller_person_id,
-            course_id=course_id,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        _logger.exception("POST /exam/page/quiz/add 錯誤")
-        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ---------------------------------------------------------------------------

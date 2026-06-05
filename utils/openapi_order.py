@@ -18,13 +18,10 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/rag/page/add-upload-zip",
     "/rag/page/tab-name",
     "/rag/page/delete/{rag_page_id}",
-    "/rag/page/upload-zip",
     "/rag/page/build-rag-zip",
     "/rag/page/build-rag-zip-stream",
     # --- RAG：單元 ---
-    "/rag/page/unit/unit-name",
     "/rag/page/unit/mp3-file",
-    "/rag/page/unit/youtube-url",
     # --- RAG：題目 CRUD / 標記 ---
     "/rag/page/unit/quiz/add",
     "/rag/page/unit/quiz/quiz-name",
@@ -59,7 +56,6 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/exam/page/tab-name",
     "/exam/page/delete/{exam_page_id}",
     # --- Exam：題目 CRUD ---
-    "/exam/page/quiz/add",
     "/exam/page/quiz/delete/{exam_quiz_id}",
     # --- Exam：題目 LLM ---
     "/exam/page/quiz/llm-generate",
@@ -84,7 +80,6 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/profile/users/delete",
     "/profile/password",
     "/profile/login",
-    "/profile",
 )
 
 _PATH_RANK = {p: i for i, p in enumerate(_API_PATH_ORDER)}

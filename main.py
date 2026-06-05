@@ -21,7 +21,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
-from dependencies.person_id import PersonId
 from middleware.api_log_middleware import APILogMiddleware
 from routers.college import router as college_router
 from routers.course import router as course_router
@@ -122,13 +121,3 @@ def custom_openapi():
 
 
 app.openapi = custom_openapi
-
-
-# ---------------------------------------------------------------------------
-# 健康檢查
-# ---------------------------------------------------------------------------
-
-@app.get("/")
-def read_root(_person_id: PersonId):
-    """根路徑健康檢查；確認伺服器正常運行。"""
-    return {"status": "Server is running"}

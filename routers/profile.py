@@ -7,7 +7,6 @@
 - PUT /profile/users/delete：軟刪除（body.person_id 指定對象，將 deleted 設為 true）
 - PATCH /profile/password：修改指定使用者密碼（body 僅 person_id、password）
 - POST /profile/login：以 person_id + password 登入（成功時另回傳該帳號之 User_Course_Relation 課程列表）
-- PATCH /profile：更新個人資料（name、user_type）
 """
 
 from typing import Annotated, Any, Optional
@@ -234,13 +233,6 @@ class LoginResponse(BaseModel):
     """登入成功回傳使用者資訊（不含 password）；user.courses 與頂層 courses 皆為該帳號選課列。"""
     user: UserListItem
     courses: list[UserCourseItem] = Field(default_factory=list)
-
-
-class UpdateProfileRequest(BaseModel):
-    """PATCH /profile 請求：身分以 query person_id 為準；可選 body.person_id 須與之一致；可更新 name、user_type。"""
-    person_id: Optional[str] = None
-    name: Optional[str] = None
-    user_type: Optional[int] = None
 
 
 class UploadUserRequest(BaseModel):
@@ -626,77 +618,6 @@ def batch_upload_users(
     try:
         supabase = get_supabase()
         return _batch_upload_users(supabase, body)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.patch("", response_model=LoginResponse)
-def update_profile(
-    body: openapi_body(
-        UpdateProfileRequest,
-        {"person_id": None, "name": None, "user_type": None},
-    ),
-    person_id: PersonId,
-):
-    """
-    修改個資：以 query person_id 識別使用者，可更新 name、user_type。回傳更新後的使用者資訊（不含 password）。
-    """
-    if (body.person_id or "").strip() and (body.person_id or "").strip() != person_id:
-        raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
-    if body.name is None and body.user_type is None:
-        raise HTTPException(status_code=400, detail="請傳入 name 或 user_type 以進行修改")
-
-    try:
-        supabase = get_supabase()
-        resp = (
-            supabase.table(USER_TABLE)
-            .select(USER_TABLE_COLUMNS)
-            .eq("person_id", person_id)
-            .or_(ACTIVE_DELETED_FILTER)
-            .execute()
-        )
-        if not resp.data or len(resp.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該使用者")
-        row = resp.data[0]
-
-        user_id = row.get("user_id")
-        user_updates: dict = {}
-        rel_updates: dict = {}
-        if body.name is not None:
-            user_updates["name"] = (body.name or "").strip() or None
-            rel_updates["name"] = (body.name or "").strip() or ""
-        if body.user_type is not None:
-            rel_updates["user_type"] = body.user_type
-        if not user_updates and not rel_updates:
-            college_map = _fetch_colleges_by_ids(supabase, [_normalize_college_id(row.get("college_id"))])
-            courses = _courses_for_users(supabase, [int(user_id)]).get(int(user_id), []) if user_id is not None else []
-            user = _user_list_item(row, college_map, courses)
-            return LoginResponse(user=user, courses=courses)
-
-        ts = now_taipei_iso()
-        if user_updates:
-            user_updates["updated_at"] = ts
-            supabase.table(USER_TABLE).update(user_updates).eq("user_id", user_id).eq("person_id", person_id).execute()
-        if rel_updates:
-            rel_updates["updated_at"] = ts
-            supabase.table(USER_COURSE_RELATION_TABLE).update(rel_updates).eq("user_id", user_id).or_(
-                ACTIVE_DELETED_FILTER
-            ).execute()
-        resp2 = (
-            supabase.table(USER_TABLE)
-            .select(USER_TABLE_COLUMNS)
-            .eq("user_id", user_id)
-            .eq("person_id", person_id)
-            .or_(ACTIVE_DELETED_FILTER)
-            .execute()
-        )
-        out_row = resp2.data[0] if resp2.data else row
-        college_map = _fetch_colleges_by_ids(supabase, [_normalize_college_id(out_row.get("college_id"))])
-        courses = _courses_for_users(supabase, [int(user_id)]).get(int(user_id), []) if user_id is not None else []
-        user = _user_list_item(out_row, college_map, courses)
-        return LoginResponse(user=user, courses=courses)
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

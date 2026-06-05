@@ -65,11 +65,6 @@ class UpdateExamUnitNameRequest(BaseModel):
     tab_name: str = Field(..., description="新的顯示名稱")
 
 
-class ExamCreateQuizRequest(BaseModel):
-    """POST /exam/page/quiz/add：新增空白 Exam_Quiz（無 LLM）。僅 exam_page_id（不傳 rag_unit_id）。"""
-    exam_page_id: str = Field("", description="目標 Exam 的 exam_page_id")
-
-
 class ExamQuizHistoryPair(BaseModel):
     """quiz_history_list 單筆：八欄位物件。"""
 

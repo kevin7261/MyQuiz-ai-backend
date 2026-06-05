@@ -46,10 +46,8 @@ from .schemas import (
     ListRagResponse,
     PackRequest,
     RagUnitMp3FileResponse,
-    RagUnitYoutubeUrlResponse,
     UpdateRagQuizQuizNameRequest,
     UpdateRagUnitNameRequest,
-    UpdateRagUnitUnitNameRequest,
 )
 from .helpers import (
     RAG_UNIT_TYPE_MP3,
@@ -96,7 +94,7 @@ def list_rag(
     回傳列依 created_at 由舊到新排序。
     每筆 Rag 含 units（Rag_Unit 列表），每個 unit 含 quizzes（Rag_Quiz 列表，含 follow_up、quiz_history_list）。
     音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /rag/page/unit/mp3-file 查詢字串（`rag_page_id`、`rag_unit_id`，不需 person_id），可接在後端 origin 後作為 `<audio src>`。
-    YouTube 單元（unit_type=4）且 youtube_url 非空時，另含 youtube_url_api：相對於 API 根路徑的 GET /rag/page/unit/youtube-url 查詢字串（同上，不需 person_id）。
+    YouTube 單元（unit_type=4）且 youtube_url 非空時，另含 youtube_url_api：相對於 API 根路徑的 GET /rag/unit/youtube-url 查詢字串（`rag_page_id`、`folder_name`、`person_id`）。
     """
     try:
         local_filter = local if local is not None else is_localhost_request(request)
@@ -161,13 +159,15 @@ def list_rag(
                     and (unit.get("youtube_url") or "").strip()
                     and page_id
                     and uid_int is not None
+                    and (folder_c or unit_name_q)
                 ):
                     unit["youtube_url_api"] = (
-                        "/rag/page/unit/youtube-url?"
+                        "/rag/unit/youtube-url?"
                         + urlencode(
                             {
                                 "rag_page_id": str(page_id).strip(),
-                                "rag_unit_id": str(uid_int),
+                                "folder_name": folder_c or unit_name_q,
+                                "person_id": pid,
                                 "course_id": str(course_id),
                             }
                         )
@@ -299,51 +299,6 @@ async def create_upload_zip(
             course_id=course_id,
         )
         return {**create_result, "file_metadata": file_metadata}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/page/upload-zip")
-async def upload_zip(
-    caller_person_id: PersonId,
-    course_id: CourseId,
-    file: UploadFile = File(...),
-    rag_page_id: str = Form(..., description="對應既有 Rag 的 rag_page_id，ZIP 會存於此路徑"),
-    person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與該 Rag 一致"),
-):
-    """
-    Upload Zip：只做上傳並寫入資料庫。該 rag_page_id 須已有 Rag 資料（新建請用 POST /rag/page/add-upload-zip）。
-    會更新該筆 Rag 的 file_metadata（filename、second_folders、file_size 等）與 file_size 欄位（皆為 MB）。
-    回傳 file_metadata。
-    """
-    if not file.filename or not file.filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="請上傳 .zip 檔案")
-
-    fid = (rag_page_id or "").strip()
-    if not fid or "/" in fid or "\\" in fid:
-        raise HTTPException(status_code=400, detail="無效的 rag_page_id")
-
-    try:
-        contents = await file.read()
-    except Exception:
-        raise HTTPException(status_code=400, detail="無法讀取上傳檔案")
-
-    resolved_person_id = (person_id or "").strip()
-    if not resolved_person_id:
-        raise HTTPException(status_code=400, detail="請傳入 person_id")
-    if resolved_person_id != caller_person_id:
-        raise HTTPException(status_code=400, detail="Form 的 person_id 與 query 不一致")
-
-    try:
-        return _upload_rag_zip_contents(
-            contents=contents,
-            filename=file.filename,
-            rag_page_id=fid,
-            person_id=resolved_person_id,
-            course_id=course_id,
-        )
     except HTTPException:
         raise
     except Exception as e:
@@ -599,62 +554,6 @@ def list_rag_units(
         raise HTTPException(status_code=500, detail=f"列出 Rag_Unit 失敗: {e!s}")
 
 
-@router.put("/page/unit/unit-name")
-def update_rag_unit_name(
-    body: openapi_body(UpdateRagUnitUnitNameRequest, {"rag_unit_id": 1, "unit_name": "新名稱"}),
-    caller_person_id: PersonId,
-    course_id: CourseId,
-):
-    """
-    更新既有 Rag_Unit 的 unit_name。以 rag_unit_id（主鍵）比對；僅更新 deleted=false 的列。
-    回傳 rag_unit_id、rag_page_id、person_id、unit_name、updated_at。
-    """
-    if body.rag_unit_id <= 0:
-        raise HTTPException(status_code=400, detail="無效的 rag_unit_id")
-    unit_name = (body.unit_name or "").strip()
-    if not unit_name:
-        raise HTTPException(status_code=400, detail="請傳入 unit_name")
-    try:
-        supabase = get_supabase()
-
-        def build_unit_sel(with_course_filter: bool):
-            cols = select_without_course_id_if_needed(
-                "Rag_Unit",
-                "rag_unit_id, rag_page_id, person_id, course_id",
-                with_course_filter,
-            )
-            q = (
-                supabase.table("Rag_Unit")
-                .select(cols)
-                .eq("rag_unit_id", body.rag_unit_id)
-                .eq("deleted", False)
-            )
-            if with_course_filter and course_id is not None:
-                q = q.eq("course_id", course_id)
-            return q.limit(1)
-
-        sel = execute_with_course_id_fallback("Rag_Unit", build_unit_sel, course_id)
-        if not sel.data or len(sel.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該 rag_unit_id 的 Rag_Unit 資料，或已刪除")
-        row = sel.data[0]
-        pid = row.get("person_id")
-        if (pid or "").strip() != caller_person_id:
-            raise HTTPException(status_code=403, detail="無權修改該 Rag_Unit")
-        ts = now_taipei_iso()
-        supabase.table("Rag_Unit").update({"unit_name": unit_name, "updated_at": ts}).eq("rag_unit_id", body.rag_unit_id).eq("deleted", False).execute()
-        return {
-            "rag_unit_id": body.rag_unit_id,
-            "rag_page_id": row.get("rag_page_id"),
-            "person_id": pid,
-            "unit_name": unit_name,
-            "updated_at": ts,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.get(
     "/page/unit/mp3-file",
     summary="Rag Tab Unit Mp3 File",
@@ -811,87 +710,6 @@ def rag_tab_unit_mp3_file(
         audio_base64=audio_b64,
         media_type=media,
         filename=disp_name,
-        transcript=unit_transcript,
-    )
-
-
-# ---------------------------------------------------------------------------
-# GET /rag/page/unit/youtube-url
-# ---------------------------------------------------------------------------
-
-
-@router.get(
-    "/page/unit/youtube-url",
-    summary="Rag Tab Unit Youtube Url",
-    operation_id="rag_tab_unit_youtube_url",
-    response_model=RagUnitYoutubeUrlResponse,
-)
-def rag_tab_unit_youtube_url(
-    course_id: CourseId,
-    rag_page_id: str = Query(..., description="Rag.rag_page_id（parent tab）"),
-    rag_unit_id: int = Query(..., gt=0, description="Rag_Unit 主鍵"),
-):
-    """
-    依 rag_page_id 與 rag_unit_id 回傳 **unit_type=4（YouTube 單元）** 之 `youtube_url`。
-    **不需** query `person_id`；後端依 `rag_page_id` 自 Rag 解析擁有者。
-    youtube_url 為上傳 ZIP 內文字檔所記錄之 YouTube 連結（建 RAG 時由 `extract_transcript_for_rag_build` 擷取並寫入 `Rag_Unit.youtube_url`）。
-    """
-    owner_pid = resolve_rag_tab_owner_person_id(rag_page_id, course_id)
-    tab = (rag_page_id or "").strip()
-    supabase = get_supabase()
-
-    def build_youtube_sel(with_course_filter: bool):
-        cols = select_without_course_id_if_needed(
-            "Rag_Unit",
-            "rag_unit_id, rag_page_id, unit_type, youtube_url, transcript, deleted, course_id",
-            with_course_filter,
-        )
-        q = (
-            supabase.table("Rag_Unit")
-            .select(cols)
-            .eq("rag_unit_id", rag_unit_id)
-            .eq("person_id", owner_pid)
-        )
-        if with_course_filter and course_id is not None:
-            q = q.eq("course_id", course_id)
-        return q.limit(1)
-
-    try:
-        sel = execute_with_course_id_fallback("Rag_Unit", build_youtube_sel, course_id)
-    except Exception as e:
-        _logger.exception("GET /rag/page/unit/youtube-url 查詢 Rag_Unit 失敗")
-        raise HTTPException(status_code=500, detail=f"查詢失敗: {e!s}") from e
-
-    if not sel.data:
-        raise HTTPException(
-            status_code=404,
-            detail="找不到該 rag_unit_id，或與此 rag_page_id／擁有者不一致",
-        )
-    row = sel.data[0]
-    if row.get("deleted"):
-        raise HTTPException(status_code=404, detail="該單元已刪除")
-    if (row.get("rag_page_id") or "").strip() != tab:
-        raise HTTPException(
-            status_code=400,
-            detail="rag_page_id 與該 rag_unit_id 所屬之 Rag_Unit.rag_page_id 不一致",
-        )
-    try:
-        ut = int(row.get("unit_type") or 0)
-    except (TypeError, ValueError):
-        ut = 0
-    if ut != RAG_UNIT_TYPE_YOUTUBE:
-        raise HTTPException(
-            status_code=400,
-            detail=f"僅 unit_type=4（YouTube 單元）可使用此端點，目前 unit_type={ut}",
-        )
-    yt_url = (row.get("youtube_url") or "").strip()
-    if not yt_url:
-        raise HTTPException(status_code=404, detail="該 YouTube 單元未記錄 youtube_url，請重新建置 RAG")
-    unit_transcript = transcript_from_row(row)
-    return RagUnitYoutubeUrlResponse(
-        rag_unit_id=int(row["rag_unit_id"]),
-        rag_page_id=tab,
-        youtube_url=yt_url,
         transcript=unit_transcript,
     )
 
