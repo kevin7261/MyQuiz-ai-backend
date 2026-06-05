@@ -30,7 +30,7 @@ class RagUnitYoutubeUrlResponse(BaseModel):
 
 
 class CreateRagRequest(BaseModel):
-    """POST /rag/page/create：欄位順序同 public.Rag（rag_page_id, person_id, tab_name, local；不含 rag_id／course_id／deleted／時間戳）。"""
+    """POST /rag/page/add：欄位順序同 public.Rag（rag_page_id, person_id, tab_name, local；不含 rag_id／course_id／deleted／時間戳）。"""
     rag_page_id: str = Field(..., description="Rag 的 tab 識別，對應 Rag 表 rag_page_id 欄位")
     person_id: str = Field(..., description="使用者/路徑識別")
     tab_name: str = Field(..., description="Rag 顯示名稱，寫入 Rag 表 tab_name 欄位")
@@ -116,7 +116,7 @@ class UpdateRagUnitUnitNameRequest(BaseModel):
 
 class InsertRagQuizRowRequest(BaseModel):
     """
-    POST /rag/page/unit/quiz/create：欄位順序對齊 public.Rag_Quiz 之關聯欄（rag_page_id、rag_unit_id）。
+    POST /rag/page/unit/quiz/add：欄位順序對齊 public.Rag_Quiz 之關聯欄（rag_page_id、rag_unit_id）。
     `rag_page_id` 與 `rag_unit_id` 二擇一定位 Rag_Unit：
     - `rag_unit_id > 0`：以主鍵載入；若同傳 `rag_page_id`（非空）則須與該列一致。
     - `rag_unit_id == 0`：`rag_page_id`（非空）須在該名下**唯一**一筆未刪除之 Rag_Unit，否則 400。

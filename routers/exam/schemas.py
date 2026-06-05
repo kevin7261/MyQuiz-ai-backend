@@ -52,7 +52,7 @@ class ListRagForExamsResponse(BaseModel):
 
 
 class CreateExamRequest(BaseModel):
-    """POST /exam/page/create：欄位順序同 public.Exam（exam_page_id, person_id, tab_name, local；不含 exam_id／course_id／deleted／時間戳）。"""
+    """POST /exam/page/add：欄位順序同 public.Exam（exam_page_id, person_id, tab_name, local；不含 exam_id／course_id／deleted／時間戳）。"""
     exam_page_id: str | None = Field(None, description="選填；未傳則由後端產生")
     person_id: str = Field("", description="選填，寫入 Exam.person_id")
     tab_name: str = Field("", description="測驗顯示名稱")
@@ -66,7 +66,7 @@ class UpdateExamUnitNameRequest(BaseModel):
 
 
 class ExamCreateQuizRequest(BaseModel):
-    """POST /exam/page/quiz/create：新增空白 Exam_Quiz（無 LLM）。僅 exam_page_id（不傳 rag_unit_id）。"""
+    """POST /exam/page/quiz/add：新增空白 Exam_Quiz（無 LLM）。僅 exam_page_id（不傳 rag_unit_id）。"""
     exam_page_id: str = Field("", description="目標 Exam 的 exam_page_id")
 
 
@@ -166,7 +166,7 @@ class ExamCreateLlmGenerateQuizRequest(BaseModel):
     rag_page_id: str = Field(
         ...,
         min_length=1,
-        description="Rag.rag_page_id（與 POST /rag/page/create 等相同之 tab 識別字串）",
+        description="Rag.rag_page_id（與 POST /rag/page/add 等相同之 tab 識別字串）",
     )
     rag_unit_id: int = Field(
         ...,
@@ -201,7 +201,7 @@ class ExamLlmGenerateQuizRequest(BaseModel):
     rag_page_id: str = Field(
         ...,
         min_length=1,
-        description="Rag.rag_page_id（與 POST /rag/page/create 等相同之 tab 識別字串）",
+        description="Rag.rag_page_id（與 POST /rag/page/add 等相同之 tab 識別字串）",
     )
     rag_unit_id: int = Field(
         ...,
@@ -238,7 +238,7 @@ class ExamCreateLlmGenerateQuizFollowupRequest(BaseModel):
     rag_page_id: str = Field(
         ...,
         min_length=1,
-        description="Rag.rag_page_id（與 POST /rag/page/create 等相同之 tab 識別字串）",
+        description="Rag.rag_page_id（與 POST /rag/page/add 等相同之 tab 識別字串）",
     )
     rag_unit_id: int = Field(
         ...,
@@ -291,7 +291,7 @@ class ExamLlmGenerateQuizFollowupRequest(BaseModel):
     rag_page_id: str = Field(
         ...,
         min_length=1,
-        description="Rag.rag_page_id（與 POST /rag/page/create 等相同之 tab 識別字串）",
+        description="Rag.rag_page_id（與 POST /rag/page/add 等相同之 tab 識別字串）",
     )
     rag_unit_id: int = Field(
         ...,

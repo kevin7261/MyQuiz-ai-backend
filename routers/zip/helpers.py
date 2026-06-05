@@ -822,7 +822,7 @@ def _validate_rag_tab_create_fields(
     tab_name: str,
     caller_person_id: str,
 ) -> tuple[str, str, str]:
-    """驗證 page/create 與 page/create-upload-zip 共用欄位；回傳 strip 後 (rag_page_id, person_id, tab_name)。"""
+    """驗證 page/add 與 page/add-upload-zip 共用欄位；回傳 strip 後 (rag_page_id, person_id, tab_name)。"""
     fid = (rag_page_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
         raise HTTPException(status_code=400, detail="無效的 rag_page_id")
@@ -864,7 +864,7 @@ def _upload_rag_zip_contents(
     if not r.data or len(r.data) == 0:
         raise HTTPException(
             status_code=404,
-            detail="找不到該 rag_page_id 的 Rag 資料，請先呼叫 POST /rag/page/create 建立",
+            detail="找不到該 rag_page_id 的 Rag 資料，請先呼叫 POST /rag/page/add 建立",
         )
     row = r.data[0]
 

@@ -282,10 +282,10 @@ def list_rag_for_exams(
 
 
 # ---------------------------------------------------------------------------
-# POST /exam/page/create
+# POST /exam/page/add
 # ---------------------------------------------------------------------------
 
-@router.post("/page/create")
+@router.post("/page/add")
 def create_exam(
     body: openapi_body(
         CreateExamRequest,
@@ -410,10 +410,10 @@ def delete_exam(
 
 
 # ---------------------------------------------------------------------------
-# POST /exam/page/quiz/create
+# POST /exam/page/quiz/add
 # ---------------------------------------------------------------------------
 
-@router.post("/page/quiz/create", summary="Exam Create Quiz (no LLM)", operation_id="exam_create_quiz")
+@router.post("/page/quiz/add", summary="Exam Create Quiz (no LLM)", operation_id="exam_create_quiz")
 def exam_insert_empty_quiz(
     body: openapi_body(ExamCreateQuizRequest, {"exam_page_id": "string"}),
     caller_person_id: PersonId,
@@ -429,7 +429,7 @@ def exam_insert_empty_quiz(
     except HTTPException:
         raise
     except Exception as e:
-        _logger.exception("POST /exam/page/quiz/create 錯誤")
+        _logger.exception("POST /exam/page/quiz/add 錯誤")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
@@ -583,7 +583,7 @@ def exam_llm_generate_quiz_followup(
 # ---------------------------------------------------------------------------
 
 _EXAM_CREATE_LLM_GENERATE_DESCRIPTION = """\
-等同先 POST /exam/page/quiz/create 再 POST /exam/page/quiz/llm-generate。
+等同先 POST /exam/page/quiz/add 再 POST /exam/page/quiz/llm-generate。
 Body 不需 `exam_quiz_id`（由 create 產生）；其餘 RAG 綁定、unit_type 出題邏輯與回應 JSON 同 `llm-generate`。
 """
 
@@ -638,7 +638,7 @@ def exam_create_llm_generate_quiz(
 # ---------------------------------------------------------------------------
 
 _EXAM_CREATE_LLM_GENERATE_FOLLOWUP_DESCRIPTION = """\
-等同先 POST /exam/page/quiz/create 再 POST /exam/page/quiz/llm-generate-followup。
+等同先 POST /exam/page/quiz/add 再 POST /exam/page/quiz/llm-generate-followup。
 Body 不需 `exam_quiz_id`（由 create 產生）。
 出題成功後**一律**寫入本列 `follow_up=true`；`follow_up_exam_quiz_id` 以請求傳入為準（可為 0）。
 `quiz_history_list_prompt_text` 非空時使用追問 LLM prompt，否則出題邏輯同一般 llm-generate。

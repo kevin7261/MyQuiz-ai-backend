@@ -182,7 +182,7 @@ def list_rag(
         raise HTTPException(status_code=500, detail=f"列出 Rag 失敗: {e!s}")
 
 
-@router.post("/page/create")
+@router.post("/page/add")
 def create_unit(
     body: openapi_body(
         CreateRagRequest,
@@ -287,7 +287,7 @@ def delete_rag_file(
     }
 
 
-@router.post("/page/create-upload-zip")
+@router.post("/page/add-upload-zip")
 async def create_upload_zip(
     caller_person_id: PersonId,
     course_id: CourseId,
@@ -298,7 +298,7 @@ async def create_upload_zip(
     local: bool = Form(False, description="是否為本機 RAG，寫入 Rag 表 local 欄位"),
 ):
     """
-    建立 Rag 並上傳 ZIP（先 page/create，再 page/upload-zip）。
+    建立 Rag 並上傳 ZIP（先 page/add，再 page/upload-zip）。
     multipart/form-data：file、rag_page_id、person_id、tab_name、local（選填，預設 false）。
     須傳 query course_id、person_id。
     回傳 create 欄位與 file_metadata。
@@ -345,12 +345,12 @@ async def upload_zip(
     caller_person_id: PersonId,
     course_id: CourseId,
     file: UploadFile = File(...),
-    rag_page_id: str = Form(..., description="對應 page/create 建立的 rag_page_id，ZIP 會存於此路徑"),
-    person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 page/create 一致"),
+    rag_page_id: str = Form(..., description="對應 page/add 建立的 rag_page_id，ZIP 會存於此路徑"),
+    person_id: str = Form(..., description="寫入儲存路徑的 person_id，需與 page/add 一致"),
 ):
     """
-    Upload Zip：只做上傳並寫入資料庫。需先以 page/create 建立該 rag_page_id 的 Rag 資料。
-    亦可改用 POST /rag/page/create-upload-zip 一次完成建立與上傳。
+    Upload Zip：只做上傳並寫入資料庫。需先以 page/add 建立該 rag_page_id 的 Rag 資料。
+    亦可改用 POST /rag/page/add-upload-zip 一次完成建立與上傳。
     會更新該筆 Rag 的 file_metadata（filename、second_folders、file_size 等）與 file_size 欄位（皆為 MB）。
     回傳 file_metadata。
     """
@@ -932,7 +932,7 @@ def rag_tab_unit_youtube_url(
     )
 
 
-@router.post("/page/unit/quiz/create", summary="Rag Create Quiz (no LLM)", operation_id="rag_create_quiz")
+@router.post("/page/unit/quiz/add", summary="Rag Create Quiz (no LLM)", operation_id="rag_create_quiz")
 def insert_rag_quiz_row(
     body: openapi_body(InsertRagQuizRowRequest, {"rag_page_id": "string", "rag_unit_id": 1}),
     caller_person_id: PersonId,
@@ -1054,7 +1054,7 @@ def insert_rag_quiz_row(
     except HTTPException:
         raise
     except Exception as e:
-        _logger.exception("POST /rag/page/unit/quiz/create 錯誤")
+        _logger.exception("POST /rag/page/unit/quiz/add 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 
 

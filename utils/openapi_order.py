@@ -2,7 +2,7 @@
 RAG / Exam API 路徑在 OpenAPI（Swagger）與文件中的顯示順序。
 
 層級：分頁（page）→ 單元（unit，僅 RAG）→ 題目（quiz）→ 設定（api_key 等）。
-RAG 與 Exam 的 quiz 區塊順序對齊：create → name → delete → 標記 → 出題 → 評分 → 其他。
+RAG 與 Exam 的 quiz 區塊順序對齊：add → name → delete → 標記 → 出題 → 評分 → 其他。
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ _API_PATH_ORDER: tuple[str, ...] = (
     # --- RAG：分頁 ---
     "/rag/pages",
     "/rag/page/units",
-    "/rag/page/create",
-    "/rag/page/create-upload-zip",
+    "/rag/page/add",
+    "/rag/page/add-upload-zip",
     "/rag/page/tab-name",
     "/rag/page/delete/{rag_page_id}",
     "/rag/page/upload-zip",
@@ -27,7 +27,7 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/rag/page/unit/mp3-file",
     "/rag/page/unit/youtube-url",
     # --- RAG：題目 CRUD / 標記 ---
-    "/rag/page/unit/quiz/create",
+    "/rag/page/unit/quiz/add",
     "/rag/page/unit/quiz/quiz-name",
     "/rag/page/unit/quiz/delete/{rag_quiz_id}",
     "/rag/page/unit/quiz/followup",
@@ -56,11 +56,11 @@ _API_PATH_ORDER: tuple[str, ...] = (
     # --- Exam：分頁 ---
     "/exam/pages",
     "/exam/rag-for-exams",
-    "/exam/page/create",
+    "/exam/page/add",
     "/exam/page/tab-name",
     "/exam/page/delete/{exam_page_id}",
     # --- Exam：題目 CRUD ---
-    "/exam/page/quiz/create",
+    "/exam/page/quiz/add",
     "/exam/page/quiz/delete/{exam_quiz_id}",
     # --- Exam：題目 LLM ---
     "/exam/page/quiz/llm-generate",
