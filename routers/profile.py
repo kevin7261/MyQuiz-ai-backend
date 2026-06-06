@@ -1,18 +1,18 @@
 """
 使用者相關 API 模組。
 提供：
-- GET /users：列出 User 表（含 password），含各使用者選課 courses 列表（唯讀）
+- GET /users：列出指定學院（必填 query college_id）的 User 表（含 password），含各使用者選課 courses 列表（唯讀）
 - PUT /users/me/password：修改呼叫者（token 解析）自己的密碼
 - POST /auth/login：以 person_id + password 登入；成功時簽發 access_token（Bearer）
   並回傳該帳號之 User_Course_Relation 課程列表
 - POST /auth/refresh：以仍有效的 token 換發新 token（延長效期）
 
-新增／編輯／刪除使用者請用 /rag/course-members/*。
+新增／編輯／刪除使用者請用 /v1/rag/course-members。
 """
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from dependencies.person_id import PersonId
 from pydantic import BaseModel, Field
@@ -251,9 +251,13 @@ def _user_list_item(
 
 
 @router.get("/users", response_model=ListUsersResponse)
-def list_users(_person_id: PersonId):
+def list_users(
+    _person_id: PersonId,
+    college_id: int = Query(..., description="必填；僅列出該學院（User.college_id）的使用者"),
+):
     """
-    列出 User 表內容（含 password）；僅 deleted = false。唯讀；新增／編輯／刪除請用 /rag/course-members/*。
+    列出指定學院（必填 query `college_id`）的 User 表內容（含 password）；僅 deleted = false。
+    唯讀；新增／編輯／刪除請用 /v1/rag/course-members。
     """
     try:
         supabase = get_supabase()
@@ -261,6 +265,7 @@ def list_users(_person_id: PersonId):
             supabase.table(USER_TABLE)
             .select(f"{USER_TABLE_COLUMNS}, password")
             .eq("deleted", False)
+            .eq("college_id", college_id)
             .execute()
         )
         rows = resp.data or []
