@@ -21,6 +21,25 @@ class RagUnitMp3FileResponse(BaseModel):
     transcript: str = ""
 
 
+class RagUnitTextByIdResponse(BaseModel):
+    """GET /rag/units/{rag_unit_id}/text 回應：unit_type=2 文字單元逐字稿（DB 優先，無則讀 upload ZIP）。命名避開 routers.grade.schemas.RagUnitTextResponse（deprecated 舊端點用）。"""
+    rag_unit_id: int
+    rag_page_id: str
+    folder_name: str = ""
+    text_file_name: str = ""
+    transcript: str = ""
+
+
+class RagUnitYoutubeUrlResponse(BaseModel):
+    """GET /rag/units/{rag_unit_id}/youtube-url 回應：unit_type=4 之 watch URL 與逐字稿（DB 優先，無則讀 upload ZIP）。"""
+    rag_unit_id: int
+    rag_page_id: str
+    folder_name: str = ""
+    youtube_url: str = Field(..., description="https://www.youtube.com/watch?v=…")
+    text_file_name: str = ""
+    transcript: str = ""
+
+
 class UpdateRagUnitNameRequest(BaseModel):
     """PATCH /rag/pages/{rag_page_id}：請求僅含 tab_name；定位用 path 參數 rag_page_id。"""
     tab_name: str = Field(..., description="新的顯示名稱，寫入 Rag 表 tab_name 欄位")

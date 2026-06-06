@@ -23,7 +23,9 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/rag/pages/{rag_page_id}/build-zip",
     "/v1/rag/pages/{rag_page_id}/build-zip-stream",
     # --- RAG：單元 ---
+    "/v1/rag/units/{rag_unit_id}/text",
     "/v1/rag/units/{rag_unit_id}/mp3-file",
+    "/v1/rag/units/{rag_unit_id}/youtube-url",
     # --- RAG：題目 CRUD / 標記 ---
     "/v1/rag/quizzes",
     "/v1/rag/quizzes/{rag_quiz_id}",
