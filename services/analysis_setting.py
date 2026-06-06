@@ -374,47 +374,6 @@ def fetch_person_analysis_user_prompt_for_llm(
     return text
 
 
-def fetch_person_analysis_stored(
-    caller_person_id: str | int,
-    course_id: int | str,
-) -> Optional[dict[str, Any]]:
-    """讀取呼叫者最新結果列：prompt（自身或同課 fallback）+ 自身最新 analysis_text 列。"""
-    caller = _person_id_for_db(caller_person_id)
-    if not caller:
-        return None
-
-    row = _fetch_row_by_scope(
-        PERSON_ANALYSIS_TABLE,
-        PERSON_ANALYSIS_COLUMNS,
-        caller,
-        course_id,
-        require_field="analysis_text",
-    )
-    prompt_row = _fetch_latest_prompt_row_for_course(
-        PERSON_ANALYSIS_TABLE,
-        PERSON_ANALYSIS_COLUMNS,
-        course_id,
-        prefer_person_id=caller,
-    )
-    prompt_text = _prompt_text_from_row(prompt_row)
-    analysis_text = (row.get("analysis_text") or "").strip() if row else ""
-
-    if not row and not prompt_text and not analysis_text:
-        return None
-
-    primary = row or prompt_row or {}
-    return {
-        "person_analysis_id": primary.get("person_analysis_id"),
-        "person_id": caller,
-        "course_id": int(course_id),
-        "analysis_name": primary.get("analysis_name"),
-        "analysis_prompt_text": prompt_text or None,
-        "analysis_text": analysis_text or None,
-        "created_at": primary.get("created_at"),
-        "updated_at": (row or prompt_row or {}).get("updated_at"),
-    }
-
-
 def fetch_person_analyses_by_person(
     caller_person_id: str | int,
 ) -> list[dict[str, Any]]:
@@ -699,46 +658,6 @@ def fetch_course_analysis_user_prompt_for_llm(
 ) -> str:
     _, text = fetch_course_analysis_instruction_text(caller_person_id, course_id)
     return text
-
-
-def fetch_course_analysis_stored(
-    caller_person_id: str | int,
-    course_id: int | str,
-) -> Optional[dict[str, Any]]:
-    caller = _person_id_for_db(caller_person_id)
-    if not caller:
-        return None
-
-    row = _fetch_row_by_scope(
-        COURSE_ANALYSIS_TABLE,
-        COURSE_ANALYSIS_COLUMNS,
-        caller,
-        course_id,
-        require_field="analysis_text",
-    )
-    prompt_row = _fetch_latest_prompt_row_for_course(
-        COURSE_ANALYSIS_TABLE,
-        COURSE_ANALYSIS_COLUMNS,
-        course_id,
-        prefer_person_id=caller,
-    )
-    prompt_text = _prompt_text_from_row(prompt_row)
-    analysis_text = (row.get("analysis_text") or "").strip() if row else ""
-
-    if not row and not prompt_text and not analysis_text:
-        return None
-
-    primary = row or prompt_row or {}
-    return {
-        "course_analysis_id": primary.get("course_analysis_id"),
-        "person_id": caller,
-        "course_id": int(course_id),
-        "analysis_name": primary.get("analysis_name"),
-        "analysis_prompt_text": prompt_text or None,
-        "analysis_text": analysis_text or None,
-        "created_at": primary.get("created_at"),
-        "updated_at": (row or prompt_row or {}).get("updated_at"),
-    }
 
 
 def fetch_course_analyses_by_course(

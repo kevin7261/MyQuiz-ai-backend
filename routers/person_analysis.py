@@ -25,7 +25,6 @@ from services.exam_queries import (
 from services.analysis_setting import (
     add_person_analysis_row,
     fetch_person_analyses_by_person,
-    fetch_person_analysis_stored,
     fetch_person_analysis_user_prompt_for_llm,
     resolve_login_person_id,
     save_person_analysis_setting,
@@ -49,35 +48,6 @@ def _caller_person_id_or_404(person_id: str) -> str:
     if not login:
         raise HTTPException(status_code=404, detail=f"找不到使用者 person_id={person_id}")
     return login
-
-
-class PersonStoredAnalysisResponse(BaseModel):
-    """GET /person-analyses/latest 回應；無紀錄時各欄位為 null。"""
-    person_analysis_id: Optional[int] = Field(
-        default=None, description="Person_Analysis 主鍵"
-    )
-    person_id: Optional[str] = Field(default=None, description="呼叫者登入帳號")
-    course_id: Optional[int] = None
-    analysis_name: Optional[str] = Field(
-        default=None, description="分析名稱（DB 欄位 analysis_name）"
-    )
-    analysis_user_prompt_text: Optional[str] = Field(
-        default=None,
-        description="教師分析指令（對應 answer_user_prompt_text）",
-    )
-    analysis_prompt_text: Optional[str] = Field(
-        default=None,
-        description="與 analysis_user_prompt_text 同源（DB 欄位 analysis_prompt_text）",
-    )
-    analysis_text: Optional[str] = Field(
-        default=None, description="弱點報告 Markdown（對應 answer_critique）",
-    )
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    analysis_llm_model: Optional[str] = Field(
-        default=None,
-        description="目前課程設定的 LLM 模型（Course_Setting key=llm-model）；非當初產生 analysis_text 時所用模型",
-    )
 
 
 class PersonAnalysisListItem(BaseModel):
@@ -169,45 +139,6 @@ class PersonLlmAnalysisResponse(BaseModel):
         ...,
         description="本次弱點分析實際使用的 LLM 模型（Course_Setting key=llm-model）。API Key 為 exam-api-key",
     )
-
-
-def _stored_to_response(
-    stored: Optional[dict], analysis_llm_model: Optional[str] = None
-) -> PersonStoredAnalysisResponse:
-    if not stored:
-        return PersonStoredAnalysisResponse(analysis_llm_model=analysis_llm_model)
-    safe = to_json_safe(stored)
-    prompt = safe.get("analysis_prompt_text")
-    return PersonStoredAnalysisResponse(
-        person_analysis_id=safe.get("person_analysis_id"),
-        person_id=safe.get("person_id"),
-        course_id=safe.get("course_id"),
-        analysis_name=safe.get("analysis_name"),
-        analysis_user_prompt_text=prompt,
-        analysis_prompt_text=prompt,
-        analysis_text=safe.get("analysis_text"),
-        created_at=safe.get("created_at"),
-        updated_at=safe.get("updated_at"),
-        analysis_llm_model=analysis_llm_model,
-    )
-
-
-@router.get("/latest", response_model=PersonStoredAnalysisResponse)
-def get_person_stored_analysis(
-    person_id: PersonId,
-    course_id: CourseId,
-):
-    """
-    取值：不呼叫 LLM。必填 query `person_id`（呼叫者）、`course_id`。
-    """
-    try:
-        caller = _caller_person_id_or_404(person_id)
-        stored = fetch_person_analysis_stored(caller, course_id)
-        return _stored_to_response(stored, analysis_llm_model=get_rag_llm_model(course_id))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("", response_model=PersonAnalysesResponse)
