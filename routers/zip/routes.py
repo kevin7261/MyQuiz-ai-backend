@@ -790,6 +790,12 @@ def rag_tab_unit_text(
         except Exception:
             _logger.exception("GET /rag/units/{id}/text ZIP 備援失敗")
 
+    if not transcript.strip():
+        raise HTTPException(
+            status_code=404,
+            detail="該單元無逐字稿（Rag_Unit.transcript 為空，且自 upload ZIP 讀取備援失敗或內容為空）",
+        )
+
     return RagUnitTextResponse(
         rag_unit_id=rag_unit_id,
         rag_page_id=tab,
@@ -856,6 +862,11 @@ def rag_tab_unit_youtube_url(
             status_code=404,
             detail="該單元無 youtube_url，且無法自 upload ZIP 解析（文字檔第一行須為 YouTube URL）",
         )
+    if not transcript.strip():
+        raise HTTPException(
+            status_code=404,
+            detail="該單元無逐字稿（Rag_Unit.transcript 為空，且自 upload ZIP 讀取備援失敗或第二行起無內容）",
+        )
 
     return RagUnitYoutubeUrlResponse(
         rag_unit_id=rag_unit_id,
@@ -911,6 +922,11 @@ def rag_page_unit_preview_text(
         transcript, inner_path = read_single_transcript_text_from_upload_zip(zip_bytes, folder)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    if not transcript.strip():
+        raise HTTPException(
+            status_code=400,
+            detail=f"「{Path(inner_path).name}」內容為空（unit_type=2 文字單元逐字稿不可為空）",
+        )
 
     return RagUnitTextPreviewResponse(
         rag_page_id=tab,
@@ -990,6 +1006,11 @@ def rag_page_unit_preview_youtube_url(
         transcript, _ = read_supplementary_text_from_youtube_unit(zip_bytes, folder)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    if not transcript.strip():
+        raise HTTPException(
+            status_code=400,
+            detail=f"「{Path(inner_path).name}」第二行起無逐字稿內容（unit_type=4 須第一行 YouTube URL、第二行起逐字稿）",
+        )
 
     return RagUnitYoutubeUrlPreviewResponse(
         rag_page_id=tab,
