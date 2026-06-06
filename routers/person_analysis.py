@@ -34,6 +34,7 @@ from services.analysis_setting import (
 )
 from services.weakness_report import generate_weakness_report_md, quiz_has_answer
 from utils.llm_key import get_person_analysis_api_key, get_rag_llm_model
+from utils.openapi import openapi_body
 from utils.serialization import to_json_safe
 
 logger = logging.getLogger(__name__)
@@ -126,8 +127,14 @@ class PersonAnalysisAddResponse(BaseModel):
     updated_at: Optional[str] = None
 
 
+class UpdatePersonAnalysisNameRequest(BaseModel):
+    """PUT /person-analysis/analysis-name：更新 Person_Analysis 的 analysis_name。"""
+    person_analysis_id: int = Field(..., gt=0, description="Person_Analysis 表主鍵")
+    analysis_name: str = Field(..., description="新的 analysis_name；傳空字串可清除名稱")
+
+
 class PersonAnalysisNameResponse(BaseModel):
-    """PUT /person-analysis/analysis-name/{person_analysis_id} 回應。"""
+    """PUT /person-analysis/analysis-name 回應。"""
     message: str
     person_analysis_id: int
     person_id: Optional[str] = Field(default=None, description="該列登入帳號")
@@ -270,34 +277,30 @@ def add_person_analysis(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.put(
-    "/analysis-name/{person_analysis_id}",
-    response_model=PersonAnalysisNameResponse,
-)
+@router.put("/analysis-name", response_model=PersonAnalysisNameResponse)
 def update_person_analysis_name_endpoint(
+    body: openapi_body(
+        UpdatePersonAnalysisNameRequest,
+        {"person_analysis_id": 1, "analysis_name": "新名稱"},
+    ),
     person_id: PersonId,
-    person_analysis_id: int = PathParam(
-        ..., gt=0, description="要更新名稱的 Person_Analysis 主鍵"
-    ),
-    analysis_name: str = Query(
-        ..., description="分析名稱（DB 欄位 analysis_name；傳空字串可清除名稱）"
-    ),
 ):
     """
-    更新 Person_Analysis 該列 analysis_name。必填 query `person_id`（呼叫者）、`analysis_name`。
+    更新 Person_Analysis 該列 analysis_name。以 person_analysis_id（主鍵）比對；僅更新 deleted=false 的列。
+    必填 query `person_id`（呼叫者）。
     """
     try:
         _caller_person_id_or_404(person_id)
-        row = update_person_analysis_name(person_analysis_id, analysis_name)
+        row = update_person_analysis_name(body.person_analysis_id, body.analysis_name)
         if not row:
             raise HTTPException(
                 status_code=404,
-                detail=f"找不到 person_analysis_id={person_analysis_id} 的 Person_Analysis 資料，或已刪除",
+                detail=f"找不到 person_analysis_id={body.person_analysis_id} 的 Person_Analysis 資料，或已刪除",
             )
         safe = to_json_safe(row)
         return PersonAnalysisNameResponse(
             message="已更新 Person_Analysis 分析名稱",
-            person_analysis_id=person_analysis_id,
+            person_analysis_id=body.person_analysis_id,
             person_id=safe.get("person_id"),
             course_id=safe.get("course_id"),
             analysis_name=safe.get("analysis_name"),
