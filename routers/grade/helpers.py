@@ -31,10 +31,6 @@ from utils.llm_error import format_llm_error, is_llm_call_error, llm_error_json_
 from utils.llm_key import get_rag_api_key, get_rag_llm_model
 from utils.taipei_time import now_taipei_iso
 from utils.rag_stem import get_rag_stem_from_rag_id, instruction_from_rag_row, transcript_from_row
-from utils.rag_transcript import (
-    read_single_transcript_text_from_upload_zip,
-    read_upload_zip_bytes,
-)
 from utils.rag_course import (
     assert_row_course_id,
     execute_with_course_id_fallback,
@@ -659,32 +655,3 @@ async def _enqueue_rag_llm_grade_job(
         llm_model=llm_model,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id, "grade_llm_model": llm_model})
-
-
-# ---------------------------------------------------------------------------
-# GET /rag/unit/text
-# ---------------------------------------------------------------------------
-
-
-def _read_upload_zip_bytes_or_http_error(person_id: str, rag_page_id: str) -> bytes:
-    """讀取 upload ZIP 內容；對應 404（找不到）／400（值錯誤）／500（其他）HTTPException。"""
-    try:
-        return read_upload_zip_bytes(person_id, rag_page_id)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        _logger.exception("讀取 upload ZIP 失敗")
-        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
-
-
-def _transcript_from_upload_zip_for_folder(
-    person_id: str,
-    rag_page_id: str,
-    folder_name: str,
-) -> tuple[str, str]:
-    """自 upload ZIP 資料夾讀取 unit_type=2 文字檔全文；回傳 (transcript, text_file_name)。"""
-    zip_bytes = read_upload_zip_bytes(person_id, rag_page_id)
-    text, inner_path = read_single_transcript_text_from_upload_zip(zip_bytes, folder_name)
-    return text, Path(inner_path).name

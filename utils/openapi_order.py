@@ -22,7 +22,10 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/rag/pages/{rag_page_id}/units",
     "/v1/rag/pages/{rag_page_id}/build-zip",
     "/v1/rag/pages/{rag_page_id}/build-zip-stream",
-    # --- RAG：單元 ---
+    # --- RAG：單元（建置前預覽 → 已建置單元）---
+    "/v1/rag/pages/{rag_page_id}/unit-preview/text",
+    "/v1/rag/pages/{rag_page_id}/unit-preview/mp3-file",
+    "/v1/rag/pages/{rag_page_id}/unit-preview/youtube-url",
     "/v1/rag/units/{rag_unit_id}/text",
     "/v1/rag/units/{rag_unit_id}/mp3-file",
     "/v1/rag/units/{rag_unit_id}/youtube-url",
@@ -39,10 +42,6 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/rag/quizzes/llm-grade",
     "/v1/rag/quizzes/llm-grade-db",
     "/v1/rag/quizzes/grade-result/{job_id}",
-    # --- RAG：單元資源（legacy，deprecated）---
-    "/v1/rag/unit/text",
-    "/v1/rag/unit/mp3-file",
-    "/v1/rag/unit/youtube-url",
     # --- RAG：課程設定 ---
     "/v1/rag/course-members",
     "/v1/rag/course-members/batch",

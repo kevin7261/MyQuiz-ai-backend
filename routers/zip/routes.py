@@ -34,7 +34,9 @@ from utils.rag_stem import transcript_from_row
 from utils.rag_exam_setting import is_localhost_request
 from utils.media import audio_media_type_for_suffix
 from utils.rag_transcript import (
+    pick_audio_from_upload_zip,
     pick_audio_from_upload_zip_with_folder_fallback,
+    read_mp3_unit_transcript_from_upload_zip,
     read_repack_zip_bytes,
     read_single_transcript_text_from_upload_zip,
     read_supplementary_text_from_youtube_unit,
@@ -48,8 +50,11 @@ from .schemas import (
     InsertRagQuizRowRequest,
     ListRagResponse,
     PackRequest,
+    RagUnitMp3FilePreviewResponse,
     RagUnitMp3FileResponse,
-    RagUnitTextByIdResponse,
+    RagUnitTextPreviewResponse,
+    RagUnitTextResponse,
+    RagUnitYoutubeUrlPreviewResponse,
     RagUnitYoutubeUrlResponse,
     UpdateRagQuizQuizNameRequest,
     UpdateRagUnitNameRequest,
@@ -745,7 +750,7 @@ def rag_tab_unit_mp3_file(
     "/units/{rag_unit_id}/text",
     summary="Rag Tab Unit Text",
     operation_id="rag_tab_unit_text",
-    response_model=RagUnitTextByIdResponse,
+    response_model=RagUnitTextResponse,
 )
 def rag_tab_unit_text(
     course_id: CourseId,
@@ -785,7 +790,7 @@ def rag_tab_unit_text(
         except Exception:
             _logger.exception("GET /rag/units/{id}/text ZIP 備援失敗")
 
-    return RagUnitTextByIdResponse(
+    return RagUnitTextResponse(
         rag_unit_id=rag_unit_id,
         rag_page_id=tab,
         folder_name=zip_folder,
@@ -858,6 +863,139 @@ def rag_tab_unit_youtube_url(
         folder_name=zip_folder,
         youtube_url=youtube_url,
         text_file_name=text_file_name,
+        transcript=transcript,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /rag/pages/{rag_page_id}/unit-preview/*（建置前，Rag_Unit 尚未存在時用）
+# ---------------------------------------------------------------------------
+
+
+def _read_upload_zip_bytes_or_http_error(person_id: str, rag_page_id: str) -> bytes:
+    """讀取 upload ZIP 內容；對應 404（找不到）／400（值錯誤）／500（其他）HTTPException。"""
+    try:
+        return read_upload_zip_bytes(person_id, rag_page_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        _logger.exception("讀取 upload ZIP 失敗")
+        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+
+
+@router.get(
+    "/pages/{rag_page_id}/unit-preview/text",
+    summary="Rag Page Unit Preview Text",
+    operation_id="rag_page_unit_preview_text",
+    response_model=RagUnitTextPreviewResponse,
+)
+def rag_page_unit_preview_text(
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    rag_page_id: str = PathParam(..., description="Rag.rag_page_id（upload ZIP 路徑）"),
+    folder_name: str = Query(..., description="upload ZIP 內單元資料夾名"),
+):
+    """
+    **建置前預覽**（Rag_Unit 尚未建立、無 rag_unit_id 時用）：自 upload ZIP 內指定資料夾讀取**恰好一個**文字檔全文作為 `transcript`（unit_type=2，與 build-rag-zip 一致）。
+    呼叫者（Bearer token）須為該 `rag_page_id` 之 Rag.person_id。
+    已建置之單元請改用 GET /rag/units/{rag_unit_id}/text。
+    """
+    require_rag_tab_owner(caller_person_id, rag_page_id, course_id)
+    tab = (rag_page_id or "").strip()
+    folder = (folder_name or "").strip()
+    zip_bytes = _read_upload_zip_bytes_or_http_error(caller_person_id, rag_page_id)
+
+    try:
+        transcript, inner_path = read_single_transcript_text_from_upload_zip(zip_bytes, folder)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return RagUnitTextPreviewResponse(
+        rag_page_id=tab,
+        folder_name=folder,
+        text_file_name=Path(inner_path).name,
+        transcript=transcript,
+    )
+
+
+@router.get(
+    "/pages/{rag_page_id}/unit-preview/mp3-file",
+    summary="Rag Page Unit Preview Mp3 File",
+    operation_id="rag_page_unit_preview_mp3_file",
+    response_model=RagUnitMp3FilePreviewResponse,
+)
+def rag_page_unit_preview_mp3_file(
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    rag_page_id: str = PathParam(..., description="Rag.rag_page_id（upload ZIP 路徑）"),
+    folder_name: str = Query(..., description="upload ZIP 內單元資料夾名"),
+):
+    """
+    **建置前預覽**：自 upload ZIP 內指定資料夾擷取音訊（base64）與**恰好一個**文字檔全文作為 `transcript`（unit_type=3，須音訊＋逐字稿，與 build-rag-zip 一致）。
+    呼叫者（Bearer token）須為該 `rag_page_id` 之 Rag.person_id。**永遠回 JSON**。
+    已建置之單元請改用 GET /rag/units/{rag_unit_id}/mp3-file。
+    """
+    require_rag_tab_owner(caller_person_id, rag_page_id, course_id)
+    tab = (rag_page_id or "").strip()
+    folder = (folder_name or "").strip()
+    zip_bytes = _read_upload_zip_bytes_or_http_error(caller_person_id, rag_page_id)
+
+    try:
+        contents, suffix, inner_path = pick_audio_from_upload_zip(zip_bytes, folder)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    try:
+        transcript, text_file_name = read_mp3_unit_transcript_from_upload_zip(zip_bytes, folder)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return RagUnitMp3FilePreviewResponse(
+        rag_page_id=tab,
+        folder_name=folder,
+        audio_base64=base64.b64encode(contents).decode(),
+        media_type=audio_media_type_for_suffix(suffix),
+        filename=Path(inner_path).name,
+        text_file_name=text_file_name,
+        transcript=transcript,
+    )
+
+
+@router.get(
+    "/pages/{rag_page_id}/unit-preview/youtube-url",
+    summary="Rag Page Unit Preview Youtube Url",
+    operation_id="rag_page_unit_preview_youtube_url",
+    response_model=RagUnitYoutubeUrlPreviewResponse,
+)
+def rag_page_unit_preview_youtube_url(
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    rag_page_id: str = PathParam(..., description="Rag.rag_page_id（upload ZIP 路徑）"),
+    folder_name: str = Query(..., description="upload ZIP 內單元資料夾名"),
+):
+    """
+    **建置前預覽**：自 upload ZIP 內指定資料夾讀取**恰好一個**文字檔：第一行為 YouTube URL，第二行起為 `transcript`（unit_type=4，與 build-rag-zip 一致）。
+    呼叫者（Bearer token）須為該 `rag_page_id` 之 Rag.person_id。
+    已建置之單元請改用 GET /rag/units/{rag_unit_id}/youtube-url。
+    """
+    require_rag_tab_owner(caller_person_id, rag_page_id, course_id)
+    tab = (rag_page_id or "").strip()
+    folder = (folder_name or "").strip()
+    zip_bytes = _read_upload_zip_bytes_or_http_error(caller_person_id, rag_page_id)
+
+    try:
+        vid, inner_path = read_youtube_video_id_from_upload_zip(zip_bytes, folder)
+        transcript, _ = read_supplementary_text_from_youtube_unit(zip_bytes, folder)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return RagUnitYoutubeUrlPreviewResponse(
+        rag_page_id=tab,
+        folder_name=folder,
+        youtube_url=f"https://www.youtube.com/watch?v={vid}",
+        text_file_name=Path(inner_path).name,
         transcript=transcript,
     )
 

@@ -21,11 +21,39 @@ class RagUnitMp3FileResponse(BaseModel):
     transcript: str = ""
 
 
-class RagUnitTextByIdResponse(BaseModel):
-    """GET /rag/units/{rag_unit_id}/text 回應：unit_type=2 文字單元逐字稿（DB 優先，無則讀 upload ZIP）。命名避開 routers.grade.schemas.RagUnitTextResponse（deprecated 舊端點用）。"""
+class RagUnitTextResponse(BaseModel):
+    """GET /rag/units/{rag_unit_id}/text 回應：unit_type=2 文字單元逐字稿（DB 優先，無則讀 upload ZIP）。"""
     rag_unit_id: int
     rag_page_id: str
     folder_name: str = ""
+    text_file_name: str = ""
+    transcript: str = ""
+
+
+class RagUnitTextPreviewResponse(BaseModel):
+    """GET /rag/pages/{rag_page_id}/unit-preview/text 回應：建置前自 upload ZIP 讀取之文字單元逐字稿。"""
+    rag_page_id: str
+    folder_name: str
+    text_file_name: str = ""
+    transcript: str = ""
+
+
+class RagUnitMp3FilePreviewResponse(BaseModel):
+    """GET /rag/pages/{rag_page_id}/unit-preview/mp3-file 回應：建置前自 upload ZIP 擷取之音訊與同資料夾文字檔逐字稿。"""
+    rag_page_id: str
+    folder_name: str
+    audio_base64: str
+    media_type: str
+    filename: str
+    text_file_name: str = ""
+    transcript: str = ""
+
+
+class RagUnitYoutubeUrlPreviewResponse(BaseModel):
+    """GET /rag/pages/{rag_page_id}/unit-preview/youtube-url 回應：建置前自 upload ZIP 解析 watch URL 與文字檔第二行起逐字稿。"""
+    rag_page_id: str
+    folder_name: str
+    youtube_url: str = Field(..., description="https://www.youtube.com/watch?v=…")
     text_file_name: str = ""
     transcript: str = ""
 

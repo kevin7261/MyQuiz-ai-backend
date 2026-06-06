@@ -286,38 +286,6 @@ class RagQuizFollowupRequest(BaseModel):
     )
 
 
-class RagUnitTextResponse(BaseModel):
-    """GET /rag/unit/text 回應。"""
-
-    rag_page_id: str
-    folder_name: str = ""
-    rag_unit_id: int = 0
-    text_file_name: str = ""
-    transcript: str = ""
-
-
-class RagUnitMp3FileFromZipResponse(BaseModel):
-    """GET /rag/unit/mp3-file：自 upload ZIP 擷取之音訊與同資料夾文字檔逐字稿。"""
-
-    rag_page_id: str
-    folder_name: str
-    audio_base64: str
-    media_type: str
-    filename: str
-    text_file_name: str = ""
-    transcript: str = ""
-
-
-class RagUnitYoutubeUrlFromZipResponse(BaseModel):
-    """GET /rag/unit/youtube-url：自 upload ZIP 解析 watch URL 與文字檔第二行起逐字稿。"""
-
-    rag_page_id: str
-    folder_name: str
-    youtube_url: str = Field(..., description="https://www.youtube.com/watch?v=…")
-    text_file_name: str = ""
-    transcript: str = ""
-
-
 # ---------------------------------------------------------------------------
 # GET / PUT /rag/llm-api-key
 # ---------------------------------------------------------------------------
