@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 # --- Person_Analysis ---
 PERSON_ANALYSIS_TABLE = "Person_Analysis"
 PERSON_ANALYSIS_COLUMNS = (
-    "person_analysis_id, person_id, course_id, analysis_prompt_text, analysis_text, "
-    "deleted, updated_at, created_at"
+    "person_analysis_id, person_id, course_id, analysis_name, "
+    "analysis_prompt_text, analysis_text, deleted, updated_at, created_at"
 )
 # 僅讀取舊資料 fallback（新寫入不再使用）
 LEGACY_COURSE_WIDE_PERSON_ID = ""
@@ -168,8 +168,12 @@ def _fetch_row_by_scope(
     course_id: int | str,
     *,
     require_field: Optional[str] = None,
+    require_null_field: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """讀取 (person_id, course_id) 最新一筆未刪除列；require_field 時僅取該欄位非 null 的列（結果列／prompt 列分流）。"""
+    """
+    讀取 (person_id, course_id) 最新一筆（updated_at 新到舊）未刪除列。
+    require_field：僅取該欄位非 null 的列；require_null_field：僅取該欄位為 null 的列（結果列／規則專用列分流）。
+    """
     supabase = get_supabase()
     for pid in person_id_db_lookup_keys(person_id):
         try:
@@ -182,9 +186,11 @@ def _fetch_row_by_scope(
             )
             if require_field:
                 query = query.not_.is_(require_field, "null")
+            if require_null_field:
+                query = query.is_(require_null_field, "null")
             resp = (
                 query
-                .order("created_at", desc=True)
+                .order("updated_at", desc=True)
                 .limit(1)
                 .execute()
             )
@@ -269,6 +275,7 @@ def _insert_person_analysis_row(row: dict[str, Any]) -> Optional[dict[str, Any]]
 
     base = {
         "course_id": int(row["course_id"]),
+        "analysis_name": (row.get("analysis_name") or "").strip(),
         "analysis_prompt_text": row.get("analysis_prompt_text"),
         "analysis_text": row.get("analysis_text"),
         "deleted": row.get("deleted", False),
@@ -400,6 +407,7 @@ def fetch_person_analysis_stored(
         "person_analysis_id": primary.get("person_analysis_id"),
         "person_id": caller,
         "course_id": int(course_id),
+        "analysis_name": primary.get("analysis_name"),
         "analysis_prompt_text": prompt_text or None,
         "analysis_text": analysis_text or None,
         "created_at": primary.get("created_at"),
@@ -480,7 +488,7 @@ def save_person_analysis_prompt_instruction(
     course_id: int | str,
     analysis_prompt_text: str,
 ) -> Optional[dict[str, Any]]:
-    """PUT 教師指令：更新呼叫者最新 prompt 列；無則新增 prompt 專用列（不動結果列）。"""
+    """PUT 教師指令：更新呼叫者「規則專用列」（prompt 非 null、analysis_text 為 null）；無則新增；不碰結果列快照。"""
     text = (analysis_prompt_text or "").strip()
     if not text:
         return None
@@ -494,6 +502,7 @@ def save_person_analysis_prompt_instruction(
         caller,
         course_id,
         require_field="analysis_prompt_text",
+        require_null_field="analysis_text",
     )
     row_id = existing.get("person_analysis_id") if existing else None
     if row_id is not None:
@@ -511,6 +520,7 @@ def save_person_analysis_prompt_instruction(
 def add_person_analysis_row(
     caller_person_id: str | int,
     course_id: int | str,
+    analysis_name: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """POST /person-analysis/add：新增一筆空白結果列（analysis_text=''），供 llm-analysis 填入。"""
     caller = _person_id_for_db(caller_person_id)
@@ -521,9 +531,21 @@ def add_person_analysis_row(
         {
             "person_id": caller,
             "course_id": int(course_id),
+            "analysis_name": analysis_name,
             "analysis_text": "",
             "deleted": False,
         }
+    )
+
+
+def update_person_analysis_name(
+    person_analysis_id: int,
+    analysis_name: str,
+) -> Optional[dict[str, Any]]:
+    """PUT /person-analysis/analysis-name：更新該列 analysis_name；找不到未刪除列時回 None。"""
+    return _update_person_analysis_row(
+        int(person_analysis_id),
+        {"analysis_name": (analysis_name or "").strip()},
     )
 
 
@@ -531,14 +553,16 @@ def save_person_analysis_setting(
     caller_person_id: str | int,
     course_id: int | str,
     analysis_text: str,
+    analysis_prompt_text: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """POST llm-analysis：寫入呼叫者最新結果列（POST /add 建立之列）；無結果列時新增一筆。"""
+    """POST llm-analysis：寫入呼叫者最新結果列（POST /add 建立之列），連同當次規則快照；無結果列時新增一筆。"""
     if not (analysis_text or "").strip():
         return None
     caller = _person_id_for_db(caller_person_id)
     if not caller:
         logger.error("Person_Analysis result save rejected: empty caller person_id")
         return None
+    prompt_snapshot = (analysis_prompt_text or "").strip() or None
     existing = _fetch_row_by_scope(
         PERSON_ANALYSIS_TABLE,
         PERSON_ANALYSIS_COLUMNS,
@@ -548,11 +572,15 @@ def save_person_analysis_setting(
     )
     row_id = existing.get("person_analysis_id") if existing else None
     if row_id is not None:
-        return _update_person_analysis_row(int(row_id), {"analysis_text": analysis_text})
+        return _update_person_analysis_row(
+            int(row_id),
+            {"analysis_text": analysis_text, "analysis_prompt_text": prompt_snapshot},
+        )
     return _insert_person_analysis_row(
         {
             "person_id": caller,
             "course_id": int(course_id),
+            "analysis_prompt_text": prompt_snapshot,
             "analysis_text": analysis_text,
             "deleted": False,
         }
@@ -563,8 +591,8 @@ def save_person_analysis_setting(
 
 COURSE_ANALYSIS_TABLE = "Course_Analysis"
 COURSE_ANALYSIS_COLUMNS = (
-    "course_analysis_id, person_id, course_id, analysis_prompt_text, analysis_text, "
-    "deleted, updated_at, created_at"
+    "course_analysis_id, person_id, course_id, analysis_name, "
+    "analysis_prompt_text, analysis_text, deleted, updated_at, created_at"
 )
 
 
@@ -576,6 +604,7 @@ def _insert_course_analysis_row(row: dict[str, Any]) -> Optional[dict[str, Any]]
 
     base = {
         "course_id": int(row["course_id"]),
+        "analysis_name": (row.get("analysis_name") or "").strip(),
         "analysis_prompt_text": row.get("analysis_prompt_text"),
         "analysis_text": row.get("analysis_text"),
         "deleted": row.get("deleted", False),
@@ -704,6 +733,7 @@ def fetch_course_analysis_stored(
         "course_analysis_id": primary.get("course_analysis_id"),
         "person_id": caller,
         "course_id": int(course_id),
+        "analysis_name": primary.get("analysis_name"),
         "analysis_prompt_text": prompt_text or None,
         "analysis_text": analysis_text or None,
         "created_at": primary.get("created_at"),
@@ -759,7 +789,7 @@ def save_course_analysis_prompt_instruction(
     course_id: int | str,
     analysis_prompt_text: str,
 ) -> Optional[dict[str, Any]]:
-    """PUT 教師指令：更新呼叫者最新 prompt 列；無則新增 prompt 專用列（不動結果列）。"""
+    """PUT 教師指令：更新呼叫者「規則專用列」（prompt 非 null、analysis_text 為 null）；無則新增；不碰結果列快照。"""
     text = (analysis_prompt_text or "").strip()
     if not text:
         return None
@@ -773,6 +803,7 @@ def save_course_analysis_prompt_instruction(
         caller,
         course_id,
         require_field="analysis_prompt_text",
+        require_null_field="analysis_text",
     )
     row_id = existing.get("course_analysis_id") if existing else None
     if row_id is not None:
@@ -790,6 +821,7 @@ def save_course_analysis_prompt_instruction(
 def add_course_analysis_row(
     caller_person_id: str | int,
     course_id: int | str,
+    analysis_name: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """POST /course-analysis/add：新增一筆空白結果列（analysis_text=''），供 llm-analysis 填入。"""
     caller = _person_id_for_db(caller_person_id)
@@ -800,9 +832,21 @@ def add_course_analysis_row(
         {
             "person_id": caller,
             "course_id": int(course_id),
+            "analysis_name": analysis_name,
             "analysis_text": "",
             "deleted": False,
         }
+    )
+
+
+def update_course_analysis_name(
+    course_analysis_id: int,
+    analysis_name: str,
+) -> Optional[dict[str, Any]]:
+    """PUT /course-analysis/analysis-name：更新該列 analysis_name；找不到未刪除列時回 None。"""
+    return _update_course_analysis_row(
+        int(course_analysis_id),
+        {"analysis_name": (analysis_name or "").strip()},
     )
 
 
@@ -810,14 +854,16 @@ def save_course_analysis_setting(
     caller_person_id: str | int,
     course_id: int | str,
     analysis_text: str,
+    analysis_prompt_text: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """POST llm-analysis：寫入呼叫者最新結果列（POST /add 建立之列）；無結果列時新增一筆。"""
+    """POST llm-analysis：寫入呼叫者最新結果列（POST /add 建立之列），連同當次規則快照；無結果列時新增一筆。"""
     if not (analysis_text or "").strip():
         return None
     caller = _person_id_for_db(caller_person_id)
     if not caller:
         logger.error("Course_Analysis result save rejected: empty caller person_id")
         return None
+    prompt_snapshot = (analysis_prompt_text or "").strip() or None
     existing = _fetch_row_by_scope(
         COURSE_ANALYSIS_TABLE,
         COURSE_ANALYSIS_COLUMNS,
@@ -827,11 +873,15 @@ def save_course_analysis_setting(
     )
     row_id = existing.get("course_analysis_id") if existing else None
     if row_id is not None:
-        return _update_course_analysis_row(int(row_id), {"analysis_text": analysis_text})
+        return _update_course_analysis_row(
+            int(row_id),
+            {"analysis_text": analysis_text, "analysis_prompt_text": prompt_snapshot},
+        )
     return _insert_course_analysis_row(
         {
             "person_id": caller,
             "course_id": int(course_id),
+            "analysis_prompt_text": prompt_snapshot,
             "analysis_text": analysis_text,
             "deleted": False,
         }

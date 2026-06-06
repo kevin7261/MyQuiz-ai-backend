@@ -2,14 +2,14 @@
 個人分析 API 模組（資料存於 Person_Analysis；見 services.analysis_setting）。
 
 person_id 一律為呼叫 API 的登入帳號。
-- analysis_prompt_text ↔ answer_user_prompt_text（PUT /rag/person_analysis_user_prompt_text）
+- analysis_prompt_text ↔ answer_user_prompt_text（PUT /rag/person-analysis-user-prompt-text）
 - analysis_text ↔ answer_critique（POST /person-analysis/llm-analysis）
 """
 
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi import Path as PathParam
 from pydantic import BaseModel, Field
 
@@ -30,6 +30,7 @@ from services.analysis_setting import (
     resolve_login_person_id,
     save_person_analysis_setting,
     soft_delete_person_analysis,
+    update_person_analysis_name,
 )
 from services.weakness_report import generate_weakness_report_md, quiz_has_answer
 from utils.llm_key import get_person_analysis_api_key, get_rag_llm_model
@@ -56,6 +57,9 @@ class PersonStoredAnalysisResponse(BaseModel):
     )
     person_id: Optional[str] = Field(default=None, description="呼叫者登入帳號")
     course_id: Optional[int] = None
+    analysis_name: Optional[str] = Field(
+        default=None, description="分析名稱（DB 欄位 analysis_name）"
+    )
     analysis_user_prompt_text: Optional[str] = Field(
         default=None,
         description="教師分析指令（對應 answer_user_prompt_text）",
@@ -82,6 +86,9 @@ class PersonAnalysisListItem(BaseModel):
     )
     person_id: Optional[str] = Field(default=None, description="該列登入帳號")
     course_id: Optional[int] = None
+    analysis_name: Optional[str] = Field(
+        default=None, description="分析名稱（DB 欄位 analysis_name）"
+    )
     analysis_user_prompt_text: Optional[str] = Field(
         default=None,
         description="教師分析指令（對應 answer_user_prompt_text）",
@@ -112,7 +119,22 @@ class PersonAnalysisAddResponse(BaseModel):
     person_analysis_id: int
     person_id: Optional[str] = Field(default=None, description="該列登入帳號")
     course_id: Optional[int] = None
+    analysis_name: Optional[str] = Field(
+        default=None, description="分析名稱（DB 欄位 analysis_name；未填為空字串）"
+    )
     created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class PersonAnalysisNameResponse(BaseModel):
+    """PUT /person-analysis/analysis-name/{person_analysis_id} 回應。"""
+    message: str
+    person_analysis_id: int
+    person_id: Optional[str] = Field(default=None, description="該列登入帳號")
+    course_id: Optional[int] = None
+    analysis_name: Optional[str] = Field(
+        default=None, description="更新後的分析名稱（DB 欄位 analysis_name）"
+    )
     updated_at: Optional[str] = None
 
 
@@ -154,6 +176,7 @@ def _stored_to_response(
         person_analysis_id=safe.get("person_analysis_id"),
         person_id=safe.get("person_id"),
         course_id=safe.get("course_id"),
+        analysis_name=safe.get("analysis_name"),
         analysis_user_prompt_text=prompt,
         analysis_prompt_text=prompt,
         analysis_text=safe.get("analysis_text"),
@@ -195,6 +218,7 @@ def list_person_analyses(person_id: PersonId):
                 person_analysis_id=row.get("person_analysis_id"),
                 person_id=row.get("person_id"),
                 course_id=row.get("course_id"),
+                analysis_name=row.get("analysis_name"),
                 analysis_user_prompt_text=row.get("analysis_prompt_text"),
                 analysis_prompt_text=row.get("analysis_prompt_text"),
                 analysis_text=row.get("analysis_text"),
@@ -214,14 +238,17 @@ def list_person_analyses(person_id: PersonId):
 def add_person_analysis(
     person_id: PersonId,
     course_id: CourseId,
+    analysis_name: Optional[str] = Query(
+        default=None, description="分析名稱（DB 欄位 analysis_name；未填存空字串）"
+    ),
 ):
     """
-    新增一筆空白 Person_Analysis 結果列（analysis_text=''）。必填 query `person_id`（呼叫者）、`course_id`。
+    新增一筆空白 Person_Analysis 結果列（analysis_text=''）。必填 query `person_id`（呼叫者）、`course_id`；可選 `analysis_name`。
     新增後 GET /person-analysis/analyses 會多一列；POST /llm-analysis 會將報告寫入呼叫者最新結果列（即此列）。
     """
     try:
         caller = _caller_person_id_or_404(person_id)
-        row = add_person_analysis_row(caller, course_id)
+        row = add_person_analysis_row(caller, course_id, analysis_name)
         if not row:
             raise HTTPException(
                 status_code=500,
@@ -233,7 +260,47 @@ def add_person_analysis(
             person_analysis_id=safe.get("person_analysis_id"),
             person_id=safe.get("person_id"),
             course_id=safe.get("course_id"),
+            analysis_name=safe.get("analysis_name"),
             created_at=safe.get("created_at"),
+            updated_at=safe.get("updated_at"),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.put(
+    "/analysis-name/{person_analysis_id}",
+    response_model=PersonAnalysisNameResponse,
+)
+def update_person_analysis_name_endpoint(
+    person_id: PersonId,
+    person_analysis_id: int = PathParam(
+        ..., gt=0, description="要更新名稱的 Person_Analysis 主鍵"
+    ),
+    analysis_name: str = Query(
+        ..., description="分析名稱（DB 欄位 analysis_name；傳空字串可清除名稱）"
+    ),
+):
+    """
+    更新 Person_Analysis 該列 analysis_name。必填 query `person_id`（呼叫者）、`analysis_name`。
+    """
+    try:
+        _caller_person_id_or_404(person_id)
+        row = update_person_analysis_name(person_analysis_id, analysis_name)
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"找不到 person_analysis_id={person_analysis_id} 的 Person_Analysis 資料，或已刪除",
+            )
+        safe = to_json_safe(row)
+        return PersonAnalysisNameResponse(
+            message="已更新 Person_Analysis 分析名稱",
+            person_analysis_id=person_analysis_id,
+            person_id=safe.get("person_id"),
+            course_id=safe.get("course_id"),
+            analysis_name=safe.get("analysis_name"),
             updated_at=safe.get("updated_at"),
         )
     except HTTPException:
@@ -335,6 +402,7 @@ def person_llm_analysis(
                     caller,
                     course_id,
                     weakness_report,
+                    analysis_prompt_text=setting_prompt,
                 )
                 if not saved:
                     logger.error(
