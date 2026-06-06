@@ -6,10 +6,10 @@
 - POST /rag/course-members/add-batch：批次新增該課程學生（每筆 person_id、name；user_type 固定 3）；僅 user_type 1／2。
 - PUT /rag/course-members/edit/{person_id}：編輯課程成員（name、user_type）；僅 user_type 1／2。
 - PUT /rag/course-members/delete/{person_id}：自課程移除成員（User_Course_Relation deleted=true）；僅 user_type 1／2。
-- GET /rag/person-analysis-user-prompt-text：取得個人分析指令（Person_Analysis，person_id 為呼叫者）；須為有效登入使用者；必填 query course_id。
-- PUT /rag/person-analysis-user-prompt-text：寫入 Person_Analysis（person_id 為呼叫者）；僅 user_type 1／2。
-- GET /rag/course-analysis-user-prompt-text：取得課程分析指令（Course_Analysis，person_id 為呼叫者）；須為有效登入使用者；必填 query course_id。
-- PUT /rag/course-analysis-user-prompt-text：寫入 Course_Analysis（person_id 為呼叫者）；僅 user_type 1／2。
+- GET /rag/person-analysis-user-prompt-text：取得個人分析指令（Course_Setting key=person_analysis_user_prompt_text）；須為有效登入使用者；必填 query course_id。
+- PUT /rag/person-analysis-user-prompt-text：寫入 Course_Setting（依 course_id upsert）；僅 user_type 1／2。
+- GET /rag/course-analysis-user-prompt-text：取得課程分析指令（Course_Setting key=course_analysis_user_prompt_text）；須為有效登入使用者；必填 query course_id。
+- PUT /rag/course-analysis-user-prompt-text：寫入 Course_Setting（依 course_id upsert）；僅 user_type 1／2。
 
 LLM API Key 亦存於 Course_Setting（rag-api-key／exam-api-key）；見 GET/PUT /v1/rag/llm-api-key、/v1/rag/llm-model、/v1/exam/llm-api-key。
 """
@@ -21,14 +21,12 @@ from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
-from services.analysis_setting import (
-    fetch_course_analysis_instruction_text,
-    fetch_person_analysis_instruction_text,
-    resolve_login_person_id,
-    save_course_analysis_prompt_instruction,
-    save_person_analysis_prompt_instruction,
+from utils.course_setting import (
+    COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY,
+    COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY,
+    fetch_course_setting_text,
+    upsert_course_setting_and_get_row,
 )
-from utils.course_setting import upsert_course_setting_and_get_row
 from utils.db_schema import (
     ACTIVE_DELETED_FILTER,
     COLLEGE_TABLE,
@@ -114,11 +112,8 @@ _upsert_setting_and_get_row = upsert_course_setting_and_get_row
 
 
 class PersonAnalysisUserPromptTextResponse(BaseModel):
-    """GET/PUT /rag/person-analysis-user-prompt-text 回應（資料來自 Person_Analysis）。"""
+    """GET/PUT /rag/person-analysis-user-prompt-text 回應（資料來自 Course_Setting）。"""
 
-    person_analysis_id: Optional[int] = Field(
-        default=None, description="Person_Analysis 主鍵"
-    )
     course_id: Optional[int] = None
     person_analysis_user_prompt_text: Optional[str] = None
 
@@ -130,11 +125,8 @@ class PutPersonAnalysisUserPromptTextRequest(BaseModel):
 
 
 class CourseAnalysisUserPromptTextResponse(BaseModel):
-    """GET/PUT /rag/course-analysis-user-prompt-text 回應（資料來自 Course_Analysis）。"""
+    """GET/PUT /rag/course-analysis-user-prompt-text 回應（資料來自 Course_Setting）。"""
 
-    course_analysis_id: Optional[int] = Field(
-        default=None, description="Course_Analysis 主鍵"
-    )
     course_id: Optional[int] = None
     course_analysis_user_prompt_text: Optional[str] = None
 
@@ -694,15 +686,13 @@ def soft_delete_course_member(
 
 @router.get("/person-analysis-user-prompt-text", response_model=PersonAnalysisUserPromptTextResponse)
 def get_person_analysis_user_prompt_text_setting(person_id: PersonId, course_id: CourseId):
-    """取得個人分析指令（Person_Analysis，person_id 為呼叫者）。"""
+    """取得個人分析指令（Course_Setting key=person_analysis_user_prompt_text，依 course_id）。"""
     _require_active_person(person_id)
     try:
-        caller = resolve_login_person_id(person_id)
-        if not caller:
-            raise HTTPException(status_code=404, detail=f"找不到使用者 person_id={person_id}")
-        row_id, text = fetch_person_analysis_instruction_text(caller, course_id)
+        text = fetch_course_setting_text(
+            COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY, course_id
+        )
         return PersonAnalysisUserPromptTextResponse(
-            person_analysis_id=row_id,
             course_id=course_id,
             person_analysis_user_prompt_text=text or None,
         )
@@ -721,22 +711,19 @@ def put_person_analysis_user_prompt_text_setting(
     person_id: PersonId,
     course_id: CourseId,
 ):
-    """寫入個人分析指令至 Person_Analysis（person_id 為呼叫者）。"""
+    """寫入個人分析指令至 Course_Setting（依 course_id upsert；傳空字串可清除）。"""
     _require_developer_or_manager_for_course_setting_write(person_id, course_id)
     value_to_save = (body.person_analysis_user_prompt_text or "").strip()
     try:
-        caller = resolve_login_person_id(person_id)
-        if not caller:
-            raise HTTPException(status_code=404, detail=f"找不到使用者 person_id={person_id}")
-        row = save_person_analysis_prompt_instruction(
-            caller,
-            course_id,
+        row = upsert_course_setting_and_get_row(
+            get_supabase(),
+            COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY,
             value_to_save,
+            course_id,
         )
         if not row:
-            raise HTTPException(status_code=500, detail="寫入 Person_Analysis 失敗")
+            raise HTTPException(status_code=500, detail="寫入 Course_Setting 失敗")
         return PersonAnalysisUserPromptTextResponse(
-            person_analysis_id=row.get("person_analysis_id"),
             course_id=course_id,
             person_analysis_user_prompt_text=value_to_save or None,
         )
@@ -748,15 +735,13 @@ def put_person_analysis_user_prompt_text_setting(
 
 @router.get("/course-analysis-user-prompt-text", response_model=CourseAnalysisUserPromptTextResponse)
 def get_course_analysis_user_prompt_text_setting(person_id: PersonId, course_id: CourseId):
-    """取得課程分析指令（Course_Analysis，person_id 為呼叫者）。"""
+    """取得課程分析指令（Course_Setting key=course_analysis_user_prompt_text，依 course_id）。"""
     _require_active_person(person_id)
     try:
-        caller = resolve_login_person_id(person_id)
-        if not caller:
-            raise HTTPException(status_code=404, detail=f"找不到使用者 person_id={person_id}")
-        row_id, text = fetch_course_analysis_instruction_text(caller, course_id)
+        text = fetch_course_setting_text(
+            COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY, course_id
+        )
         return CourseAnalysisUserPromptTextResponse(
-            course_analysis_id=row_id,
             course_id=course_id,
             course_analysis_user_prompt_text=text or None,
         )
@@ -775,18 +760,19 @@ def put_course_analysis_user_prompt_text_setting(
     person_id: PersonId,
     course_id: CourseId,
 ):
-    """寫入課程分析指令至 Course_Analysis（person_id 為呼叫者）。"""
+    """寫入課程分析指令至 Course_Setting（依 course_id upsert；傳空字串可清除）。"""
     _require_developer_or_manager_for_course_setting_write(person_id, course_id)
     value_to_save = (body.course_analysis_user_prompt_text or "").strip()
     try:
-        caller = resolve_login_person_id(person_id)
-        if not caller:
-            raise HTTPException(status_code=404, detail=f"找不到使用者 person_id={person_id}")
-        row = save_course_analysis_prompt_instruction(caller, course_id, value_to_save)
+        row = upsert_course_setting_and_get_row(
+            get_supabase(),
+            COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY,
+            value_to_save,
+            course_id,
+        )
         if not row:
-            raise HTTPException(status_code=500, detail="寫入 Course_Analysis 失敗")
+            raise HTTPException(status_code=500, detail="寫入 Course_Setting 失敗")
         return CourseAnalysisUserPromptTextResponse(
-            course_analysis_id=row.get("course_analysis_id"),
             course_id=course_id,
             course_analysis_user_prompt_text=value_to_save or None,
         )

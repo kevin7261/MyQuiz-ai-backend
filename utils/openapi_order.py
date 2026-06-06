@@ -71,11 +71,11 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/exam/llm-api-key/exists",
     # --- 弱點分析 ---
     "/v1/person-analyses",
-    "/v1/person-analyses/llm-analysis",
     "/v1/person-analyses/{person_analysis_id}",
+    "/v1/person-analyses/{person_analysis_id}/llm-analysis",
     "/v1/course-analyses",
-    "/v1/course-analyses/llm-analysis",
     "/v1/course-analyses/{course_analysis_id}",
+    "/v1/course-analyses/{course_analysis_id}/llm-analysis",
     # --- 帳號／其他 ---
     "/v1/users",
     "/v1/users/me/password",

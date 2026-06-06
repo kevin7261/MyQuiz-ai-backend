@@ -57,8 +57,8 @@ def prompt_placeholder_descriptions() -> dict[str, dict[str, str]]:
         },
         "person_analysis": {
             "analysis_user_prompt_text": (
-                "個人分析指令；Person_Analysis.analysis_prompt_text"
-                "（GET /person-analysis/analysis 或 GET/PUT /rag/person-analysis-user-prompt-text）；"
+                "個人分析指令；Course_Setting key=person_analysis_user_prompt_text"
+                "（GET/PUT /rag/person-analysis-user-prompt-text，依 course_id）；"
                 "空則「（未提供）」。"
             ),
             "material_md": (
@@ -68,8 +68,8 @@ def prompt_placeholder_descriptions() -> dict[str, dict[str, str]]:
         },
         "course_analysis": {
             "analysis_user_prompt_text": (
-                "課程分析指令；Course_Analysis.analysis_prompt_text"
-                "（GET /course-analysis/analysis 或 GET/PUT /rag/course-analysis-user-prompt-text）；"
+                "課程分析指令；Course_Setting key=course_analysis_user_prompt_text"
+                "（GET/PUT /rag/course-analysis-user-prompt-text，依 course_id）；"
                 "空則「（未提供）」。"
             ),
             "material_md": (

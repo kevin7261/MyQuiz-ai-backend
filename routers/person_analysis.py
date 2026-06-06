@@ -1,9 +1,11 @@
 """
 個人分析 API 模組（資料存於 Person_Analysis；見 services.analysis_setting）。
 
-person_id 一律為呼叫 API 的登入帳號。
-- analysis_prompt_text ↔ answer_user_prompt_text（PUT /rag/person-analysis-user-prompt-text）
-- analysis_text ↔ answer_critique（POST /person-analyses/llm-analysis）
+對齊測驗頁「一列一 page、按 id 操作」模式：
+- 一列＝一筆分析紀錄；POST 新增、PATCH 改名、DELETE 刪除、POST /{id}/llm-analysis 寫入報告，一律按主鍵。
+- 分析規則存 Course_Setting（GET/PUT /rag/person-analysis-user-prompt-text）；
+  結果列的 analysis_prompt_text 僅為產生報告當下的規則快照。
+- person_id 一律為呼叫 API 的登入帳號。
 """
 
 import logging
@@ -25,9 +27,10 @@ from services.exam_queries import (
 from services.analysis_setting import (
     add_person_analysis_row,
     fetch_person_analyses_by_person,
+    fetch_person_analysis_row,
     fetch_person_analysis_user_prompt_for_llm,
     resolve_login_person_id,
-    save_person_analysis_setting,
+    save_person_analysis_result,
     soft_delete_person_analysis,
     update_person_analysis_name,
 )
@@ -124,7 +127,8 @@ class PersonAnalysisDeleteResponse(BaseModel):
 
 
 class PersonLlmAnalysisResponse(BaseModel):
-    """POST /person-analysis/llm-analysis 回應。"""
+    """POST /person-analyses/{person_analysis_id}/llm-analysis 回應。"""
+    person_analysis_id: int = Field(..., description="報告寫入的 Person_Analysis 主鍵")
     exams: list[dict]
     count: int
     weakness_report: Optional[str] = Field(
@@ -145,7 +149,7 @@ class PersonLlmAnalysisResponse(BaseModel):
 def list_person_analyses(person_id: PersonId):
     """
     取值：不呼叫 LLM。必填 query `person_id`（呼叫者）。
-    回傳該使用者所有課程的 Person_Analysis 列。
+    回傳該使用者所有課程的 Person_Analysis 結果列（analysis_text 非 null）。
     """
     try:
         caller = _caller_person_id_or_404(person_id)
@@ -181,7 +185,7 @@ def add_person_analysis(
 ):
     """
     新增一筆空白 Person_Analysis 結果列（analysis_text=''）。必填 query `person_id`（呼叫者）、`course_id`；可選 `analysis_name`。
-    新增後 GET /person-analyses 會多一列；POST /llm-analysis 會將報告寫入呼叫者最新結果列（即此列）。
+    新增後 GET /person-analyses 會多一列；以回傳的 `person_analysis_id` 呼叫 POST /{id}/llm-analysis 將報告寫入此列。
     """
     try:
         caller = _caller_person_id_or_404(person_id)
@@ -280,17 +284,33 @@ def delete_person_analysis(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.post("/llm-analysis", response_model=PersonLlmAnalysisResponse)
+@router.post("/{person_analysis_id}/llm-analysis", response_model=PersonLlmAnalysisResponse)
 def person_llm_analysis(
     person_id: PersonId,
     course_id: CourseId,
+    person_analysis_id: int = PathParam(
+        ..., gt=0, description="報告要寫入的 Person_Analysis 主鍵（POST /person-analyses 建立）"
+    ),
 ):
     """
-    必填 query `person_id`（呼叫者）、`course_id`。
-    依呼叫者作答產生弱點報告並寫入其最新 Person_Analysis 結果列（POST /add 建立；無結果列時新增一筆）。
+    必填 query `person_id`（呼叫者）、`course_id`；path 帶 `person_analysis_id`（目標列）。
+    依呼叫者作答產生弱點報告並按主鍵寫入指定 Person_Analysis 列（同測驗頁 llm-generate 按 id 寫入）。
     """
     try:
         caller = _caller_person_id_or_404(person_id)
+        target = fetch_person_analysis_row(person_analysis_id)
+        if not target:
+            raise HTTPException(
+                status_code=404,
+                detail=f"找不到 person_analysis_id={person_analysis_id} 的 Person_Analysis 資料，或已刪除",
+            )
+        if (target.get("person_id") or "") != caller:
+            raise HTTPException(status_code=403, detail="無權寫入該 Person_Analysis 列")
+        if target.get("course_id") is not None and int(target["course_id"]) != int(course_id):
+            raise HTTPException(
+                status_code=400,
+                detail=f"course_id 不符：該列屬於 course_id={target['course_id']}",
+            )
         quizzes = quizzes_by_person_id(caller, course_id=course_id)
         quizzes_with_answers = [q for q in quizzes if quiz_has_answer(q)]
 
@@ -322,7 +342,7 @@ def person_llm_analysis(
         if not llm_error and not api_key:
             llm_error = "未設定 API Key：PUT /v1/exam/llm-api-key（Course_Setting key=exam-api-key，依 course_id）"
         elif not llm_error:
-            setting_prompt = fetch_person_analysis_user_prompt_for_llm(caller, course_id)
+            setting_prompt = fetch_person_analysis_user_prompt_for_llm(course_id)
             weakness_report, _, llm_err = generate_weakness_report_md(
                 to_json_safe(quizzes_with_answers),
                 api_key,
@@ -333,27 +353,26 @@ def person_llm_analysis(
             if llm_err:
                 llm_error = llm_err
             if weakness_report:
-                saved = save_person_analysis_setting(
-                    caller,
-                    course_id,
+                saved = save_person_analysis_result(
+                    person_analysis_id,
                     weakness_report,
                     analysis_prompt_text=setting_prompt,
                 )
                 if not saved:
                     logger.error(
                         "person_llm_analysis: LLM ok but Person_Analysis update failed "
-                        "person_id=%s course_id=%s",
-                        caller,
-                        course_id,
+                        "person_analysis_id=%s",
+                        person_analysis_id,
                     )
                     raise HTTPException(
                         status_code=500,
                         detail=(
                             f"弱點報告已產生但寫入 Person_Analysis 失敗 "
-                            f"(person_id={caller}, course_id={course_id})"
+                            f"(person_analysis_id={person_analysis_id})"
                         ),
                     )
         return PersonLlmAnalysisResponse(
+            person_analysis_id=person_analysis_id,
             exams=data,
             count=len(data),
             weakness_report=weakness_report,
