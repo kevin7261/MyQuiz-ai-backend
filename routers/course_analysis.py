@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
 from services.analysis_setting import (
+    add_course_analysis_row,
     fetch_course_analyses_by_course,
     fetch_course_analysis_stored,
     fetch_course_analysis_user_prompt_for_llm,
@@ -105,6 +106,16 @@ class CourseAnalysesResponse(BaseModel):
     count: int
 
 
+class CourseAnalysisAddResponse(BaseModel):
+    """POST /course-analysis/add 回應。"""
+    message: str
+    course_analysis_id: int
+    person_id: Optional[str] = Field(default=None, description="該列登入帳號")
+    course_id: Optional[int] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
 class CourseAnalysisDeleteResponse(BaseModel):
     """PUT /course-analysis/delete/{course_analysis_id} 回應。"""
     message: str
@@ -191,6 +202,38 @@ def list_course_analyses(person_id: PersonId, course_id: CourseId):
         ]
         return CourseAnalysesResponse(
             course_id=int(course_id), analyses=items, count=len(items)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/add", response_model=CourseAnalysisAddResponse)
+def add_course_analysis(
+    person_id: PersonId,
+    course_id: CourseId,
+):
+    """
+    新增一筆空白 Course_Analysis 結果列（analysis_text=''）。必填 query `person_id`（呼叫者）、`course_id`。
+    新增後 GET /course-analysis/analyses 會多一列；POST /llm-analysis 會將報告寫入呼叫者最新結果列（即此列）。
+    """
+    try:
+        caller = _caller_person_id_or_404(person_id)
+        row = add_course_analysis_row(caller, course_id)
+        if not row:
+            raise HTTPException(
+                status_code=500,
+                detail=f"新增 Course_Analysis 失敗 (person_id={caller}, course_id={course_id})",
+            )
+        safe = to_json_safe(row)
+        return CourseAnalysisAddResponse(
+            message="已新增 Course_Analysis 列",
+            course_analysis_id=safe.get("course_analysis_id"),
+            person_id=safe.get("person_id"),
+            course_id=safe.get("course_id"),
+            created_at=safe.get("created_at"),
+            updated_at=safe.get("updated_at"),
         )
     except HTTPException:
         raise

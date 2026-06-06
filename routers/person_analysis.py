@@ -23,6 +23,7 @@ from services.exam_queries import (
     quizzes_by_person_id,
 )
 from services.analysis_setting import (
+    add_person_analysis_row,
     fetch_person_analyses_by_person,
     fetch_person_analysis_stored,
     fetch_person_analysis_user_prompt_for_llm,
@@ -103,6 +104,16 @@ class PersonAnalysesResponse(BaseModel):
         ..., description="該使用者所有課程的 Person_Analysis 列（updated_at 新到舊）"
     )
     count: int
+
+
+class PersonAnalysisAddResponse(BaseModel):
+    """POST /person-analysis/add 回應。"""
+    message: str
+    person_analysis_id: int
+    person_id: Optional[str] = Field(default=None, description="該列登入帳號")
+    course_id: Optional[int] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class PersonAnalysisDeleteResponse(BaseModel):
@@ -199,6 +210,38 @@ def list_person_analyses(person_id: PersonId):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+@router.post("/add", response_model=PersonAnalysisAddResponse)
+def add_person_analysis(
+    person_id: PersonId,
+    course_id: CourseId,
+):
+    """
+    新增一筆空白 Person_Analysis 結果列（analysis_text=''）。必填 query `person_id`（呼叫者）、`course_id`。
+    新增後 GET /person-analysis/analyses 會多一列；POST /llm-analysis 會將報告寫入呼叫者最新結果列（即此列）。
+    """
+    try:
+        caller = _caller_person_id_or_404(person_id)
+        row = add_person_analysis_row(caller, course_id)
+        if not row:
+            raise HTTPException(
+                status_code=500,
+                detail=f"新增 Person_Analysis 失敗 (person_id={caller}, course_id={course_id})",
+            )
+        safe = to_json_safe(row)
+        return PersonAnalysisAddResponse(
+            message="已新增 Person_Analysis 列",
+            person_analysis_id=safe.get("person_analysis_id"),
+            person_id=safe.get("person_id"),
+            course_id=safe.get("course_id"),
+            created_at=safe.get("created_at"),
+            updated_at=safe.get("updated_at"),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
 @router.put(
     "/delete/{person_analysis_id}",
     response_model=PersonAnalysisDeleteResponse,
@@ -242,7 +285,7 @@ def person_llm_analysis(
 ):
     """
     必填 query `person_id`（呼叫者）、`course_id`。
-    依呼叫者作答產生弱點報告並 UPDATE 其 Person_Analysis 列 analysis_text。
+    依呼叫者作答產生弱點報告並寫入其最新 Person_Analysis 結果列（POST /add 建立；無結果列時新增一筆）。
     """
     try:
         caller = _caller_person_id_or_404(person_id)

@@ -75,10 +75,12 @@ _API_PATH_ORDER: tuple[str, ...] = (
     # --- 弱點分析 ---
     "/person-analysis/analysis",
     "/person-analysis/analyses",
+    "/person-analysis/add",
     "/person-analysis/delete/{person_analysis_id}",
     "/person-analysis/llm-analysis",
     "/course-analysis/analysis",
     "/course-analysis/analyses",
+    "/course-analysis/add",
     "/course-analysis/delete/{course_analysis_id}",
     "/course-analysis/llm-analysis",
     # --- 帳號／個人檔案 ---
