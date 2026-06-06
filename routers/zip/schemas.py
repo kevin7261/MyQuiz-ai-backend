@@ -38,7 +38,10 @@ class PackRequest(BaseModel):
     # rag_page_id 不是 request body 欄位，改由 path 參數帶入後於 handler 內回填本物件（extra=allow 才能 setattr）。
     model_config = ConfigDict(extra="allow")
 
-    person_id: str
+    person_id: str | None = Field(
+        default=None,
+        description="選填；未傳以 token 解析的呼叫者為準；有傳須與呼叫者一致",
+    )
     unit_list: str  # 指定要打包的資料夾；例："220222+220301"（加號=同一 ZIP 多資料夾）；結果存入 Rag_Unit 表
     unit_names: str | list[str] | None = Field(
         default="",

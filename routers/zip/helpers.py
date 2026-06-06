@@ -826,11 +826,9 @@ def _validate_rag_tab_create_fields(
     fid = (rag_page_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
         raise HTTPException(status_code=400, detail="無效的 rag_page_id")
-    pid = (person_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="請傳入 person_id")
+    pid = (person_id or "").strip() or (caller_person_id or "").strip()
     if pid != caller_person_id:
-        raise HTTPException(status_code=400, detail="person_id 與 query 不一致")
+        raise HTTPException(status_code=400, detail="person_id 與呼叫者（token）不一致")
     name = (tab_name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="請傳入 tab_name")

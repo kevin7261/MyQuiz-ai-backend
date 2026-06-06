@@ -259,14 +259,14 @@ async def create_upload_zip(
     course_id: CourseId,
     file: UploadFile = File(...),
     rag_page_id: str = Form(..., description="Rag 的 tab 識別，對應 Rag 表 rag_page_id 欄位"),
-    person_id: str = Form(..., description="使用者/路徑識別，需與 query person_id 一致"),
+    person_id: str | None = Form(None, description="選填；未傳以 token 解析的呼叫者為準；有傳須與呼叫者一致"),
     tab_name: str = Form(..., description="Rag 顯示名稱，寫入 Rag 表 tab_name 欄位"),
     local: bool = Form(False, description="是否為本機 RAG，寫入 Rag 表 local 欄位"),
 ):
     """
     建立 Rag 並上傳 ZIP。
-    multipart/form-data：file、rag_page_id、person_id、tab_name、local（選填，預設 false）。
-    須傳 query course_id、person_id。
+    multipart/form-data：file、rag_page_id、tab_name、local（選填，預設 false）；person_id 選填（未傳以 token 呼叫者為準）。
+    須傳 query course_id。
     回傳 create 欄位與 file_metadata。
     """
     if not file.filename or not file.filename.lower().endswith(".zip"):
@@ -312,7 +312,6 @@ def build_rag_zip(
     body: openapi_body(
         PackRequest,
         {
-            "person_id": "string",
             "unit_list": "folder1",
             "unit_names": "",
             "unit_types": "",
@@ -357,11 +356,10 @@ def build_rag_zip(
     `POST /rag/pages/{rag_page_id}/build-zip-stream` 與本端點相同，僅自 OpenAPI 隱藏，供舊客戶端相容。
     """
     body.rag_page_id = (rag_page_id or "").strip()
-    pid = (body.person_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="請傳入 person_id")
+    # person_id 選填：未傳以 token 呼叫者為準；有傳須一致（過渡期相容檢查）
+    pid = (body.person_id or "").strip() or caller_person_id
     if pid != caller_person_id:
-        raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
+        raise HTTPException(status_code=400, detail="body 的 person_id 與呼叫者（token）不一致")
 
     require_rag_tab_owner(pid, body.rag_page_id, course_id)
 

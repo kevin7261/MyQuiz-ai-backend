@@ -300,7 +300,7 @@ def create_exam(
     body_pid = (body.person_id or "").strip()
     person_id = body_pid if body_pid else caller_person_id
     if body_pid and body_pid != caller_person_id:
-        raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
+        raise HTTPException(status_code=400, detail="body 的 person_id 與呼叫者（token）不一致")
     if not fid:
         fid = generate_page_id(person_id or None)
     if "/" in fid or "\\" in fid:

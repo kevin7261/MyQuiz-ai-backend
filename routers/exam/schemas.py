@@ -54,7 +54,7 @@ class ListRagForExamsResponse(BaseModel):
 class CreateExamRequest(BaseModel):
     """POST /exam/pages：欄位順序同 public.Exam（exam_page_id, person_id, tab_name, local；不含 exam_id／course_id／deleted／時間戳）。"""
     exam_page_id: str | None = Field(None, description="選填；未傳則由後端產生")
-    person_id: str = Field("", description="選填，寫入 Exam.person_id")
+    person_id: str = Field("", description="選填；未傳以 token 解析的呼叫者為準；有傳須與呼叫者一致")
     tab_name: str = Field("", description="測驗顯示名稱")
     local: bool = Field(False, description="是否為本機 Exam")
 

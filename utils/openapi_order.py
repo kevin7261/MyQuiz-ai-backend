@@ -14,6 +14,7 @@ _METHOD_RANK = {"get": 0, "post": 1, "put": 2, "patch": 3, "delete": 4, "head": 
 _API_PATH_ORDER: tuple[str, ...] = (
     # --- 認證 ---
     "/v1/auth/login",
+    "/v1/auth/refresh",
     # --- RAG：分頁 ---
     "/v1/rag/pages",
     "/v1/rag/pages/upload-zip",
@@ -78,6 +79,7 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/course-analyses/{course_analysis_id}",
     # --- 帳號／其他 ---
     "/v1/users",
+    "/v1/users/me/password",
     "/v1/colleges",
     "/v1/courses",
     "/v1/prompt-templates",

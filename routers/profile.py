@@ -2,8 +2,10 @@
 使用者相關 API 模組。
 提供：
 - GET /users：列出 User 表（含 password），含各使用者選課 courses 列表（唯讀）
+- PUT /users/me/password：修改呼叫者（token 解析）自己的密碼
 - POST /auth/login：以 person_id + password 登入；成功時簽發 access_token（Bearer）
   並回傳該帳號之 User_Course_Relation 課程列表
+- POST /auth/refresh：以仍有效的 token 換發新 token（延長效期）
 
 新增／編輯／刪除使用者請用 /rag/course-members/*。
 """
@@ -15,8 +17,8 @@ from fastapi import APIRouter, HTTPException
 from dependencies.person_id import PersonId
 from pydantic import BaseModel, Field
 
-from utils.auth import issue_token
-from utils.taipei_time import to_taipei_iso
+from utils.auth import issue_token, token_ttl_seconds
+from utils.taipei_time import now_taipei_iso, to_taipei_iso
 from utils.db_schema import (
     ACTIVE_DELETED_FILTER,
     COLLEGE_TABLE,
@@ -212,6 +214,7 @@ class LoginResponse(BaseModel):
     courses: list[UserCourseItem] = Field(default_factory=list)
     access_token: str = Field(..., description="Bearer token；之後請求帶 Authorization header")
     token_type: str = Field(default="bearer")
+    expires_in: int = Field(..., description="access_token 效期（秒）；預設 30 天，可由 env AUTH_TOKEN_TTL_SECONDS 調整")
 
 
 def _courses_for_users(
@@ -289,6 +292,71 @@ def list_users(_person_id: PersonId):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class UpdateMyPasswordRequest(BaseModel):
+    """PUT /users/me/password 請求；呼叫者由 token 解析。"""
+    password: str = Field(..., min_length=1, description="新密碼")
+
+
+class UpdateMyPasswordResponse(BaseModel):
+    """PUT /users/me/password 回應。"""
+    message: str
+    person_id: str
+    updated_at: Optional[str] = None
+
+
+class RefreshTokenResponse(BaseModel):
+    """POST /auth/refresh 回應。"""
+    access_token: str = Field(..., description="新簽發的 Bearer token")
+    token_type: str = Field(default="bearer")
+    expires_in: int = Field(..., description="access_token 效期（秒）")
+
+
+@router.put("/users/me/password", response_model=UpdateMyPasswordResponse)
+def update_my_password(
+    body: openapi_body(UpdateMyPasswordRequest, {"password": "string"}),
+    person_id: PersonId,
+):
+    """
+    修改呼叫者自己的密碼（呼叫者由 Authorization token 解析，body 只需新密碼）。
+    """
+    pwd = (body.password or "").strip()
+    if not pwd:
+        raise HTTPException(status_code=400, detail="請傳入 password")
+    try:
+        supabase = get_supabase()
+        ts = now_taipei_iso()
+        resp = (
+            supabase.table(USER_TABLE)
+            .update({"password": pwd, "updated_at": ts})
+            .eq("person_id", person_id)
+            .or_(ACTIVE_DELETED_FILTER)
+            .execute()
+        )
+        if not resp.data:
+            raise HTTPException(status_code=404, detail=f"找不到使用者 person_id={person_id}")
+        return UpdateMyPasswordResponse(
+            message="密碼已更新",
+            person_id=person_id,
+            updated_at=to_taipei_iso(resp.data[0].get("updated_at")) or ts,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/auth/refresh", response_model=RefreshTokenResponse)
+def refresh_access_token(person_id: PersonId):
+    """
+    以仍有效的 token 換發新 token（延長效期）；token 已過期會回 401，需重新登入。
+    前端可於 token 接近到期（見 expires_in）時呼叫，避免使用中途被登出。
+    """
+    return RefreshTokenResponse(
+        access_token=issue_token(person_id),
+        expires_in=token_ttl_seconds(),
+    )
+
+
 @router.post("/auth/login", response_model=LoginResponse)
 def login(
     body: openapi_body(LoginRequest, {"person_id": "string", "password": "string"}),
@@ -325,6 +393,7 @@ def login(
             user=user,
             courses=courses,
             access_token=issue_token(person_id),
+            expires_in=token_ttl_seconds(),
         )
     except HTTPException:
         raise

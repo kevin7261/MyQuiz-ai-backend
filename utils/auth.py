@@ -41,7 +41,7 @@ def _secret() -> bytes:
     return hashlib.sha256(s.encode("utf-8")).digest()
 
 
-def _token_ttl_seconds() -> int:
+def token_ttl_seconds() -> int:
     raw = (os.environ.get("AUTH_TOKEN_TTL_SECONDS") or "").strip()
     try:
         ttl = int(raw)
@@ -69,7 +69,7 @@ def _sign(payload_b64: str) -> str:
 def issue_token(person_id: str) -> str:
     """為登入成功的 person_id 簽發 Bearer token。"""
     now = int(time.time())
-    payload = {"sub": str(person_id), "iat": now, "exp": now + _token_ttl_seconds()}
+    payload = {"sub": str(person_id), "iat": now, "exp": now + token_ttl_seconds()}
     payload_b64 = _b64url_encode(
         json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     )
