@@ -65,6 +65,10 @@ class CourseStoredAnalysisResponse(BaseModel):
     )
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    analysis_llm_model: Optional[str] = Field(
+        default=None,
+        description="目前課程設定的 LLM 模型（Course_Setting key=llm-model）；非當初產生 analysis_text 時所用模型",
+    )
 
 
 class CourseLlmAnalysisResponse(BaseModel):
@@ -85,9 +89,11 @@ class CourseLlmAnalysisResponse(BaseModel):
     )
 
 
-def _stored_to_response(stored: Optional[dict]) -> CourseStoredAnalysisResponse:
+def _stored_to_response(
+    stored: Optional[dict], analysis_llm_model: Optional[str] = None
+) -> CourseStoredAnalysisResponse:
     if not stored:
-        return CourseStoredAnalysisResponse()
+        return CourseStoredAnalysisResponse(analysis_llm_model=analysis_llm_model)
     safe = to_json_safe(stored)
     prompt = safe.get("analysis_prompt_text")
     return CourseStoredAnalysisResponse(
@@ -99,6 +105,7 @@ def _stored_to_response(stored: Optional[dict]) -> CourseStoredAnalysisResponse:
         analysis_text=safe.get("analysis_text"),
         created_at=safe.get("created_at"),
         updated_at=safe.get("updated_at"),
+        analysis_llm_model=analysis_llm_model,
     )
 
 
@@ -110,7 +117,7 @@ def get_course_stored_analysis(person_id: PersonId, course_id: CourseId):
     try:
         caller = _caller_person_id_or_404(person_id)
         stored = fetch_course_analysis_stored(caller, course_id)
-        return _stored_to_response(stored)
+        return _stored_to_response(stored, analysis_llm_model=get_rag_llm_model(course_id))
     except HTTPException:
         raise
     except Exception as e:
