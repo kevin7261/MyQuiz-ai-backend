@@ -85,7 +85,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 每次業務 API 請求寫入 public.Log（僅略過 GET /log/logs、OPTIONS/HEAD、Swagger 路徑）
+# 每次業務 API 請求寫入 public.Log（僅略過 GET /v1/logs、OPTIONS/HEAD、Swagger 路徑）
 app.add_middleware(APILogMiddleware)
 
 # ---------------------------------------------------------------------------

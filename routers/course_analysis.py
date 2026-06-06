@@ -385,7 +385,7 @@ def course_llm_analysis(person_id: PersonId, course_id: CourseId):
             llm_error = "無已作答或已評級題目，無法產生弱點報告（未寫入 Course_Analysis）"
         api_key = get_course_analysis_api_key(course_id)
         if not llm_error and not api_key:
-            llm_error = "未設定 API Key：PUT /rag/llm_api_key（Course_Setting key=rag-api-key，依 course_id）"
+            llm_error = "未設定 API Key：PUT /v1/rag/llm-api-key（Course_Setting key=rag-api-key，依 course_id）"
         elif not llm_error:
             setting_prompt = fetch_course_analysis_user_prompt_for_llm(caller, course_id)
             weakness_report, _, llm_err = generate_weakness_report_md(

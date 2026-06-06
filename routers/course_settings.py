@@ -11,7 +11,7 @@
 - GET /rag/course-analysis-user-prompt-text：取得課程分析指令（Course_Analysis，person_id 為呼叫者）；須為有效登入使用者；必填 query course_id。
 - PUT /rag/course-analysis-user-prompt-text：寫入 Course_Analysis（person_id 為呼叫者）；僅 user_type 1／2。
 
-LLM API Key 亦存於 Course_Setting（rag-api-key／exam-api-key）；見 GET/PUT /rag/llm_api_key、/rag/llm_model、/exam/llm_api_key。
+LLM API Key 亦存於 Course_Setting（rag-api-key／exam-api-key）；見 GET/PUT /v1/rag/llm-api-key、/v1/rag/llm-model、/v1/exam/llm-api-key。
 """
 
 from typing import Annotated, Optional

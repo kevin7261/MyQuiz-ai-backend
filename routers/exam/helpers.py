@@ -628,7 +628,7 @@ def _exam_llm_generate_quiz_impl(
     if unit_type_val in (2, 3, 4) and not transcript_text:
         raise HTTPException(
             status_code=400,
-            detail="單元類型 2／3／4 需有逐字稿：請於 Rag_Unit 設定 transcript，或經 POST /rag/page/build-rag-zip 寫入",
+            detail="單元類型 2／3／4 需有逐字稿：請於 Rag_Unit 設定 transcript，或經 POST /v1/rag/pages/{rag_page_id}/build-zip 寫入",
         )
 
     prompt_rag_unit_id = int(selected.get("rag_unit_id") or 0) if selected else int(qrow.get("rag_unit_id") or 0)

@@ -1,8 +1,8 @@
 """
 LLM API Key／出題模型：依 course_id 自 Course_Setting 讀取。
-- RAG Key：key=rag-api-key（GET/PUT /rag/llm_api_key；GET /rag/llm_api_key/exists 查是否已設定）
-- LLM 模型（出題、批改、弱點分析共用）：key=llm-model（GET/PUT /rag/llm_model；未設定時 fallback `QUIZ_LLM_MODEL`）
-- Exam Key：key=exam-api-key（GET/PUT /exam/llm_api_key；GET /exam/llm_api_key/exists 查是否已設定；個人弱點分析）
+- RAG Key：key=rag-api-key（GET/PUT /v1/rag/llm-api-key；GET /v1/rag/llm-api-key/exists 查是否已設定）
+- LLM 模型（出題、批改、弱點分析共用）：key=llm-model（GET/PUT /v1/rag/llm-model；未設定時 fallback `QUIZ_LLM_MODEL`）
+- Exam Key：key=exam-api-key（GET/PUT /v1/exam/llm-api-key；GET /v1/exam/llm-api-key/exists 查是否已設定；個人弱點分析）
 - 課程弱點分析：與 RAG 相同，使用 rag-api-key
 """
 

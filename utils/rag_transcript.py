@@ -424,7 +424,7 @@ def _audio_members_in_zip(z: zipfile.ZipFile) -> list[tuple[str, str, str]]:
 
 def infer_unit_type_when_unspecified(declared_unit_type: int, zip_bytes: bytes) -> int:
     """
-    POST /rag/page/build-rag-zip：若請求未帶對齊的 unit_types，`declared_unit_type` 會是 0。
+    POST /v1/rag/pages/{rag_page_id}/build-zip：若請求未帶對齊的 unit_types，`declared_unit_type` 會是 0。
     此時 Rag_Unit.transcript **不會**寫入（僅複製 ZIP），易被誤以為「沒存 MD」。
 
     規則（僅在 declared_unit_type == 0 時推斷；已明確傳 2／3／4 則不覆寫）：

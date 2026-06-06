@@ -323,7 +323,7 @@ def _rag_llm_generate_quiz_impl(
     if not api_key:
         raise HTTPException(
             status_code=400,
-            detail="請設定 RAG API Key：PUT /rag/llm_api_key（Course_Setting key=rag-api-key，依 course_id）",
+            detail="請設定 RAG API Key：PUT /v1/rag/llm-api-key（Course_Setting key=rag-api-key，依 course_id）",
         )
     llm_model = get_rag_llm_model(course_id)
     transcript_text = transcript_from_row(unit_row)
@@ -338,7 +338,7 @@ def _rag_llm_generate_quiz_impl(
     if unit_type_val in (2, 3, 4) and not transcript_text:
         raise HTTPException(
             status_code=400,
-            detail="單元類型 2／3／4 需有逐字稿：請於 Rag_Unit 或 Rag 設定 transcript，或經 POST /rag/page/build-rag-zip 寫入 Rag_Unit.transcript",
+            detail="單元類型 2／3／4 需有逐字稿：請於 Rag_Unit 或 Rag 設定 transcript，或經 POST /v1/rag/pages/{rag_page_id}/build-zip 寫入 Rag_Unit.transcript",
         )
 
     path: Path | None = None
@@ -517,7 +517,7 @@ async def _enqueue_rag_llm_grade_job(
         return JSONResponse(
             status_code=400,
             content={
-                "error": "請設定 RAG API Key：PUT /rag/llm_api_key（Course_Setting key=rag-api-key，依 course_id）",
+                "error": "請設定 RAG API Key：PUT /v1/rag/llm-api-key（Course_Setting key=rag-api-key，依 course_id）",
             },
         )
     llm_model = get_rag_llm_model(course_id)

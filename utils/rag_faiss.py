@@ -2,7 +2,7 @@
 從講義 ZIP 建 FAISS 向量庫並打包成 RAG ZIP；含 process_zip_to_docs（與建庫相同副檔名規則）。
 Embeddings 由呼叫端傳入 API key，不從環境變數讀取。
 
-unit_type（與 Rag_Unit.unit_type／POST /rag/page/build-rag-zip 之 unit_types 對齊）：
+unit_type（與 Rag_Unit.unit_type／POST /v1/rag/pages/{rag_page_id}/build-zip 之 unit_types 對齊）：
   0／1：Office／PDF＋Markdown
   2／4：僅 Markdown（.md）
   3：恰好一個音訊檔＋一個文字檔（逐字稿來自文字檔內容，缺一不可）
