@@ -339,7 +339,7 @@ def apply_parsed_quiz_history_list_tree(quiz: dict[str, Any]) -> None:
 
 
 def rag_quiz_list_row(row: dict[str, Any]) -> dict[str, Any]:
-    """GET /rag/pages、GET /rag/page/units 之 quizzes[] 單筆（欄位順序對齊 public.Rag_Quiz）。"""
+    """GET /v1/rag/pages、GET /v1/rag/pages/{rag_page_id}/units 之 quizzes[] 單筆（欄位順序對齊 public.Rag_Quiz）。"""
     ans = row.get("answer_content")
     if ans is None:
         ans = row.get("quiz_answer")

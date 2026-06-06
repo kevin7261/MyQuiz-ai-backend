@@ -1,6 +1,6 @@
 """
 Log 表查詢 API。
-- GET /v1/logs：必填 query person_id、course_id；依 course_id 篩選，log_id 降冪。
+- GET /v1/logs：Bearer token + 必填 query course_id；依 course_id 篩選，log_id 降冪。
   此端點不寫入 Log 表（避免查詢紀錄時產生遞迴 log）。
 """
 
