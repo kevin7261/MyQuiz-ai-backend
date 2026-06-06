@@ -52,7 +52,7 @@ class ListRagForExamsResponse(BaseModel):
 
 
 class CreateExamRequest(BaseModel):
-    """POST /exam/page/add：欄位順序同 public.Exam（exam_page_id, person_id, tab_name, local；不含 exam_id／course_id／deleted／時間戳）。"""
+    """POST /exam/pages：欄位順序同 public.Exam（exam_page_id, person_id, tab_name, local；不含 exam_id／course_id／deleted／時間戳）。"""
     exam_page_id: str | None = Field(None, description="選填；未傳則由後端產生")
     person_id: str = Field("", description="選填，寫入 Exam.person_id")
     tab_name: str = Field("", description="測驗顯示名稱")
@@ -60,8 +60,7 @@ class CreateExamRequest(BaseModel):
 
 
 class UpdateExamUnitNameRequest(BaseModel):
-    """PUT /exam/page/tab-name：以 exam_id（主鍵）更新 tab_name。"""
-    exam_id: int = Field(..., description="Exam 主鍵")
+    """PATCH /exam/pages/{exam_page_id}：以 exam_page_id（path）定位更新 tab_name。"""
     tab_name: str = Field(..., description="新的顯示名稱")
 
 
@@ -155,7 +154,7 @@ class ExamQuizHistoryPromptFollowup(BaseModel):
 
 
 class ExamCreateLlmGenerateQuizRequest(BaseModel):
-    """POST /exam/page/quiz/create-llm-generate；先 create 再 llm-generate，不需傳 exam_quiz_id。"""
+    """POST /exam/quizzes/create-llm-generate；先 create 再 llm-generate，不需傳 exam_quiz_id。"""
 
     exam_page_id: str = Field("", description="目標 Exam 的 exam_page_id")
     rag_page_id: str = Field(
@@ -190,7 +189,7 @@ class ExamCreateLlmGenerateQuizRequest(BaseModel):
 
 
 class ExamLlmGenerateQuizRequest(BaseModel):
-    """POST /exam/page/quiz/llm-generate；欄位順序同 public.Exam_Quiz（exam_quiz_id, rag_page_id, rag_unit_id, rag_quiz_id, quiz_history_list）。"""
+    """POST /exam/quizzes/llm-generate；欄位順序同 public.Exam_Quiz（exam_quiz_id, rag_page_id, rag_unit_id, rag_quiz_id, quiz_history_list）。"""
 
     exam_quiz_id: int = Field(..., gt=0, description="Exam_Quiz 主鍵")
     rag_page_id: str = Field(
@@ -225,7 +224,7 @@ class ExamLlmGenerateQuizRequest(BaseModel):
 
 
 class ExamCreateLlmGenerateQuizFollowupRequest(BaseModel):
-    """POST /exam/page/quiz/create-llm-generate-followup；先 create 再 llm-generate-followup，不需傳 exam_quiz_id。"""
+    """POST /exam/quizzes/create-llm-generate-followup；先 create 再 llm-generate-followup，不需傳 exam_quiz_id。"""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -280,7 +279,7 @@ class ExamCreateLlmGenerateQuizFollowupRequest(BaseModel):
 
 
 class ExamLlmGenerateQuizFollowupRequest(BaseModel):
-    """POST /exam/page/quiz/llm-generate-followup；欄位順序同 Exam_Quiz 至 rag_quiz_id，接 follow_up_exam_quiz_id 與 quiz_history_list。"""
+    """POST /exam/quizzes/llm-generate-followup；欄位順序同 Exam_Quiz 至 rag_quiz_id，接 follow_up_exam_quiz_id 與 quiz_history_list。"""
 
     exam_quiz_id: int = Field(..., gt=0, description="Exam_Quiz 主鍵（本筆接續題）")
     rag_page_id: str = Field(
@@ -333,19 +332,17 @@ class ExamLlmGenerateQuizFollowupRequest(BaseModel):
 
 
 class ExamQuizRateRequest(BaseModel):
-    """POST /exam/page/quiz/quiz-rate：更新 Exam_Quiz.quiz_rate。"""
-    exam_quiz_id: int = Field(..., ge=1, description="Exam_Quiz 主鍵")
+    """PUT /exam/quizzes/{exam_quiz_id}/quiz-rate：更新 Exam_Quiz.quiz_rate（exam_quiz_id 由 path 帶入）。"""
     quiz_rate: ExamQuizRateValue = Field(0, description="僅 -1、0、1")
 
 
 class ExamQuizGradeRateRequest(BaseModel):
-    """POST /exam/page/quiz/grade-rate：更新 Exam_Quiz.grade_rate。"""
-    exam_quiz_id: int = Field(..., ge=1, description="Exam_Quiz 主鍵")
+    """PUT /exam/quizzes/{exam_quiz_id}/grade-rate：更新 Exam_Quiz.grade_rate（exam_quiz_id 由 path 帶入）。"""
     grade_rate: ExamQuizRateValue = Field(0, description="僅 -1、0、1")
 
 
 class ExamQuizGradeRequest(BaseModel):
-    """POST /exam/page/quiz/llm-grade：body 欄位依序對應 public.Exam_Quiz 之 exam_quiz_id、quiz_content、answer_content（學生作答 quiz_answer）。
+    """POST /exam/quizzes/llm-grade：body 欄位依序對應 public.Exam_Quiz 之 exam_quiz_id、quiz_content、answer_content（學生作答 quiz_answer）。
     批改用 quiz_user_prompt_text／answer_user_prompt_text 優先採 Exam_Quiz 列，缺則自 Rag_Quiz 補齊。"""
     exam_quiz_id: int = Field(..., gt=0, description="Exam_Quiz 主鍵（必填，>0）；置入評分 prompt")
     quiz_content: str = Field(
@@ -360,12 +357,12 @@ class ExamQuizGradeRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# GET / PUT /exam/llm_api_key
+# GET / PUT /exam/llm-api-key
 # ---------------------------------------------------------------------------
 
 
 class ExamApiKeyResponse(BaseModel):
-    """GET/PUT /exam/llm_api_key 回應（Course_Setting key=exam-api-key）。"""
+    """GET/PUT /exam/llm-api-key 回應（Course_Setting key=exam-api-key）。"""
 
     course_setting_id: Optional[int] = None
     course_id: int
@@ -373,13 +370,13 @@ class ExamApiKeyResponse(BaseModel):
 
 
 class PutExamApiKeyRequest(BaseModel):
-    """PUT /exam/llm_api_key 的 body。"""
+    """PUT /exam/llm-api-key 的 body。"""
 
     api_key: str = Field(..., description="Exam LLM API Key")
 
 
 class ExamApiKeyExistsResponse(BaseModel):
-    """GET /exam/llm_api_key/exists 回應。"""
+    """GET /exam/llm-api-key/exists 回應。"""
 
     course_id: int
     exists: bool = Field(..., description="該課程是否已設定非空 exam-api-key")

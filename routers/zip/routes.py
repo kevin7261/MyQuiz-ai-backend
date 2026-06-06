@@ -93,7 +93,7 @@ def list_rag(
     且僅回傳與 query person_id 相符之列，Rag.local 須與 query local 相符（未傳 local 時依連線自動判定）。
     回傳列依 created_at 由舊到新排序。
     每筆 Rag 含 units（Rag_Unit 列表），每個 unit 含 quizzes（Rag_Quiz 列表，含 follow_up、quiz_history_list）。
-    音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /rag/page/unit/mp3-file 查詢字串（`rag_page_id`、`rag_unit_id`，不需 person_id），可接在後端 origin 後作為 `<audio src>`。
+    音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /rag/units/{rag_unit_id}/mp3-file 查詢字串（`rag_page_id`，不需 person_id），可接在後端 origin 後作為 `<audio src>`。
     YouTube 單元（unit_type=4）且 youtube_url 非空時，另含 youtube_url_api：相對於 API 根路徑的 GET /rag/unit/youtube-url 查詢字串（`rag_page_id`、`folder_name`、`person_id`）。
     """
     try:
@@ -145,11 +145,10 @@ def list_rag(
                     and uid_int is not None
                 ):
                     unit["mp3_audio_url"] = (
-                        "/rag/page/unit/mp3-file?"
+                        f"/rag/units/{uid_int}/mp3-file?"
                         + urlencode(
                             {
                                 "rag_page_id": str(page_id).strip(),
-                                "rag_unit_id": str(uid_int),
                                 "course_id": str(course_id),
                             }
                         )
@@ -181,18 +180,20 @@ def list_rag(
         raise HTTPException(status_code=500, detail=f"列出 Rag 失敗: {e!s}")
 
 
-@router.put("/page/tab-name")
+@router.patch("/pages/{rag_page_id}")
 def update_unit_tab_name(
-    body: openapi_body(UpdateRagUnitNameRequest, {"rag_id": 1, "tab_name": "新名稱"}),
+    body: openapi_body(UpdateRagUnitNameRequest, {"tab_name": "新名稱"}),
     caller_person_id: PersonId,
     course_id: CourseId,
+    rag_page_id: str = PathParam(..., description="要更新 tab_name 的 rag_page_id"),
 ):
     """
-    更新既有 Rag 的 tab_name。以 rag_id（Rag 主鍵）比對；僅更新 deleted=false 的列。
+    更新既有 Rag 的 tab_name。以 rag_page_id 比對；僅更新 deleted=false 的列。
     回傳 rag_id、rag_page_id、person_id、tab_name、updated_at。
     """
-    if body.rag_id <= 0:
-        raise HTTPException(status_code=400, detail="無效的 rag_id")
+    fid = (rag_page_id or "").strip()
+    if not fid or "/" in fid or "\\" in fid:
+        raise HTTPException(status_code=400, detail="無效的 rag_page_id")
     tab_name = (body.tab_name or "").strip()
     if not tab_name:
         raise HTTPException(status_code=400, detail="請傳入 tab_name")
@@ -201,23 +202,23 @@ def update_unit_tab_name(
         sel = (
             supabase.table("Rag")
             .select("rag_id, rag_page_id, person_id, course_id")
-            .eq("rag_id", body.rag_id)
+            .eq("rag_page_id", fid)
             .eq("course_id", course_id)
             .eq("deleted", False)
             .limit(1)
             .execute()
         )
         if not sel.data or len(sel.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該 rag_id 的 Rag 資料，或已刪除")
+            raise HTTPException(status_code=404, detail="找不到該 rag_page_id 的 Rag 資料，或已刪除")
         row = sel.data[0]
-        fid = row.get("rag_page_id")
+        rag_id = row.get("rag_id")
         pid = row.get("person_id")
         if ((pid or "").strip() != caller_person_id):
             raise HTTPException(status_code=403, detail="無權修改該 Rag")
         ts = now_taipei_iso()
-        supabase.table("Rag").update({"tab_name": tab_name, "updated_at": ts}).eq("rag_id", body.rag_id).eq("deleted", False).execute()
+        supabase.table("Rag").update({"tab_name": tab_name, "updated_at": ts}).eq("rag_page_id", fid).eq("course_id", course_id).eq("deleted", False).execute()
         return {
-            "rag_id": body.rag_id,
+            "rag_id": rag_id,
             "rag_page_id": fid,
             "person_id": pid,
             "tab_name": tab_name,
@@ -229,14 +230,14 @@ def update_unit_tab_name(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/page/delete/{rag_page_id}", status_code=200, summary="Delete Rag File", operation_id="rag_tab_delete")
+@router.delete("/pages/{rag_page_id}", status_code=200, summary="Delete Rag File", operation_id="rag_tab_delete")
 def delete_rag_file(
     _person_id: PersonId,
     course_id: CourseId,
     rag_page_id: str = PathParam(..., description="要刪除的 rag_page_id"),
 ):
     """
-    PUT /rag/page/delete/{rag_page_id}。
+    DELETE /rag/pages/{rag_page_id}。
     軟刪除：將 Rag 表該 rag_page_id 之未刪除列 deleted 設為 true，同時軟刪除所有對應 Rag_Unit，並刪除 storage 資料夾。
     """
     fid = (rag_page_id or "").strip()
@@ -252,7 +253,7 @@ def delete_rag_file(
     }
 
 
-@router.post("/page/add-upload-zip")
+@router.post("/pages/upload-zip", status_code=201)
 async def create_upload_zip(
     caller_person_id: PersonId,
     course_id: CourseId,
@@ -305,13 +306,12 @@ async def create_upload_zip(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/page/build-rag-zip-stream", include_in_schema=False)
-@router.post("/page/build-rag-zip")
+@router.post("/pages/{rag_page_id}/build-zip-stream", include_in_schema=False)
+@router.post("/pages/{rag_page_id}/build-zip")
 def build_rag_zip(
     body: openapi_body(
         PackRequest,
         {
-            "rag_page_id": "string",
             "person_id": "string",
             "unit_list": "folder1",
             "unit_names": "",
@@ -326,13 +326,14 @@ def build_rag_zip(
     ),
     caller_person_id: PersonId,
     course_id: CourseId,
+    rag_page_id: str = PathParam(..., description="來源上傳 ZIP 的 rag_page_id"),
     repack_only: bool = Query(
         False,
         description="為 True 時強制不建 FAISS（unit_type=1 時 rag 改為 repack 複製）；不影響 unit_type=2/3/4 之逐字稿 rag ZIP",
     ),
 ):
     """
-    依先前上傳的 ZIP（rag_page_id）與 unit_list 重新打包。
+    依先前上傳的 ZIP（path 參數 rag_page_id）與 unit_list 重新打包。
     **FAISS 建置規則（逐 unit 判斷）**：`user_type==1`（且未強制關閉）且該 unit 之 `unit_type==1 (rag)` → 建 FAISS 並上傳至 rag；`unit_type` 為 2／3／4 時仍 repack 原 ZIP，但 **rag 區上傳內含單一 `transcript.md`（逐字稿全文）之 ZIP**，非 repack 複製；其餘 unit_type==0 等 → repack 同內容複製至 rag。
     可選 query **repack_only=true**：強制全部 unit 不建 FAISS；**不影響** 2／3／4 之逐字稿 rag ZIP 行為。
     可選 body **build_faiss**：`false` 同 repack_only；`true` 強制允許 FAISS（仍需 unit_type==1 觸發）；省略時依 user_type 判定。
@@ -353,8 +354,9 @@ def build_rag_zip(
     - `{"type":"complete","success":bool,"total","built_ok","built_failed","source_rag_page_id","unit_list","outputs"}`
 
     串流階段 HTTP 狀態碼固定 **200**；請以最後一則 `type===complete` 的 `success` 判斷整批成敗。
-    `POST /rag/page/build-rag-zip-stream` 與本端點相同，僅自 OpenAPI 隱藏，供舊客戶端相容。
+    `POST /rag/pages/{rag_page_id}/build-zip-stream` 與本端點相同，僅自 OpenAPI 隱藏，供舊客戶端相容。
     """
+    body.rag_page_id = (rag_page_id or "").strip()
     pid = (body.person_id or "").strip()
     if not pid:
         raise HTTPException(status_code=400, detail="請傳入 person_id")
@@ -499,11 +501,11 @@ def build_rag_zip(
     )
 
 
-@router.get("/page/units")
+@router.get("/pages/{rag_page_id}/units")
 def list_rag_units(
     _caller_person_id: PersonId,
     course_id: CourseId,
-    rag_page_id: str = Query(..., description="要列出 Rag_Unit 的 rag_page_id"),
+    rag_page_id: str = PathParam(..., description="要列出 Rag_Unit 的 rag_page_id"),
 ):
     """
     依 rag_page_id 列出所有未刪除的 Rag_Unit，每個 unit 含關聯的 Rag_Quiz（quizzes，含 follow_up）。
@@ -555,15 +557,15 @@ def list_rag_units(
 
 
 @router.get(
-    "/page/unit/mp3-file",
+    "/units/{rag_unit_id}/mp3-file",
     summary="Rag Tab Unit Mp3 File",
     operation_id="rag_tab_unit_mp3_file",
     response_model=RagUnitMp3FileResponse,
 )
 def rag_tab_unit_mp3_file(
     course_id: CourseId,
+    rag_unit_id: int = PathParam(..., gt=0, description="Rag_Unit 主鍵"),
     rag_page_id: str = Query(..., description="Rag.rag_page_id（parent tab；repack/upload 路徑皆在其下）"),
-    rag_unit_id: int = Query(..., gt=0, description="Rag_Unit 主鍵"),
 ):
     """
     依 rag_page_id 與 rag_unit_id；**僅 Rag_Unit.unit_type=3（音訊單元）** 時回傳原始音訊。
@@ -714,7 +716,7 @@ def rag_tab_unit_mp3_file(
     )
 
 
-@router.post("/page/unit/quiz/add", summary="Rag Create Quiz (no LLM)", operation_id="rag_create_quiz")
+@router.post("/quizzes", status_code=201, summary="Rag Create Quiz (no LLM)", operation_id="rag_create_quiz")
 def insert_rag_quiz_row(
     body: openapi_body(InsertRagQuizRowRequest, {"rag_page_id": "string", "rag_unit_id": 1}),
     caller_person_id: PersonId,
@@ -722,7 +724,7 @@ def insert_rag_quiz_row(
 ):
     """
     依 `rag_page_id`／`rag_unit_id` 解析 Rag_Unit 後新增一筆空白 `Rag_Quiz`，**不呼叫 LLM**。`rag_quiz_id` 由資料庫自動產生並於回傳中帶出。
-    LLM 出題請用 `POST /rag/page/unit/quiz/llm-generate`。
+    LLM 出題請用 grade router 之 LLM 出題端點。
     """
     try:
         supabase = get_supabase()
@@ -836,15 +838,16 @@ def insert_rag_quiz_row(
     except HTTPException:
         raise
     except Exception as e:
-        _logger.exception("POST /rag/page/unit/quiz/add 錯誤")
+        _logger.exception("POST /rag/quizzes 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/page/unit/quiz/quiz-name", summary="Update Rag Quiz Name", operation_id="rag_tab_unit_quiz_quiz_name")
+@router.patch("/quizzes/{rag_quiz_id}", summary="Update Rag Quiz Name", operation_id="rag_tab_unit_quiz_quiz_name")
 def update_rag_quiz_name(
-    body: openapi_body(UpdateRagQuizQuizNameRequest, {"rag_quiz_id": 1, "quiz_name": "新名稱"}),
+    body: openapi_body(UpdateRagQuizQuizNameRequest, {"quiz_name": "新名稱"}),
     caller_person_id: PersonId,
     course_id: CourseId,
+    rag_quiz_id: int = PathParam(..., gt=0, description="要更新的 Rag_Quiz 主鍵"),
 ):
     """
     更新既有 Rag_Quiz 的 quiz_name。以 rag_quiz_id（主鍵）比對；僅更新 deleted=false 的列。
@@ -865,7 +868,7 @@ def update_rag_quiz_name(
             q = (
                 supabase.table("Rag_Quiz")
                 .select(cols)
-                .eq("rag_quiz_id", body.rag_quiz_id)
+                .eq("rag_quiz_id", rag_quiz_id)
                 .eq("deleted", False)
             )
             if with_course_filter and course_id is not None:
@@ -880,9 +883,9 @@ def update_rag_quiz_name(
         if pid != caller_person_id:
             raise HTTPException(status_code=403, detail="無權修改該 Rag_Quiz")
         ts = now_taipei_iso()
-        supabase.table("Rag_Quiz").update({"quiz_name": quiz_name, "updated_at": ts}).eq("rag_quiz_id", body.rag_quiz_id).eq("deleted", False).execute()
+        supabase.table("Rag_Quiz").update({"quiz_name": quiz_name, "updated_at": ts}).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
         return {
-            "rag_quiz_id": body.rag_quiz_id,
+            "rag_quiz_id": rag_quiz_id,
             "rag_page_id": row.get("rag_page_id"),
             "rag_unit_id": row.get("rag_unit_id"),
             "person_id": pid,
@@ -892,12 +895,12 @@ def update_rag_quiz_name(
     except HTTPException:
         raise
     except Exception as e:
-        _logger.exception("PUT /rag/page/unit/quiz/quiz-name 錯誤")
+        _logger.exception("PATCH /rag/quizzes/{rag_quiz_id} 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put(
-    "/page/unit/quiz/delete/{rag_quiz_id}",
+@router.delete(
+    "/quizzes/{rag_quiz_id}",
     status_code=200,
     summary="Delete Rag Quiz",
     operation_id="rag_tab_unit_quiz_delete",
@@ -908,7 +911,7 @@ def delete_rag_quiz(
     rag_quiz_id: int = PathParam(..., gt=0, description="要軟刪除的 Rag_Quiz 主鍵"),
 ):
     """
-    PUT /rag/page/unit/quiz/delete/{rag_quiz_id}。
+    DELETE /rag/quizzes/{rag_quiz_id}。
     軟刪除：將 Rag_Quiz 該列 deleted 設為 true（僅 person_id 與請求者一致且尚未刪除之列）。
     """
     try:
@@ -951,5 +954,5 @@ def delete_rag_quiz(
     except HTTPException:
         raise
     except Exception as e:
-        _logger.exception("PUT /rag/page/unit/quiz/delete/{rag_quiz_id} 錯誤")
+        _logger.exception("DELETE /rag/quizzes/{rag_quiz_id} 錯誤")
         raise HTTPException(status_code=500, detail=str(e))

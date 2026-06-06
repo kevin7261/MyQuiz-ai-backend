@@ -1,8 +1,9 @@
 """
 使用者相關 API 模組。
 提供：
-- GET /profile/users：列出 User 表（含 password），含各使用者選課 courses 列表（唯讀）
-- POST /profile/login：以 person_id + password 登入（成功時另回傳該帳號之 User_Course_Relation 課程列表）
+- GET /users：列出 User 表（含 password），含各使用者選課 courses 列表（唯讀）
+- POST /auth/login：以 person_id + password 登入；成功時簽發 access_token（Bearer）
+  並回傳該帳號之 User_Course_Relation 課程列表
 
 新增／編輯／刪除使用者請用 /rag/course-members/*。
 """
@@ -14,6 +15,7 @@ from fastapi import APIRouter, HTTPException
 from dependencies.person_id import PersonId
 from pydantic import BaseModel, Field
 
+from utils.auth import issue_token
 from utils.taipei_time import to_taipei_iso
 from utils.db_schema import (
     ACTIVE_DELETED_FILTER,
@@ -25,7 +27,7 @@ from utils.db_schema import (
 from utils.openapi import openapi_body
 from utils.supabase import get_supabase
 
-router = APIRouter(prefix="/profile", tags=["profile"])
+router = APIRouter(tags=["profile"])
 
 # User 表實體欄位（user_type 隨 User_Course_Relation 各列；college_name 可自 College 串接）
 USER_TABLE_COLUMNS = "user_id, person_id, college_id, college_name, name, deleted, updated_at, created_at"
@@ -165,7 +167,7 @@ def _user_public_dict(
 
 
 class UserListItem(BaseModel):
-    """單筆使用者；user_type 見 courses 各項。password 僅 GET /profile/users 回傳。"""
+    """單筆使用者；user_type 見 courses 各項。password 僅 GET /users 回傳。"""
     user_id: int
     person_id: Optional[str] = None
     college_id: Optional[str] = None
@@ -179,13 +181,13 @@ class UserListItem(BaseModel):
 
 
 class ListUsersResponse(BaseModel):
-    """GET /profile/users 回應。"""
+    """GET /users 回應。"""
     users: list[UserListItem]
     count: int
 
 
 class LoginRequest(BaseModel):
-    """POST /profile/login 請求：person_id + password。"""
+    """POST /auth/login 請求：person_id + password。"""
     person_id: str
     password: str
 
@@ -204,9 +206,12 @@ UserListItem.model_rebuild()
 
 
 class LoginResponse(BaseModel):
-    """登入成功回傳使用者資訊（不含 password）；user.courses 與頂層 courses 皆為該帳號選課列。"""
+    """登入成功回傳使用者資訊（不含 password）；user.courses 與頂層 courses 皆為該帳號選課列。
+    access_token 供之後所有 API 以 `Authorization: Bearer <access_token>` 帶入。"""
     user: UserListItem
     courses: list[UserCourseItem] = Field(default_factory=list)
+    access_token: str = Field(..., description="Bearer token；之後請求帶 Authorization header")
+    token_type: str = Field(default="bearer")
 
 
 def _courses_for_users(
@@ -284,18 +289,18 @@ def list_users(_person_id: PersonId):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post("/auth/login", response_model=LoginResponse)
 def login(
     body: openapi_body(LoginRequest, {"person_id": "string", "password": "string"}),
-    person_id: PersonId,
 ):
     """
-    以 person_id 與 password 驗證登入；成功回傳該使用者資訊（不含 password）及 User_Course_Relation 課程列表。
-    query 的 person_id 須與 body.person_id 一致。
+    以 person_id 與 password 驗證登入（唯一不需要 token 的端點）。
+    成功回傳使用者資訊（不含 password）、課程列表與 access_token；
+    之後所有 API 請帶 `Authorization: Bearer <access_token>`。
     """
-    body_pid = (body.person_id or "").strip()
-    if body_pid != person_id:
-        raise HTTPException(status_code=400, detail="body 的 person_id 與 query 不一致")
+    person_id = (body.person_id or "").strip()
+    if not person_id:
+        raise HTTPException(status_code=400, detail="請傳入 person_id")
     pwd = (body.password or "").strip()
     cols = f"{USER_TABLE_COLUMNS}, password"
     try:
@@ -316,7 +321,11 @@ def login(
         courses = _courses_for_users(supabase, [int(uid)]).get(int(uid), []) if uid is not None else []
         college_map = _fetch_colleges_by_ids(supabase, [_normalize_college_id(row.get("college_id"))])
         user = _user_list_item(row, college_map, courses)
-        return LoginResponse(user=user, courses=courses)
+        return LoginResponse(
+            user=user,
+            courses=courses,
+            access_token=issue_token(person_id),
+        )
     except HTTPException:
         raise
     except Exception as e:

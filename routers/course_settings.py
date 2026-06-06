@@ -532,7 +532,7 @@ def list_course_members(person_id: PersonId, course_id: CourseId):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.post("/course-members/add", response_model=CourseMemberItem)
+@router.post("/course-members", response_model=CourseMemberItem, status_code=201)
 def add_course_member(
     body: openapi_body(
         AddCourseMemberRequest,
@@ -598,7 +598,7 @@ def _batch_add_course_members(
     )
 
 
-@router.post("/course-members/add-batch", response_model=BatchAddCourseMembersResponse)
+@router.post("/course-members/batch", response_model=BatchAddCourseMembersResponse, status_code=201)
 def batch_add_course_members(
     body: Annotated[
         list[BatchCourseMemberRow],
@@ -630,15 +630,15 @@ def batch_add_course_members(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.put(
-    "/course-members/edit/{person_id}",
+@router.patch(
+    "/course-members/{member_person_id}",
     response_model=CourseMemberItem,
     summary="Edit course member",
     operation_id="rag_course_members_edit",
 )
 def edit_course_member(
     target_person_id: Annotated[
-        str, Path(alias="person_id", description="要編輯的 person_id")
+        str, Path(alias="member_person_id", description="要編輯的成員 person_id")
     ],
     body: openapi_body(
         EditCourseMemberRequest,
@@ -647,7 +647,7 @@ def edit_course_member(
     person_id: PersonId,
     course_id: CourseId,
 ):
-    """Edit course member：更新課程成員 name、user_type（以 path person_id 識別成員）。"""
+    """Edit course member：更新課程成員 name、user_type（以 path member_person_id 識別成員）。"""
     _require_developer_or_manager_for_course_setting_write(person_id, course_id)
     try:
         supabase = get_supabase()
@@ -664,15 +664,15 @@ def edit_course_member(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.put(
-    "/course-members/delete/{person_id}",
+@router.delete(
+    "/course-members/{member_person_id}",
     response_model=CourseMemberItem,
     summary="Remove course member",
     operation_id="rag_course_members_delete",
 )
 def soft_delete_course_member(
     target_person_id: Annotated[
-        str, Path(alias="person_id", description="要移出課程的 person_id")
+        str, Path(alias="member_person_id", description="要移出課程的成員 person_id")
     ],
     person_id: PersonId,
     course_id: CourseId,

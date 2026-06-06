@@ -33,6 +33,7 @@ _SKIP_PATH_PREFIXES = (
 # 不寫入 Log 的「方法 + 路徑」（精確比對 path，不含 query）
 _SKIP_LOG_ROUTES = frozenset({
     ("GET", "/log/logs"),
+    ("GET", "/v1/logs"),
 })
 
 # parameters 內敏感欄位遮罩
@@ -166,6 +167,14 @@ class APILogMiddleware(BaseHTTPMiddleware):
 
         query_params = dict(request.query_params)
         person_id = (query_params.get("person_id") or "").strip()
+        if not person_id:
+            # 改用 Bearer token 後 query 不再帶 person_id，自 Authorization 標頭解出
+            from utils.auth import person_id_from_authorization_header
+
+            person_id = (
+                person_id_from_authorization_header(request.headers.get("authorization"))
+                or ""
+            )
         qs = request.url.query
         api_url = f"{path}?{qs}" if qs else path
         api_url = api_url[:255]

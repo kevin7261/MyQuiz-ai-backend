@@ -13,7 +13,7 @@ from utils.db_schema import ACTIVE_DELETED_FILTER, COLLEGE_TABLE, COURSE_TABLE
 from utils.supabase import get_supabase
 from utils.taipei_time import to_taipei_iso
 
-router = APIRouter(prefix="/college", tags=["college"])
+router = APIRouter(tags=["college"])
 
 COLLEGE_TABLE_COLUMNS = "college_id, college_name, deleted, updated_at, created_at"
 COURSE_TABLE_COLUMNS = "course_id, college_id, semester, course_name"

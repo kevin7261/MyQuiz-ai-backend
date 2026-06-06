@@ -522,7 +522,7 @@ def add_person_analysis_row(
     course_id: int | str,
     analysis_name: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """POST /person-analysis/add：新增一筆空白結果列（analysis_text=''），供 llm-analysis 填入。"""
+    """POST /person-analyses：新增一筆空白結果列（analysis_text=''），供 llm-analysis 填入。"""
     caller = _person_id_for_db(caller_person_id)
     if not caller:
         logger.error("Person_Analysis add rejected: empty caller person_id")
@@ -542,7 +542,7 @@ def update_person_analysis_name(
     person_analysis_id: int,
     analysis_name: str,
 ) -> Optional[dict[str, Any]]:
-    """PUT /person-analysis/analysis-name：更新該列 analysis_name；找不到未刪除列時回 None。"""
+    """PATCH /person-analyses/{person_analysis_id}：更新該列 analysis_name；找不到未刪除列時回 None。"""
     return _update_person_analysis_row(
         int(person_analysis_id),
         {"analysis_name": (analysis_name or "").strip()},
@@ -823,7 +823,7 @@ def add_course_analysis_row(
     course_id: int | str,
     analysis_name: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """POST /course-analysis/add：新增一筆空白結果列（analysis_text=''），供 llm-analysis 填入。"""
+    """POST /course-analyses：新增一筆空白結果列（analysis_text=''），供 llm-analysis 填入。"""
     caller = _person_id_for_db(caller_person_id)
     if not caller:
         logger.error("Course_Analysis add rejected: empty caller person_id")
@@ -843,7 +843,7 @@ def update_course_analysis_name(
     course_analysis_id: int,
     analysis_name: str,
 ) -> Optional[dict[str, Any]]:
-    """PUT /course-analysis/analysis-name：更新該列 analysis_name；找不到未刪除列時回 None。"""
+    """PATCH /course-analyses/{course_analysis_id}：更新該列 analysis_name；找不到未刪除列時回 None。"""
     return _update_course_analysis_row(
         int(course_analysis_id),
         {"analysis_name": (analysis_name or "").strip()},

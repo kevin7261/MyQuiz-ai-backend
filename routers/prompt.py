@@ -27,7 +27,7 @@ from services.weakness_report import (
     PERSON_ANALYSIS_LABEL,
 )
 
-router = APIRouter(prefix="/prompt", tags=["prompt"])
+router = APIRouter(tags=["prompt"])
 
 
 class PromptPair(BaseModel):
@@ -98,7 +98,7 @@ class AllPromptTemplatesResponse(BaseModel):
     course_analysis: AnalysisPrompts
 
 
-@router.get("/templates", response_model=AllPromptTemplatesResponse)
+@router.get("/prompt-templates", response_model=AllPromptTemplatesResponse)
 def get_all_prompt_templates(_person_id: PersonId):
     """
     回傳各 LLM 功能之 prompt 模板全文。

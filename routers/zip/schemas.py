@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ListRagResponse(BaseModel):
@@ -12,7 +12,7 @@ class ListRagResponse(BaseModel):
 
 
 class RagUnitMp3FileResponse(BaseModel):
-    """GET /rag/page/unit/mp3-file 回應。"""
+    """GET /rag/units/{rag_unit_id}/mp3-file 回應。"""
     rag_unit_id: int
     rag_page_id: str
     audio_base64: str
@@ -22,19 +22,22 @@ class RagUnitMp3FileResponse(BaseModel):
 
 
 class UpdateRagUnitNameRequest(BaseModel):
-    """PUT /rag/page/tab-name：請求僅含 rag_id（主鍵）、tab_name；勿傳 rag_page_id。"""
-    rag_id: int = Field(..., description="Rag 表主鍵（整數）；辨識請用 rag_id，非 rag_page_id")
+    """PATCH /rag/pages/{rag_page_id}：請求僅含 tab_name；定位用 path 參數 rag_page_id。"""
     tab_name: str = Field(..., description="新的顯示名稱，寫入 Rag 表 tab_name 欄位")
 
 
 class PackRequest(BaseModel):
     """
-    rag_page_id、person_id（同 public.Rag）→ unit_list → Rag_Unit 相關欄（unit_name、unit_type、transcript、rag_chunk_*）。
+    person_id（同 public.Rag）→ unit_list → Rag_Unit 相關欄（unit_name、unit_type、transcript、rag_chunk_*）。
+    rag_page_id 改由 path 參數帶入（POST /rag/pages/{rag_page_id}/build-zip），於 handler 內回填本物件。
     rag_chunk_size／rag_chunk_overlap：全批預設（寫入 Rag_Unit、建 FAISS 時用）。
     rag_chunk_sizes／rag_chunk_overlaps：可選逗號字串或整數陣列（JSON），與 unit_list 解出之任務數同序；某段空白則該段用 rag_chunk_size／rag_chunk_overlap。
     unit_names：可選逗號字串或字串陣列（JSON），與任務同序；某段 strip 後非空則覆寫該單元 Rag_Unit.unit_name（顯示名），空白則與 folder_combination 相同（皆為檔名 stem）。
     """
-    rag_page_id: str
+
+    # rag_page_id 不是 request body 欄位，改由 path 參數帶入後於 handler 內回填本物件（extra=allow 才能 setattr）。
+    model_config = ConfigDict(extra="allow")
+
     person_id: str
     unit_list: str  # 指定要打包的資料夾；例："220222+220301"（加號=同一 ZIP 多資料夾）；結果存入 Rag_Unit 表
     unit_names: str | list[str] | None = Field(
@@ -94,7 +97,7 @@ class PackRequest(BaseModel):
 
 class InsertRagQuizRowRequest(BaseModel):
     """
-    POST /rag/page/unit/quiz/add：欄位順序對齊 public.Rag_Quiz 之關聯欄（rag_page_id、rag_unit_id）。
+    POST /rag/quizzes：欄位順序對齊 public.Rag_Quiz 之關聯欄（rag_page_id、rag_unit_id）。
     `rag_page_id` 與 `rag_unit_id` 二擇一定位 Rag_Unit：
     - `rag_unit_id > 0`：以主鍵載入；若同傳 `rag_page_id`（非空）則須與該列一致。
     - `rag_unit_id == 0`：`rag_page_id`（非空）須在該名下**唯一**一筆未刪除之 Rag_Unit，否則 400。
@@ -105,6 +108,5 @@ class InsertRagQuizRowRequest(BaseModel):
 
 
 class UpdateRagQuizQuizNameRequest(BaseModel):
-    """PUT /rag/page/unit/quiz/quiz-name：更新 Rag_Quiz 的 quiz_name。"""
-    rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 表主鍵")
+    """PATCH /rag/quizzes/{rag_quiz_id}：更新 Rag_Quiz 的 quiz_name；定位用 path 參數 rag_quiz_id。"""
     quiz_name: str = Field(..., description="新的 quiz_name")

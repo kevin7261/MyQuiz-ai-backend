@@ -283,10 +283,10 @@ def list_rag_for_exams(
 
 
 # ---------------------------------------------------------------------------
-# POST /exam/page/add
+# POST /exam/pages
 # ---------------------------------------------------------------------------
 
-@router.post("/page/add")
+@router.post("/pages", status_code=201)
 def create_exam(
     body: openapi_body(
         CreateExamRequest,
@@ -330,18 +330,20 @@ def create_exam(
 
 
 # ---------------------------------------------------------------------------
-# PUT /exam/page/tab-name
+# PATCH /exam/pages/{exam_page_id}
 # ---------------------------------------------------------------------------
 
-@router.put("/page/tab-name", summary="Update Exam Tab Name")
+@router.patch("/pages/{exam_page_id}", summary="Update Exam Tab Name")
 def update_exam_unit_tab_name(
-    body: openapi_body(UpdateExamUnitNameRequest, {"exam_id": 1, "tab_name": "新名稱"}),
+    body: openapi_body(UpdateExamUnitNameRequest, {"tab_name": "新名稱"}),
     caller_person_id: PersonId,
     course_id: CourseId,
+    exam_page_id: str = PathParam(..., description="要更名的 Exam 的 exam_page_id"),
 ):
-    """更新既有 Exam 的 tab_name（以 exam_id 定位；僅 deleted=false）。"""
-    if body.exam_id <= 0:
-        raise HTTPException(status_code=400, detail="無效的 exam_id")
+    """更新既有 Exam 的 tab_name（以 exam_page_id 定位；僅 deleted=false）。"""
+    fid = (exam_page_id or "").strip()
+    if not fid or "/" in fid or "\\" in fid:
+        raise HTTPException(status_code=400, detail="無效的 exam_page_id")
     tab_name = (body.tab_name or "").strip()
     if not tab_name:
         raise HTTPException(status_code=400, detail="請傳入 tab_name")
@@ -350,23 +352,23 @@ def update_exam_unit_tab_name(
         sel = (
             supabase.table("Exam")
             .select("exam_id, exam_page_id, tab_name, person_id, course_id, local, deleted")
-            .eq("exam_id", body.exam_id)
+            .eq("exam_page_id", fid)
             .eq("course_id", course_id)
             .eq("deleted", False)
             .limit(1)
             .execute()
         )
         if not sel.data or len(sel.data) == 0:
-            raise HTTPException(status_code=404, detail="找不到該 exam_id 的 Exam 資料，或已刪除")
+            raise HTTPException(status_code=404, detail="找不到該 exam_page_id 的 Exam 資料，或已刪除")
         row = sel.data[0]
-        fid = row.get("exam_page_id")
+        exam_id = row.get("exam_id")
         pid = row.get("person_id")
         if (pid or "").strip() != caller_person_id:
             raise HTTPException(status_code=403, detail="無權修改該 Exam")
         ts = now_taipei_iso()
-        supabase.table("Exam").update({"tab_name": tab_name, "updated_at": ts}).eq("exam_id", body.exam_id).eq("deleted", False).execute()
+        supabase.table("Exam").update({"tab_name": tab_name, "updated_at": ts}).eq("exam_page_id", fid).eq("course_id", course_id).eq("deleted", False).execute()
         return {
-            "exam_id": body.exam_id,
+            "exam_id": exam_id,
             "exam_page_id": fid,
             "tab_name": tab_name,
             "person_id": pid,
@@ -379,16 +381,16 @@ def update_exam_unit_tab_name(
 
 
 # ---------------------------------------------------------------------------
-# PUT /exam/page/delete/{exam_page_id}
+# DELETE /exam/pages/{exam_page_id}
 # ---------------------------------------------------------------------------
 
-@router.put("/page/delete/{exam_page_id}", status_code=200, summary="Delete Exam Tab", operation_id="exam_tab_delete")
+@router.delete("/pages/{exam_page_id}", status_code=200, summary="Delete Exam Tab", operation_id="exam_tab_delete")
 def delete_exam(
     caller_person_id: PersonId,
     course_id: CourseId,
     exam_page_id: str = PathParam(..., description="要刪除的 Exam 的 exam_page_id"),
 ):
-    """PUT /exam/page/delete/{exam_page_id}。軟刪除：將 Exam 的 deleted 設為 true。"""
+    """DELETE /exam/pages/{exam_page_id}。軟刪除：將 Exam 的 deleted 設為 true。"""
     fid = (exam_page_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
         raise HTTPException(status_code=400, detail="無效的 exam_page_id")
@@ -411,7 +413,7 @@ def delete_exam(
 
 
 # ---------------------------------------------------------------------------
-# POST /exam/page/quiz/llm-generate
+# POST /exam/quizzes/llm-generate
 # ---------------------------------------------------------------------------
 
 _EXAM_LLM_GEN_DESCRIPTION = """\
@@ -477,7 +479,7 @@ _EXAM_CREATE_LLM_GENERATE_FOLLOWUP_OPENAPI_EXAMPLES = {
 
 
 @router.post(
-    "/page/quiz/llm-generate",
+    "/quizzes/llm-generate",
     summary="Rag LLM Generate Quiz",
     operation_id="exam_llm_generate_quiz",
     description=_EXAM_LLM_GEN_DESCRIPTION.strip(),
@@ -489,7 +491,7 @@ def exam_llm_generate_quiz(
     caller_person_id: PersonId,
     course_id: CourseId,
 ):
-    """實作與說明見模組常數 `_EXAM_LLM_GEN_DESCRIPTION`（OpenAPI operation description）。亦可改用 POST /exam/page/quiz/create-llm-generate 一次完成建立與出題。"""
+    """實作與說明見模組常數 `_EXAM_LLM_GEN_DESCRIPTION`（OpenAPI operation description）。亦可改用 POST /exam/quizzes/create-llm-generate 一次完成建立與出題。"""
     _ = request
     return _exam_llm_generate_quiz_impl(
         exam_quiz_id=body.exam_quiz_id,
@@ -508,7 +510,7 @@ def exam_llm_generate_quiz(
 
 
 # ---------------------------------------------------------------------------
-# POST /exam/page/quiz/llm-generate-followup
+# POST /exam/quizzes/llm-generate-followup
 # ---------------------------------------------------------------------------
 
 _EXAM_LLM_GEN_FOLLOWUP_DESCRIPTION = """\
@@ -517,7 +519,7 @@ Body：`exam_quiz_id`、`rag_page_id`、`rag_unit_id`、`rag_quiz_id` 必填。
 `quiz_history_list_prompt_text` 非空時才使用追問 LLM prompt；否則仍寫入 follow_up 但出題邏輯同一般 `llm-generate`。
 `follow_up_exam_quiz_id` 為 0 或未傳則視為第一題，**回應不含** `follow_up`／`follow_up_exam_quiz_id`。
 回應可含 `quiz_history_list`、`quiz_history_list_prompt_text` 與 `created_at`。
-其餘 RAG 綁定、unit_type 出題邏輯同 `POST /exam/page/quiz/llm-generate`。
+其餘 RAG 綁定、unit_type 出題邏輯同 `POST /exam/quizzes/llm-generate`。
 `quiz_history_list` 為八欄位 JSON 物件陣列，僅寫入 DB。
 `quiz_history_list_prompt_text` 為四欄位 JSON 物件陣列（quiz_content、quiz_answer_reference、answer_content、answer_critique），併入 LLM prompt。
 使用 `SYSTEM_PROMPT_QUIZ_FOLLOWUP`／`USER_PROMPT_COURSE_FOLLOWUP`：作答不佳則針對弱點追問，作答良好則改出新的不重複題目。
@@ -525,7 +527,7 @@ Body：`exam_quiz_id`、`rag_page_id`、`rag_unit_id`、`rag_quiz_id` 必填。
 
 
 @router.post(
-    "/page/quiz/llm-generate-followup",
+    "/quizzes/llm-generate-followup",
     summary="Exam LLM Generate Follow-up Quiz",
     operation_id="exam_llm_generate_quiz_followup",
     description=_EXAM_LLM_GEN_FOLLOWUP_DESCRIPTION.strip(),
@@ -536,7 +538,7 @@ def exam_llm_generate_quiz_followup(
     caller_person_id: PersonId,
     course_id: CourseId,
 ):
-    """依先前問答接續出下一題；寫入 follow_up 與 follow_up_exam_quiz_id。亦可改用 POST /exam/page/quiz/create-llm-generate-followup 一次完成建立與接續出題。"""
+    """依先前問答接續出下一題；寫入 follow_up 與 follow_up_exam_quiz_id。亦可改用 POST /exam/quizzes/create-llm-generate-followup 一次完成建立與接續出題。"""
     _ = request
     return _exam_llm_generate_quiz_impl(
         exam_quiz_id=body.exam_quiz_id,
@@ -556,17 +558,17 @@ def exam_llm_generate_quiz_followup(
 
 
 # ---------------------------------------------------------------------------
-# POST /exam/page/quiz/create-llm-generate
+# POST /exam/quizzes/create-llm-generate
 # ---------------------------------------------------------------------------
 
 _EXAM_CREATE_LLM_GENERATE_DESCRIPTION = """\
-等同先 POST /exam/page/quiz/add 再 POST /exam/page/quiz/llm-generate。
+等同先 POST /exam/quizzes 再 POST /exam/quizzes/llm-generate。
 Body 不需 `exam_quiz_id`（由 create 產生）；其餘 RAG 綁定、unit_type 出題邏輯與回應 JSON 同 `llm-generate`。
 """
 
 
 @router.post(
-    "/page/quiz/create-llm-generate",
+    "/quizzes/create-llm-generate",
     summary="Exam Create Quiz and LLM Generate",
     operation_id="exam_create_llm_generate_quiz",
     description=_EXAM_CREATE_LLM_GENERATE_DESCRIPTION.strip(),
@@ -591,7 +593,7 @@ def exam_create_llm_generate_quiz(
     except (KeyError, TypeError, ValueError) as e:
         raise HTTPException(status_code=500, detail=f"建立 Exam_Quiz 後無法取得 exam_quiz_id: {e!s}") from e
     except Exception as e:
-        _logger.exception("POST /exam/page/quiz/create-llm-generate 建立 Exam_Quiz 錯誤")
+        _logger.exception("POST /exam/quizzes/create-llm-generate 建立 Exam_Quiz 錯誤")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
     return _exam_llm_generate_quiz_impl(
@@ -611,11 +613,11 @@ def exam_create_llm_generate_quiz(
 
 
 # ---------------------------------------------------------------------------
-# POST /exam/page/quiz/create-llm-generate-followup
+# POST /exam/quizzes/create-llm-generate-followup
 # ---------------------------------------------------------------------------
 
 _EXAM_CREATE_LLM_GENERATE_FOLLOWUP_DESCRIPTION = """\
-等同先 POST /exam/page/quiz/add 再 POST /exam/page/quiz/llm-generate-followup。
+等同先 POST /exam/quizzes 再 POST /exam/quizzes/llm-generate-followup。
 Body 不需 `exam_quiz_id`（由 create 產生）。
 出題成功後**一律**寫入本列 `follow_up=true`；`follow_up_exam_quiz_id` 以請求傳入為準（可為 0）。
 `quiz_history_list_prompt_text` 非空時使用追問 LLM prompt，否則出題邏輯同一般 llm-generate。
@@ -623,7 +625,7 @@ Body 不需 `exam_quiz_id`（由 create 產生）。
 
 
 @router.post(
-    "/page/quiz/create-llm-generate-followup",
+    "/quizzes/create-llm-generate-followup",
     summary="Exam Create Quiz and LLM Generate Follow-up",
     operation_id="exam_create_llm_generate_quiz_followup",
     description=_EXAM_CREATE_LLM_GENERATE_FOLLOWUP_DESCRIPTION.strip(),
@@ -651,7 +653,7 @@ def exam_create_llm_generate_quiz_followup(
     except (KeyError, TypeError, ValueError) as e:
         raise HTTPException(status_code=500, detail=f"建立 Exam_Quiz 後無法取得 exam_quiz_id: {e!s}") from e
     except Exception as e:
-        _logger.exception("POST /exam/page/quiz/create-llm-generate-followup 建立 Exam_Quiz 錯誤")
+        _logger.exception("POST /exam/quizzes/create-llm-generate-followup 建立 Exam_Quiz 錯誤")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
     return _exam_llm_generate_quiz_impl(
@@ -673,11 +675,11 @@ def exam_create_llm_generate_quiz_followup(
 
 
 # ---------------------------------------------------------------------------
-# POST /exam/page/quiz/llm-grade
+# POST /exam/quizzes/llm-grade
 # ---------------------------------------------------------------------------
 
-@router.post("/page/quiz/llm-grade", summary="Exam Grade Quiz", operation_id="exam_llm_grade_quiz")
-@router.post("/page/quiz/grade", summary="Exam Grade Quiz", include_in_schema=False)
+@router.post("/quizzes/llm-grade", summary="Exam Grade Quiz", operation_id="exam_llm_grade_quiz")
+@router.post("/quizzes/grade", summary="Exam Grade Quiz", include_in_schema=False)
 async def exam_grade_submission(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -693,7 +695,7 @@ async def exam_grade_submission(
     unit_type 2／3／4 時改以 transcript 純 LLM 批改。
     評分 prompt 模板優先用 Exam_Quiz.quiz_user_prompt_text／answer_user_prompt_text（與 POST …/llm-generate 寫入一致），欄位為空時再讀 Rag_Quiz。
     評分完成後直接更新 Exam_Quiz.answer_content / answer_critique。
-    回傳 202 + job_id；輪詢 GET /exam/page/quiz/grade-result/{job_id}。
+    回傳 202 + job_id；輪詢 GET /exam/quizzes/grade-result/{job_id}。
     """
     supabase = get_supabase()
 
@@ -728,7 +730,7 @@ async def exam_grade_submission(
         return JSONResponse(
             status_code=400,
             content={
-                "error": "請設定 Exam API Key：PUT /exam/llm_api_key（Course_Setting key=exam-api-key，依 course_id）",
+                "error": "請設定 Exam API Key：PUT /exam/llm-api-key（Course_Setting key=exam-api-key，依 course_id）",
             },
         )
     llm_model = get_rag_llm_model(course_id)
@@ -976,13 +978,13 @@ async def exam_grade_submission(
 
 
 # ---------------------------------------------------------------------------
-# GET /exam/page/quiz/grade-result/{job_id}
+# GET /exam/quizzes/grade-result/{job_id}
 # ---------------------------------------------------------------------------
 
-@router.get("/page/quiz/grade-result/{job_id}", tags=["exam"])
+@router.get("/quizzes/grade-result/{job_id}", tags=["exam"])
 async def get_exam_grade_result(job_id: str, _person_id: PersonId, course_id: CourseId):
     """
-    輪詢 Exam 評分結果（搭配 POST /exam/page/quiz/llm-grade）。
+    輪詢 Exam 評分結果（搭配 POST /exam/quizzes/llm-grade）。
     status: pending | ready | error；ready 時 result 含 quiz_comments、exam_quiz_id。
     """
     if job_id not in _exam_grade_job_results:
@@ -1035,17 +1037,17 @@ async def get_exam_grade_result(job_id: str, _person_id: PersonId, course_id: Co
 
 
 # ---------------------------------------------------------------------------
-# POST /exam/page/quiz/quiz-rate
+# PUT /exam/quizzes/{exam_quiz_id}/quiz-rate
 # ---------------------------------------------------------------------------
 
-@router.post("/page/quiz/quiz-rate", summary="Exam Rate Quiz", status_code=200)
+@router.put("/quizzes/{exam_quiz_id}/quiz-rate", summary="Exam Rate Quiz", status_code=200)
 def update_exam_quiz_rate(
-    body: openapi_body(ExamQuizRateRequest, {"exam_quiz_id": 1, "quiz_rate": 0}),
+    body: openapi_body(ExamQuizRateRequest, {"quiz_rate": 0}),
     caller_person_id: PersonId,
     course_id: CourseId,
+    exam_quiz_id: int = PathParam(..., ge=1, description="Exam_Quiz 主鍵"),
 ):
     """依 exam_quiz_id 更新 Exam_Quiz.quiz_rate（僅 -1、0、1）。"""
-    exam_quiz_id = int(body.exam_quiz_id)
     quiz_rate = int(body.quiz_rate)
     supabase = get_supabase()
     r = apply_exam_quiz_not_deleted(
@@ -1077,17 +1079,17 @@ def update_exam_quiz_rate(
 
 
 # ---------------------------------------------------------------------------
-# POST /exam/page/quiz/grade-rate
+# PUT /exam/quizzes/{exam_quiz_id}/grade-rate
 # ---------------------------------------------------------------------------
 
-@router.post("/page/quiz/grade-rate", summary="Exam Rate Grade", status_code=200)
+@router.put("/quizzes/{exam_quiz_id}/grade-rate", summary="Exam Rate Grade", status_code=200)
 def update_exam_quiz_grade_rate(
-    body: openapi_body(ExamQuizGradeRateRequest, {"exam_quiz_id": 1, "grade_rate": 0}),
+    body: openapi_body(ExamQuizGradeRateRequest, {"grade_rate": 0}),
     caller_person_id: PersonId,
     course_id: CourseId,
+    exam_quiz_id: int = PathParam(..., ge=1, description="Exam_Quiz 主鍵"),
 ):
     """依 exam_quiz_id 更新 Exam_Quiz.grade_rate（僅 -1、0、1）。"""
-    exam_quiz_id = int(body.exam_quiz_id)
     grade_rate = int(body.grade_rate)
     supabase = get_supabase()
     r = apply_exam_quiz_not_deleted(
@@ -1119,11 +1121,11 @@ def update_exam_quiz_grade_rate(
 
 
 # ---------------------------------------------------------------------------
-# PUT /exam/page/quiz/delete/{exam_quiz_id}
+# DELETE /exam/quizzes/{exam_quiz_id}
 # ---------------------------------------------------------------------------
 
-@router.put(
-    "/page/quiz/delete/{exam_quiz_id}",
+@router.delete(
+    "/quizzes/{exam_quiz_id}",
     status_code=200,
     summary="Delete Exam Quiz",
     operation_id="exam_tab_quiz_delete",
@@ -1134,7 +1136,7 @@ def delete_exam_quiz(
     exam_quiz_id: int = PathParam(..., gt=0, description="要軟刪除的 Exam_Quiz 主鍵"),
 ):
     """
-    PUT /exam/page/quiz/delete/{exam_quiz_id}。
+    DELETE /exam/quizzes/{exam_quiz_id}。
     軟刪除：將 Exam_Quiz 該列 deleted 設為 true（僅 person_id 與請求者一致且尚未刪除之列）。
     """
     try:
@@ -1200,11 +1202,11 @@ def delete_exam_quiz(
     except HTTPException:
         raise
     except Exception as e:
-        _logger.exception("PUT /exam/page/quiz/delete/{exam_quiz_id} 錯誤")
+        _logger.exception("DELETE /exam/quizzes/{exam_quiz_id} 錯誤")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.get("/llm_api_key/exists", response_model=ExamApiKeyExistsResponse)
+@router.get("/llm-api-key/exists", response_model=ExamApiKeyExistsResponse)
 def get_exam_api_key_exists(person_id: PersonId, course_id: CourseId):
     """查詢 Exam LLM API Key 是否已設定（Course_Setting key=exam-api-key，依 course_id）；不回傳 key 內容。"""
     _require_active_person(person_id)
@@ -1214,7 +1216,7 @@ def get_exam_api_key_exists(person_id: PersonId, course_id: CourseId):
     )
 
 
-@router.get("/llm_api_key", response_model=ExamApiKeyResponse)
+@router.get("/llm-api-key", response_model=ExamApiKeyResponse)
 def get_exam_api_key_setting(person_id: PersonId, course_id: CourseId):
     """讀取 Exam LLM API Key（Course_Setting key=exam-api-key，依 course_id）。"""
     _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
@@ -1229,7 +1231,7 @@ def get_exam_api_key_setting(person_id: PersonId, course_id: CourseId):
     )
 
 
-@router.put("/llm_api_key", response_model=ExamApiKeyResponse)
+@router.put("/llm-api-key", response_model=ExamApiKeyResponse)
 def put_exam_api_key_setting(
     body: openapi_body(PutExamApiKeyRequest, {"api_key": "sk-..."}),
     person_id: PersonId,

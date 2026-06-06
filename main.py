@@ -91,19 +91,22 @@ app.add_middleware(APILogMiddleware)
 # ---------------------------------------------------------------------------
 # 路由掛載
 # ---------------------------------------------------------------------------
+# 全部 API 掛在 /v1 之下（版本前綴；未來 breaking change 走 /v2）。
 # zip_router 先於 grade_router 掛載（歷史原因）；OpenAPI 路徑順序見 utils.openapi_order。
 
-app.include_router(zip_router)
-app.include_router(grade_router)
-app.include_router(exam_router)
-app.include_router(person_analysis_router)
-app.include_router(course_analysis_router)
-app.include_router(profile_router)
-app.include_router(college_router)
-app.include_router(course_router)
-app.include_router(course_settings_router)
-app.include_router(prompt_router)
-app.include_router(log_router)
+API_PREFIX = "/v1"
+
+app.include_router(zip_router, prefix=API_PREFIX)
+app.include_router(grade_router, prefix=API_PREFIX)
+app.include_router(exam_router, prefix=API_PREFIX)
+app.include_router(person_analysis_router, prefix=API_PREFIX)
+app.include_router(course_analysis_router, prefix=API_PREFIX)
+app.include_router(profile_router, prefix=API_PREFIX)
+app.include_router(college_router, prefix=API_PREFIX)
+app.include_router(course_router, prefix=API_PREFIX)
+app.include_router(course_settings_router, prefix=API_PREFIX)
+app.include_router(prompt_router, prefix=API_PREFIX)
+app.include_router(log_router, prefix=API_PREFIX)
 
 
 def custom_openapi():

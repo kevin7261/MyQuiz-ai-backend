@@ -1,12 +1,12 @@
 """
 ZIP 與 RAG 相關 API 模組。路徑層級與排序與 Exam 對齊（見 utils.openapi_order、README API 目錄）。
 
-**分頁**：GET /rag/pages → GET /rag/page/units → POST /rag/page/add-upload-zip
-→ PUT /rag/page/tab-name → PUT /rag/page/delete/{rag_page_id} → POST /rag/page/build-rag-zip（-stream 別名）
+**分頁**：GET /rag/pages → GET /rag/pages/{rag_page_id}/units → POST /rag/pages/upload-zip
+→ PATCH /rag/pages/{rag_page_id} → DELETE /rag/pages/{rag_page_id} → POST /rag/pages/{rag_page_id}/build-zip（-stream 別名）
 
-**單元**：GET /rag/page/unit/mp3-file
+**單元**：GET /rag/units/{rag_unit_id}/mp3-file
 
-**題目**：POST /rag/page/unit/quiz/add → PUT /rag/page/unit/quiz/quiz-name → PUT /rag/page/unit/quiz/delete/{rag_quiz_id}
+**題目**：POST /rag/quizzes → PATCH /rag/quizzes/{rag_quiz_id} → DELETE /rag/quizzes/{rag_quiz_id}
 →（followup／for-exam／llm-* 見 routers/grade）
 
 **舊路徑**：GET /rag/unit/text、/rag/unit/mp3-file、/rag/unit/youtube-url

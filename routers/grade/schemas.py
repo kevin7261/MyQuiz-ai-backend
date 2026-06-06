@@ -115,7 +115,7 @@ class QuizHistoryPromptFollowup(BaseModel):
 
 
 class GenerateQuizRequest(BaseModel):
-    """POST /rag/page/unit/quiz/llm-generate；含 quiz_history_list（八欄位物件陣列）。"""
+    """POST /rag/quizzes/llm-generate；含 quiz_history_list（八欄位物件陣列）。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
@@ -142,7 +142,7 @@ class GenerateQuizRequest(BaseModel):
 
 class QuizGradeRequest(BaseModel):
     """
-    POST /rag/page/unit/quiz/llm-grade 請求 body。
+    POST /rag/quizzes/llm-grade 請求 body。
     欄位順序：Rag.rag_id → public.Rag_Quiz（rag_page_id, rag_quiz_id, quiz_content, answer_user_prompt_text, answer_content／quiz_answer）。
     """
 
@@ -168,7 +168,7 @@ class QuizGradeRequest(BaseModel):
 
 
 class GenerateQuizDbOnlyRequest(BaseModel):
-    """POST /rag/page/unit/quiz/llm-generate-db；含 quiz_history_list（八欄位物件陣列）。"""
+    """POST /rag/quizzes/llm-generate-db；含 quiz_history_list（八欄位物件陣列）。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
@@ -190,7 +190,7 @@ class GenerateQuizDbOnlyRequest(BaseModel):
 
 
 class GenerateQuizFollowupRequest(BaseModel):
-    """POST /rag/page/unit/quiz/llm-generate-followup；含 quiz_history_list（先前問答 JSON 陣列，對齊 DB 欄位）。"""
+    """POST /rag/quizzes/llm-generate-followup；含 quiz_history_list（先前問答 JSON 陣列，對齊 DB 欄位）。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
@@ -218,7 +218,7 @@ class GenerateQuizFollowupRequest(BaseModel):
 
 
 class GenerateQuizFollowupDbOnlyRequest(BaseModel):
-    """POST /rag/page/unit/quiz/llm-generate-followup-db；不含 quiz_user_prompt_text。"""
+    """POST /rag/quizzes/llm-generate-followup-db；不含 quiz_user_prompt_text。"""
 
     rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
     quiz_name: str = Field(
@@ -243,7 +243,7 @@ class GenerateQuizFollowupDbOnlyRequest(BaseModel):
 
 class QuizGradeDbOnlyRequest(BaseModel):
     """
-    POST /rag/page/unit/quiz/llm-grade-db。
+    POST /rag/quizzes/llm-grade-db。
     欄位順序：Rag.rag_id → Rag_Quiz（rag_page_id, rag_quiz_id, quiz_content, answer_content／quiz_answer）；不含 answer_user_prompt_text。
     """
 
@@ -266,25 +266,19 @@ class QuizGradeDbOnlyRequest(BaseModel):
 
 class RagQuizForExamRequest(BaseModel):
     """
-    POST /rag/page/unit/quiz/for-exam：欄位順序同 public.Rag_Quiz（rag_quiz_id, rag_page_id, rag_unit_id, for_exam）。
-    以 rag_quiz_id 更新 Rag_Quiz.for_exam；若一併傳入 rag_page_id／rag_unit_id（>0），須與該列一致。
+    PUT /rag/quizzes/{rag_quiz_id}/for-exam：以 path 之 rag_quiz_id 更新 Rag_Quiz.for_exam。
+    body 僅含旗標值 for_exam。
     """
 
-    rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
-    rag_page_id: str = Field("", description="選填；與資料列 rag_page_id 須一致")
-    rag_unit_id: int = Field(0, ge=0, description="選填；>0 時須與資料列 rag_unit_id 一致")
     for_exam: bool = Field(True, description="true：標記為測驗用；false：取消測驗用")
 
 
 class RagQuizFollowupRequest(BaseModel):
     """
-    POST /rag/page/unit/quiz/followup：欄位順序同 public.Rag_Quiz（rag_quiz_id, rag_page_id, rag_unit_id, follow_up）。
-    以 rag_quiz_id 更新 Rag_Quiz.follow_up；若一併傳入 rag_page_id／rag_unit_id（>0），須與該列一致。
+    PUT /rag/quizzes/{rag_quiz_id}/followup：以 path 之 rag_quiz_id 更新 Rag_Quiz.follow_up。
+    body 僅含旗標值 followup。
     """
 
-    rag_quiz_id: int = Field(..., gt=0, description="Rag_Quiz 主鍵")
-    rag_page_id: str = Field("", description="選填；與資料列 rag_page_id 須一致")
-    rag_unit_id: int = Field(0, ge=0, description="選填；>0 時須與資料列 rag_unit_id 一致")
     followup: bool = Field(
         False,
         description="true：標記為追問題；false：取消追問標記",
@@ -325,12 +319,12 @@ class RagUnitYoutubeUrlFromZipResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# GET / PUT /rag/llm_api_key
+# GET / PUT /rag/llm-api-key
 # ---------------------------------------------------------------------------
 
 
 class RagApiKeyResponse(BaseModel):
-    """GET/PUT /rag/llm_api_key 回應（Course_Setting key=rag-api-key）。"""
+    """GET/PUT /rag/llm-api-key 回應（Course_Setting key=rag-api-key）。"""
 
     course_setting_id: Optional[int] = None
     course_id: int
@@ -338,25 +332,25 @@ class RagApiKeyResponse(BaseModel):
 
 
 class PutRagApiKeyRequest(BaseModel):
-    """PUT /rag/llm_api_key 的 body。"""
+    """PUT /rag/llm-api-key 的 body。"""
 
     api_key: str = Field(..., description="RAG LLM API Key")
 
 
 class RagApiKeyExistsResponse(BaseModel):
-    """GET /rag/llm_api_key/exists 回應。"""
+    """GET /rag/llm-api-key/exists 回應。"""
 
     course_id: int
     exists: bool = Field(..., description="該課程是否已設定非空 rag-api-key")
 
 
 # ---------------------------------------------------------------------------
-# GET / PUT /rag/llm_model
+# GET / PUT /rag/llm-model
 # ---------------------------------------------------------------------------
 
 
 class RagLlmModelResponse(BaseModel):
-    """GET/PUT /rag/llm_model 回應（Course_Setting key=llm-model；出題、批改、弱點分析共用）。"""
+    """GET/PUT /rag/llm-model 回應（Course_Setting key=llm-model；出題、批改、弱點分析共用）。"""
 
     course_setting_id: Optional[int] = None
     course_id: int
@@ -364,7 +358,7 @@ class RagLlmModelResponse(BaseModel):
 
 
 class PutRagLlmModelRequest(BaseModel):
-    """PUT /rag/llm_model 的 body。"""
+    """PUT /rag/llm-model 的 body。"""
 
     llm_model: str = Field(
         ...,

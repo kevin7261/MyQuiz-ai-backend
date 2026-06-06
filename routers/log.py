@@ -15,7 +15,7 @@ from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
 from utils.supabase import get_supabase
 
-router = APIRouter(prefix="/log", tags=["log"])
+router = APIRouter(tags=["log"])
 
 LOG_COLUMNS = "log_id, person_id, course_id, api, api_metadata, updated_at, created_at"
 _FETCH_PAGE = 1000

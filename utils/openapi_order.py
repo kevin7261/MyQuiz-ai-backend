@@ -1,8 +1,8 @@
 """
-RAG / Exam API 路徑在 OpenAPI（Swagger）與文件中的顯示順序。
+API 路徑在 OpenAPI（Swagger）與文件中的顯示順序。
 
-層級：分頁（page）→ 單元（unit，僅 RAG）→ 題目（quiz）→ 設定（api_key 等）。
-RAG 與 Exam 的 quiz 區塊順序對齊：add → name → delete → 標記 → 出題 → 評分 → 其他。
+全部 API 掛在 /v1 之下。層級：認證 → RAG（分頁 → 單元 → 題目 → 課程設定）→ Exam → 弱點分析 → 帳號／其他。
+同一路徑多方法時：GET → POST → PUT → PATCH → DELETE。
 """
 
 from __future__ import annotations
@@ -12,99 +12,91 @@ _METHOD_RANK = {"get": 0, "post": 1, "put": 2, "patch": 3, "delete": 4, "head": 
 
 # 路徑由前到後；未列者排在同 prefix 群組之後（字母序）
 _API_PATH_ORDER: tuple[str, ...] = (
+    # --- 認證 ---
+    "/v1/auth/login",
     # --- RAG：分頁 ---
-    "/rag/pages",
-    "/rag/page/units",
-    "/rag/page/add-upload-zip",
-    "/rag/page/tab-name",
-    "/rag/page/delete/{rag_page_id}",
-    "/rag/page/build-rag-zip",
-    "/rag/page/build-rag-zip-stream",
+    "/v1/rag/pages",
+    "/v1/rag/pages/upload-zip",
+    "/v1/rag/pages/{rag_page_id}",
+    "/v1/rag/pages/{rag_page_id}/units",
+    "/v1/rag/pages/{rag_page_id}/build-zip",
+    "/v1/rag/pages/{rag_page_id}/build-zip-stream",
     # --- RAG：單元 ---
-    "/rag/page/unit/mp3-file",
+    "/v1/rag/units/{rag_unit_id}/mp3-file",
     # --- RAG：題目 CRUD / 標記 ---
-    "/rag/page/unit/quiz/add",
-    "/rag/page/unit/quiz/quiz-name",
-    "/rag/page/unit/quiz/delete/{rag_quiz_id}",
-    "/rag/page/unit/quiz/followup",
-    "/rag/page/unit/quiz/for-exam",
+    "/v1/rag/quizzes",
+    "/v1/rag/quizzes/{rag_quiz_id}",
+    "/v1/rag/quizzes/{rag_quiz_id}/followup",
+    "/v1/rag/quizzes/{rag_quiz_id}/for-exam",
     # --- RAG：題目 LLM ---
-    "/rag/page/unit/quiz/llm-generate",
-    "/rag/page/unit/quiz/llm-generate-db",
-    "/rag/page/unit/quiz/llm-generate-followup",
-    "/rag/page/unit/quiz/llm-generate-followup-db",
-    "/rag/page/unit/quiz/llm-grade",
-    "/rag/page/unit/quiz/llm-grade-db",
-    "/rag/page/unit/quiz/grade-result/{job_id}",
-    # --- RAG：單元資源（舊路徑）---
-    "/rag/unit/text",
-    "/rag/unit/mp3-file",
-    "/rag/unit/youtube-url",
+    "/v1/rag/quizzes/llm-generate",
+    "/v1/rag/quizzes/llm-generate-db",
+    "/v1/rag/quizzes/llm-generate-followup",
+    "/v1/rag/quizzes/llm-generate-followup-db",
+    "/v1/rag/quizzes/llm-grade",
+    "/v1/rag/quizzes/llm-grade-db",
+    "/v1/rag/quizzes/grade-result/{job_id}",
+    # --- RAG：單元資源（legacy，deprecated）---
+    "/v1/rag/unit/text",
+    "/v1/rag/unit/mp3-file",
+    "/v1/rag/unit/youtube-url",
     # --- RAG：課程設定 ---
-    "/rag/course-members",
-    "/rag/course-members/add",
-    "/rag/course-members/add-batch",
-    "/rag/course-members/edit/{person_id}",
-    "/rag/course-members/delete/{person_id}",
-    "/rag/llm_api_key",
-    "/rag/llm_api_key/exists",
-    "/rag/llm_model",
-    "/rag/person-analysis-user-prompt-text",
-    "/rag/course-analysis-user-prompt-text",
+    "/v1/rag/course-members",
+    "/v1/rag/course-members/batch",
+    "/v1/rag/course-members/{member_person_id}",
+    "/v1/rag/llm-api-key",
+    "/v1/rag/llm-api-key/exists",
+    "/v1/rag/llm-model",
+    "/v1/rag/person-analysis-user-prompt-text",
+    "/v1/rag/course-analysis-user-prompt-text",
     # --- Exam：分頁 ---
-    "/exam/pages",
-    "/exam/rag-for-exams",
-    "/exam/page/add",
-    "/exam/page/tab-name",
-    "/exam/page/delete/{exam_page_id}",
+    "/v1/exam/pages",
+    "/v1/exam/rag-for-exams",
+    "/v1/exam/pages/{exam_page_id}",
     # --- Exam：題目 CRUD ---
-    "/exam/page/quiz/delete/{exam_quiz_id}",
+    "/v1/exam/quizzes/{exam_quiz_id}",
+    "/v1/exam/quizzes/{exam_quiz_id}/quiz-rate",
+    "/v1/exam/quizzes/{exam_quiz_id}/grade-rate",
     # --- Exam：題目 LLM ---
-    "/exam/page/quiz/llm-generate",
-    "/exam/page/quiz/llm-generate-followup",
-    "/exam/page/quiz/create-llm-generate",
-    "/exam/page/quiz/create-llm-generate-followup",
-    "/exam/page/quiz/llm-grade",
-    "/exam/page/quiz/grade",
-    "/exam/page/quiz/grade-result/{job_id}",
-    "/exam/page/quiz/quiz-rate",
-    "/exam/page/quiz/grade-rate",
+    "/v1/exam/quizzes/llm-generate",
+    "/v1/exam/quizzes/llm-generate-followup",
+    "/v1/exam/quizzes/create-llm-generate",
+    "/v1/exam/quizzes/create-llm-generate-followup",
+    "/v1/exam/quizzes/llm-grade",
+    "/v1/exam/quizzes/grade-result/{job_id}",
     # --- Exam：課程設定 ---
-    "/exam/llm_api_key",
-    "/exam/llm_api_key/exists",
+    "/v1/exam/llm-api-key",
+    "/v1/exam/llm-api-key/exists",
     # --- 弱點分析 ---
-    "/person-analysis/analysis",
-    "/person-analysis/analyses",
-    "/person-analysis/add",
-    "/person-analysis/analysis-name",
-    "/person-analysis/delete/{person_analysis_id}",
-    "/person-analysis/llm-analysis",
-    "/course-analysis/analysis",
-    "/course-analysis/analyses",
-    "/course-analysis/add",
-    "/course-analysis/analysis-name",
-    "/course-analysis/delete/{course_analysis_id}",
-    "/course-analysis/llm-analysis",
-    # --- 帳號／個人檔案 ---
-    "/profile/users",
-    "/profile/login",
+    "/v1/person-analyses",
+    "/v1/person-analyses/latest",
+    "/v1/person-analyses/llm-analysis",
+    "/v1/person-analyses/{person_analysis_id}",
+    "/v1/course-analyses",
+    "/v1/course-analyses/latest",
+    "/v1/course-analyses/llm-analysis",
+    "/v1/course-analyses/{course_analysis_id}",
+    # --- 帳號／其他 ---
+    "/v1/users",
+    "/v1/colleges",
+    "/v1/courses",
+    "/v1/prompt-templates",
+    "/v1/logs",
 )
 
 _PATH_RANK = {p: i for i, p in enumerate(_API_PATH_ORDER)}
 
 
 def _path_group_rank(path: str) -> tuple:
-    """未在表內的路徑仍依 /rag、/exam 等群組聚在一起。"""
+    """未在表內的路徑仍依 /v1/rag、/v1/exam 等群組聚在一起。"""
     if path in _PATH_RANK:
         return (0, _PATH_RANK[path], path)
-    if path.startswith("/rag/"):
+    if path.startswith("/v1/rag/"):
         return (1, 0, path)
-    if path.startswith("/exam/"):
+    if path.startswith("/v1/exam/"):
         return (1, 1, path)
-    if path.startswith("/person-analysis/") or path.startswith("/course-analysis/"):
+    if path.startswith("/v1/person-analyses") or path.startswith("/v1/course-analyses"):
         return (1, 2, path)
-    if path.startswith("/profile"):
-        return (1, 3, path)
     return (2, 0, path)
 
 

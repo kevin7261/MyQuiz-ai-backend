@@ -98,7 +98,7 @@ def _exam_llm_generate_api_instruction(
     quiz_user_prompt_text: str,
 ) -> str:
     """
-    組出 POST /exam/page/quiz/llm-generate 送進 utils.generate_quiz* 的 quiz_user_prompt_text 前綴。
+    組出 POST /exam/quizzes/llm-generate 送進 utils.generate_quiz* 的 quiz_user_prompt_text 前綴。
     參數名與順序同 public.Exam_Quiz（至 quiz_user_prompt_text）；rag_quiz_id 列於提示時可為未關聯說明字串。
     """
     try:
@@ -590,7 +590,7 @@ def _exam_llm_generate_quiz_impl(
     if not api_key:
         raise HTTPException(
             status_code=400,
-            detail="請設定 Exam API Key：PUT /exam/llm_api_key（Course_Setting key=exam-api-key，依 course_id）",
+            detail="請設定 Exam API Key：PUT /exam/llm-api-key（Course_Setting key=exam-api-key，依 course_id）",
         )
     llm_model = get_rag_llm_model(course_id)
 
@@ -747,9 +747,9 @@ def _exam_llm_generate_quiz_impl(
         result["rag_quiz_id"] = int(rag_quiz_id)
         result["quiz_llm_model"] = llm_model
         log_path = (
-            "/exam/page/quiz/llm-generate-followup"
+            "/exam/quizzes/llm-generate-followup"
             if use_followup_llm
-            else "/exam/page/quiz/llm-generate"
+            else "/exam/quizzes/llm-generate"
         )
         try:
             update_payload = dict(quiz_update)

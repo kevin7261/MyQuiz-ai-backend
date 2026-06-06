@@ -3,7 +3,7 @@
 
 person_id 一律為呼叫 API 的登入帳號。
 - analysis_prompt_text ↔ answer_user_prompt_text（PUT /rag/person-analysis-user-prompt-text）
-- analysis_text ↔ answer_critique（POST /person-analysis/llm-analysis）
+- analysis_text ↔ answer_critique（POST /person-analyses/llm-analysis）
 """
 
 import logging
@@ -39,7 +39,7 @@ from utils.serialization import to_json_safe
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/person-analysis", tags=["person analysis"])
+router = APIRouter(prefix="/person-analyses", tags=["person analysis"])
 
 ANALYSIS_LABEL_PERSON = "個人分析"
 
@@ -52,7 +52,7 @@ def _caller_person_id_or_404(person_id: str) -> str:
 
 
 class PersonStoredAnalysisResponse(BaseModel):
-    """GET /person-analysis/analysis 回應；無紀錄時各欄位為 null。"""
+    """GET /person-analyses/latest 回應；無紀錄時各欄位為 null。"""
     person_analysis_id: Optional[int] = Field(
         default=None, description="Person_Analysis 主鍵"
     )
@@ -81,7 +81,7 @@ class PersonStoredAnalysisResponse(BaseModel):
 
 
 class PersonAnalysisListItem(BaseModel):
-    """單筆 Person_Analysis 列（GET /person-analysis/analyses）。"""
+    """單筆 Person_Analysis 列（GET /person-analyses）。"""
     person_analysis_id: Optional[int] = Field(
         default=None, description="Person_Analysis 主鍵"
     )
@@ -106,7 +106,7 @@ class PersonAnalysisListItem(BaseModel):
 
 
 class PersonAnalysesResponse(BaseModel):
-    """GET /person-analysis/analyses 回應。"""
+    """GET /person-analyses 回應。"""
     person_id: str = Field(..., description="呼叫者登入帳號")
     analyses: list[PersonAnalysisListItem] = Field(
         ..., description="該使用者所有課程的 Person_Analysis 列（updated_at 新到舊）"
@@ -115,7 +115,7 @@ class PersonAnalysesResponse(BaseModel):
 
 
 class PersonAnalysisAddResponse(BaseModel):
-    """POST /person-analysis/add 回應。"""
+    """POST /person-analyses 回應。"""
     message: str
     person_analysis_id: int
     person_id: Optional[str] = Field(default=None, description="該列登入帳號")
@@ -128,13 +128,12 @@ class PersonAnalysisAddResponse(BaseModel):
 
 
 class UpdatePersonAnalysisNameRequest(BaseModel):
-    """PUT /person-analysis/analysis-name：更新 Person_Analysis 的 analysis_name。"""
-    person_analysis_id: int = Field(..., gt=0, description="Person_Analysis 表主鍵")
+    """PATCH /person-analyses/{person_analysis_id}：更新 Person_Analysis 的 analysis_name。"""
     analysis_name: str = Field(..., description="新的 analysis_name；傳空字串可清除名稱")
 
 
 class PersonAnalysisNameResponse(BaseModel):
-    """PUT /person-analysis/analysis-name 回應。"""
+    """PATCH /person-analyses/{person_analysis_id} 回應。"""
     message: str
     person_analysis_id: int
     person_id: Optional[str] = Field(default=None, description="該列登入帳號")
@@ -146,7 +145,7 @@ class PersonAnalysisNameResponse(BaseModel):
 
 
 class PersonAnalysisDeleteResponse(BaseModel):
-    """PUT /person-analysis/delete/{person_analysis_id} 回應。"""
+    """DELETE /person-analyses/{person_analysis_id} 回應。"""
     message: str
     person_analysis_id: int
     person_id: Optional[str] = Field(default=None, description="該列登入帳號")
@@ -193,7 +192,7 @@ def _stored_to_response(
     )
 
 
-@router.get("/analysis", response_model=PersonStoredAnalysisResponse)
+@router.get("/latest", response_model=PersonStoredAnalysisResponse)
 def get_person_stored_analysis(
     person_id: PersonId,
     course_id: CourseId,
@@ -211,7 +210,7 @@ def get_person_stored_analysis(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.get("/analyses", response_model=PersonAnalysesResponse)
+@router.get("", response_model=PersonAnalysesResponse)
 def list_person_analyses(person_id: PersonId):
     """
     取值：不呼叫 LLM。必填 query `person_id`（呼叫者）。
@@ -241,7 +240,7 @@ def list_person_analyses(person_id: PersonId):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.post("/add", response_model=PersonAnalysisAddResponse)
+@router.post("", response_model=PersonAnalysisAddResponse, status_code=201)
 def add_person_analysis(
     person_id: PersonId,
     course_id: CourseId,
@@ -251,7 +250,7 @@ def add_person_analysis(
 ):
     """
     新增一筆空白 Person_Analysis 結果列（analysis_text=''）。必填 query `person_id`（呼叫者）、`course_id`；可選 `analysis_name`。
-    新增後 GET /person-analysis/analyses 會多一列；POST /llm-analysis 會將報告寫入呼叫者最新結果列（即此列）。
+    新增後 GET /person-analyses 會多一列；POST /llm-analysis 會將報告寫入呼叫者最新結果列（即此列）。
     """
     try:
         caller = _caller_person_id_or_404(person_id)
@@ -277,30 +276,32 @@ def add_person_analysis(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.put("/analysis-name", response_model=PersonAnalysisNameResponse)
+@router.patch("/{person_analysis_id}", response_model=PersonAnalysisNameResponse)
 def update_person_analysis_name_endpoint(
     body: openapi_body(
         UpdatePersonAnalysisNameRequest,
-        {"person_analysis_id": 1, "analysis_name": "新名稱"},
+        {"analysis_name": "新名稱"},
     ),
     person_id: PersonId,
+    person_analysis_id: int = PathParam(
+        ..., gt=0, description="要更新的 Person_Analysis 主鍵"
+    ),
 ):
     """
-    更新 Person_Analysis 該列 analysis_name。以 person_analysis_id（主鍵）比對；僅更新 deleted=false 的列。
-    必填 query `person_id`（呼叫者）。
+    更新 Person_Analysis 該列 analysis_name。部分更新（目前支援 analysis_name）；僅更新 deleted=false 的列。
     """
     try:
         _caller_person_id_or_404(person_id)
-        row = update_person_analysis_name(body.person_analysis_id, body.analysis_name)
+        row = update_person_analysis_name(person_analysis_id, body.analysis_name)
         if not row:
             raise HTTPException(
                 status_code=404,
-                detail=f"找不到 person_analysis_id={body.person_analysis_id} 的 Person_Analysis 資料，或已刪除",
+                detail=f"找不到 person_analysis_id={person_analysis_id} 的 Person_Analysis 資料，或已刪除",
             )
         safe = to_json_safe(row)
         return PersonAnalysisNameResponse(
             message="已更新 Person_Analysis 分析名稱",
-            person_analysis_id=body.person_analysis_id,
+            person_analysis_id=person_analysis_id,
             person_id=safe.get("person_id"),
             course_id=safe.get("course_id"),
             analysis_name=safe.get("analysis_name"),
@@ -312,8 +313,8 @@ def update_person_analysis_name_endpoint(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.put(
-    "/delete/{person_analysis_id}",
+@router.delete(
+    "/{person_analysis_id}",
     response_model=PersonAnalysisDeleteResponse,
 )
 def delete_person_analysis(
@@ -324,7 +325,7 @@ def delete_person_analysis(
 ):
     """
     軟刪除：將 Person_Analysis 該列 deleted 設為 true。必填 query `person_id`（呼叫者）。
-    刪除後 GET /person-analysis/analyses 不再回傳該列。
+    刪除後 GET /person-analyses 不再回傳該列。
     """
     try:
         _caller_person_id_or_404(person_id)

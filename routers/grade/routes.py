@@ -84,22 +84,21 @@ RAG_UNIT_TYPE_TEXT = 2
 
 
 # ---------------------------------------------------------------------------
-# POST /rag/page/unit/quiz/followup
+# PUT /rag/quizzes/{rag_quiz_id}/followup
 # ---------------------------------------------------------------------------
 
 
-@router.post("/page/unit/quiz/followup", summary="Set Rag Quiz follow_up flag", operation_id="rag_quiz_followup")
+@router.put("/quizzes/{rag_quiz_id}/followup", summary="Set Rag Quiz follow_up flag", operation_id="rag_quiz_followup")
 def mark_rag_quiz_followup(
+    rag_quiz_id: int,
     body: openapi_body(
         RagQuizFollowupRequest,
-        {"rag_quiz_id": 1, "rag_page_id": "", "rag_unit_id": 0, "followup": False},
+        {"followup": False},
     ),
     caller_person_id: PersonId,
     course_id: CourseId,
 ):
-    """更新 Rag_Quiz.follow_up（followup=true 標記追問、false 取消）。以 rag_quiz_id 定位；僅 deleted=false 且 person_id 一致者可更新。"""
-    req_tab = (body.rag_page_id or "").strip()
-    req_unit = int(body.rag_unit_id or 0)
+    """更新 Rag_Quiz.follow_up（followup=true 標記追問、false 取消）。以 rag_quiz_id（path）定位；僅 deleted=false 且 person_id 一致者可更新。"""
     try:
         supabase = get_supabase()
 
@@ -112,7 +111,7 @@ def mark_rag_quiz_followup(
             q = (
                 supabase.table("Rag_Quiz")
                 .select(cols)
-                .eq("rag_quiz_id", body.rag_quiz_id)
+                .eq("rag_quiz_id", rag_quiz_id)
                 .eq("deleted", False)
             )
             if with_course_filter and course_id is not None:
@@ -127,20 +126,16 @@ def mark_rag_quiz_followup(
         pid = (row0.get("person_id") or "").strip()
         if pid != caller_person_id:
             raise HTTPException(status_code=403, detail="無權更新該 Rag_Quiz")
-        if req_tab and (row0.get("rag_page_id") or "").strip() != req_tab:
-            raise HTTPException(status_code=400, detail="rag_page_id 與 rag_quiz_id 對應資料不一致")
-        if req_unit > 0 and int(row0.get("rag_unit_id") or 0) != req_unit:
-            raise HTTPException(status_code=400, detail="rag_unit_id 與 rag_quiz_id 對應資料不一致")
 
         ts = now_taipei_iso()
         supabase.table("Rag_Quiz").update(
             {"follow_up": body.followup, "updated_at": ts}
-        ).eq("rag_quiz_id", body.rag_quiz_id).eq("deleted", False).execute()
+        ).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
 
         read = (
             supabase.table("Rag_Quiz")
             .select("*")
-            .eq("rag_quiz_id", body.rag_quiz_id)
+            .eq("rag_quiz_id", rag_quiz_id)
             .eq("deleted", False)
             .limit(1)
             .execute()
@@ -169,12 +164,12 @@ def mark_rag_quiz_followup(
     except HTTPException:
         raise
     except Exception as e:
-        _logger.exception("POST /rag/page/unit/quiz/followup 錯誤")
+        _logger.exception("PUT /rag/quizzes/{rag_quiz_id}/followup 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
-# POST /rag/page/unit/quiz/llm-generate
+# POST /rag/quizzes/llm-generate
 # ---------------------------------------------------------------------------
 
 _RAG_QUIZ_HISTORY_PROMPT_STEM_EXAMPLE = list(QUIZ_HISTORY_PROMPT_STEM_OPENAPI_LIST)
@@ -213,7 +208,7 @@ _RAG_LLM_GENERATE_FOLLOWUP_DB_OPENAPI_EXAMPLE = {
 }
 
 
-@router.post("/page/unit/quiz/llm-generate", summary="Rag LLM Generate Quiz", operation_id="rag_llm_generate_quiz")
+@router.post("/quizzes/llm-generate", summary="Rag LLM Generate Quiz", operation_id="rag_llm_generate_quiz")
 @router.post("/generate-quiz", include_in_schema=False)
 def rag_llm_generate_quiz(
     body: openapi_body(GenerateQuizRequest, _RAG_LLM_GENERATE_OPENAPI_EXAMPLE),
@@ -245,12 +240,12 @@ def rag_llm_generate_quiz(
 
 
 # ---------------------------------------------------------------------------
-# POST /rag/page/unit/quiz/llm-generate-followup
+# POST /rag/quizzes/llm-generate-followup
 # ---------------------------------------------------------------------------
 
 
 @router.post(
-    "/page/unit/quiz/llm-generate-followup",
+    "/quizzes/llm-generate-followup",
     summary="Rag LLM Generate Follow-up Quiz",
     operation_id="rag_llm_generate_quiz_followup",
 )
@@ -282,12 +277,12 @@ def rag_llm_generate_quiz_followup(
 
 
 # ---------------------------------------------------------------------------
-# POST /rag/page/unit/quiz/llm-generate-db
+# POST /rag/quizzes/llm-generate-db
 # ---------------------------------------------------------------------------
 
 
 @router.post(
-    "/page/unit/quiz/llm-generate-db",
+    "/quizzes/llm-generate-db",
     summary="Rag LLM Generate Quiz (stored quiz_user_prompt_text)",
     operation_id="rag_llm_generate_quiz_db_prompt",
 )
@@ -317,12 +312,12 @@ def rag_llm_generate_quiz_db_prompt(
 
 
 # ---------------------------------------------------------------------------
-# POST /rag/page/unit/quiz/llm-generate-followup-db
+# POST /rag/quizzes/llm-generate-followup-db
 # ---------------------------------------------------------------------------
 
 
 @router.post(
-    "/page/unit/quiz/llm-generate-followup-db",
+    "/quizzes/llm-generate-followup-db",
     summary="Rag LLM Generate Follow-up Quiz (stored quiz_user_prompt_text)",
     operation_id="rag_llm_generate_quiz_followup_db_prompt",
 )
@@ -351,7 +346,7 @@ def rag_llm_generate_quiz_followup_db_prompt(
     )
 
 
-@router.post("/page/unit/quiz/llm-grade", summary="Rag Grade Quiz")
+@router.post("/quizzes/llm-grade", summary="Rag Grade Quiz")
 async def grade_submission(
     background_tasks: BackgroundTasks,
     body: openapi_body(
@@ -372,7 +367,7 @@ async def grade_submission(
     非同步評分：Body 以 rag_id、rag_quiz_id 為核心；quiz_content 可省略（自 Rag_Quiz 讀）。
     `answer_user_prompt_text` 以請求為準（可空；空字串會寫入並覆蓋 Rag_Quiz 該列）。
     unit_type 2／3／4 時以 transcript 純 LLM 批改；其餘依 rag_id 載入 RAG ZIP。
-    回傳 202 + job_id；輪詢 GET /rag/page/unit/quiz/grade-result/{job_id}。
+    回傳 202 + job_id；輪詢 GET /rag/quizzes/grade-result/{job_id}。
     """
     return await _enqueue_rag_llm_grade_job(
         background_tasks,
@@ -388,7 +383,7 @@ async def grade_submission(
 
 
 @router.post(
-    "/page/unit/quiz/llm-grade-db",
+    "/quizzes/llm-grade-db",
     summary="Rag Grade Quiz (stored answer_user_prompt_text)",
     operation_id="rag_llm_grade_quiz_db_prompt",
 )
@@ -424,21 +419,20 @@ async def grade_submission_stored_answer_prompt(
 
 
 # ---------------------------------------------------------------------------
-# POST /rag/page/unit/quiz/for-exam
+# PUT /rag/quizzes/{rag_quiz_id}/for-exam
 # ---------------------------------------------------------------------------
 
-@router.post("/page/unit/quiz/for-exam", summary="Set Rag Quiz for_exam flag")
+@router.put("/quizzes/{rag_quiz_id}/for-exam", summary="Set Rag Quiz for_exam flag")
 def mark_rag_quiz_for_exam(
+    rag_quiz_id: int,
     body: openapi_body(
         RagQuizForExamRequest,
-        {"rag_quiz_id": 1, "rag_page_id": "", "rag_unit_id": 0, "for_exam": True},
+        {"for_exam": True},
     ),
     caller_person_id: PersonId,
     course_id: CourseId,
 ):
-    """更新 Rag_Quiz.for_exam（true＝測驗用、false＝取消）。以 rag_quiz_id 定位；僅 deleted=false 且 person_id 一致者可更新。"""
-    req_tab = (body.rag_page_id or "").strip()
-    req_unit = int(body.rag_unit_id or 0)
+    """更新 Rag_Quiz.for_exam（true＝測驗用、false＝取消）。以 rag_quiz_id（path）定位；僅 deleted=false 且 person_id 一致者可更新。"""
     try:
         supabase = get_supabase()
         def build_for_exam_sel(with_course_filter: bool):
@@ -450,7 +444,7 @@ def mark_rag_quiz_for_exam(
             q = (
                 supabase.table("Rag_Quiz")
                 .select(cols)
-                .eq("rag_quiz_id", body.rag_quiz_id)
+                .eq("rag_quiz_id", rag_quiz_id)
                 .eq("deleted", False)
             )
             if with_course_filter and course_id is not None:
@@ -465,18 +459,14 @@ def mark_rag_quiz_for_exam(
         pid = (row0.get("person_id") or "").strip()
         if pid != caller_person_id:
             raise HTTPException(status_code=403, detail="無權更新該 Rag_Quiz")
-        if req_tab and (row0.get("rag_page_id") or "").strip() != req_tab:
-            raise HTTPException(status_code=400, detail="rag_page_id 與 rag_quiz_id 對應資料不一致")
-        if req_unit > 0 and int(row0.get("rag_unit_id") or 0) != req_unit:
-            raise HTTPException(status_code=400, detail="rag_unit_id 與 rag_quiz_id 對應資料不一致")
 
         ts = now_taipei_iso()
-        supabase.table("Rag_Quiz").update({"for_exam": body.for_exam, "updated_at": ts}).eq("rag_quiz_id", body.rag_quiz_id).eq("deleted", False).execute()
+        supabase.table("Rag_Quiz").update({"for_exam": body.for_exam, "updated_at": ts}).eq("rag_quiz_id", rag_quiz_id).eq("deleted", False).execute()
 
         read = (
             supabase.table("Rag_Quiz")
             .select("*")
-            .eq("rag_quiz_id", body.rag_quiz_id)
+            .eq("rag_quiz_id", rag_quiz_id)
             .eq("deleted", False)
             .limit(1)
             .execute()
@@ -505,15 +495,15 @@ def mark_rag_quiz_for_exam(
     except HTTPException:
         raise
     except Exception as e:
-        _logger.exception("POST /rag/page/unit/quiz/for-exam 錯誤")
+        _logger.exception("PUT /rag/quizzes/{rag_quiz_id}/for-exam 錯誤")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
-# GET /rag/page/unit/quiz/grade-result/{job_id}
+# GET /rag/quizzes/grade-result/{job_id}
 # ---------------------------------------------------------------------------
 
-@router.get("/page/unit/quiz/grade-result/{job_id}", summary="Get Grade Result", tags=["rag"])
+@router.get("/quizzes/grade-result/{job_id}", summary="Get Grade Result", tags=["rag"])
 async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseId):
     """
     輪詢評分結果。status: pending | ready | error；
@@ -579,6 +569,7 @@ async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseI
     summary="Rag Unit Text",
     operation_id="rag_unit_text",
     response_model=RagUnitTextResponse,
+    deprecated=True,
 )
 def rag_unit_text(
     course_id: CourseId,
@@ -741,6 +732,7 @@ def rag_unit_text(
     summary="Rag Unit Audio File",
     operation_id="rag_unit_mp3_file",
     response_model=RagUnitMp3FileFromZipResponse,
+    deprecated=True,
 )
 def rag_unit_audio_file(
     caller_person_id: PersonId,
@@ -793,6 +785,7 @@ def rag_unit_audio_file(
     summary="Rag Unit Youtube Url",
     operation_id="rag_unit_youtube_url",
     response_model=RagUnitYoutubeUrlFromZipResponse,
+    deprecated=True,
 )
 def rag_unit_youtube_url(
     caller_person_id: PersonId,
@@ -827,7 +820,7 @@ def rag_unit_youtube_url(
     )
 
 
-@router.get("/llm_api_key/exists", response_model=RagApiKeyExistsResponse)
+@router.get("/llm-api-key/exists", response_model=RagApiKeyExistsResponse)
 def get_rag_api_key_exists(person_id: PersonId, course_id: CourseId):
     """查詢 RAG LLM API Key 是否已設定（Course_Setting key=rag-api-key，依 course_id）；不回傳 key 內容。"""
     _require_active_person(person_id)
@@ -837,7 +830,7 @@ def get_rag_api_key_exists(person_id: PersonId, course_id: CourseId):
     )
 
 
-@router.get("/llm_api_key", response_model=RagApiKeyResponse)
+@router.get("/llm-api-key", response_model=RagApiKeyResponse)
 def get_rag_api_key_setting(person_id: PersonId, course_id: CourseId):
     """讀取 RAG LLM API Key（Course_Setting key=rag-api-key，依 course_id）。"""
     _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
@@ -852,7 +845,7 @@ def get_rag_api_key_setting(person_id: PersonId, course_id: CourseId):
     )
 
 
-@router.put("/llm_api_key", response_model=RagApiKeyResponse)
+@router.put("/llm-api-key", response_model=RagApiKeyResponse)
 def put_rag_api_key_setting(
     body: openapi_body(PutRagApiKeyRequest, {"api_key": "sk-..."}),
     person_id: PersonId,
@@ -883,7 +876,7 @@ def put_rag_api_key_setting(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.get("/llm_model", response_model=RagLlmModelResponse)
+@router.get("/llm-model", response_model=RagLlmModelResponse)
 def get_rag_llm_model_setting(person_id: PersonId, course_id: CourseId):
     """讀取 RAG 出題／批改／弱點分析 LLM 模型（Course_Setting key=llm-model，依 course_id）。"""
     _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
@@ -898,7 +891,7 @@ def get_rag_llm_model_setting(person_id: PersonId, course_id: CourseId):
     )
 
 
-@router.put("/llm_model", response_model=RagLlmModelResponse)
+@router.put("/llm-model", response_model=RagLlmModelResponse)
 def put_rag_llm_model_setting(
     body: openapi_body(PutRagLlmModelRequest, {"llm_model": "gpt-5.4"}),
     person_id: PersonId,
