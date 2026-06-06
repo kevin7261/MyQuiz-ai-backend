@@ -1,6 +1,6 @@
 """
 學院（College）相關 API 模組。
-- GET /college/colleges：列出 College 表（僅 deleted = false 或 null），含所屬課程
+- GET /colleges：列出 College 表（僅 deleted = false 或 null），含所屬課程與該學院 User 數（user_count）
 """
 
 from typing import Optional
@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from dependencies.person_id import PersonId
-from utils.db_schema import ACTIVE_DELETED_FILTER, COLLEGE_TABLE, COURSE_TABLE
+from utils.db_schema import ACTIVE_DELETED_FILTER, COLLEGE_TABLE, COURSE_TABLE, USER_TABLE
 from utils.supabase import get_supabase
 from utils.taipei_time import to_taipei_iso
 
@@ -31,6 +31,7 @@ class CollegeListItem(BaseModel):
     """單筆學院。"""
     college_id: int
     college_name: Optional[str] = None
+    user_count: int = Field(0, description="該學院之 User 數（未刪除）")
     courses: list[CourseEmbed] = Field(default_factory=list)
     updated_at: Optional[str] = None
     created_at: Optional[str] = None
@@ -63,7 +64,30 @@ def _fetch_courses_by_college_ids(supabase, college_ids: list[int]) -> dict[int,
     return out
 
 
-def _college_public_dict(row: dict, courses_by_college: dict[int, list[dict]] | None = None) -> dict:
+def _fetch_user_counts_by_college_id(supabase) -> dict[int, int]:
+    """User 表（未刪除）依 college_id 計數；college_id 以 int 正規化（User.college_id 可能為文字型別）。"""
+    resp = (
+        supabase.table(USER_TABLE)
+        .select("college_id")
+        .or_(ACTIVE_DELETED_FILTER)
+        .execute()
+    )
+    out: dict[int, int] = {}
+    for row in resp.data or []:
+        raw = row.get("college_id")
+        try:
+            cid = int(str(raw).strip())
+        except (TypeError, ValueError):
+            continue
+        out[cid] = out.get(cid, 0) + 1
+    return out
+
+
+def _college_public_dict(
+    row: dict,
+    courses_by_college: dict[int, list[dict]] | None = None,
+    user_counts: dict[int, int] | None = None,
+) -> dict:
     college_id = row.get("college_id")
     college_id_int = int(college_id) if college_id is not None else None
     course_rows = (courses_by_college or {}).get(college_id_int, []) if college_id_int else []
@@ -80,6 +104,7 @@ def _college_public_dict(row: dict, courses_by_college: dict[int, list[dict]] | 
     return {
         "college_id": college_id,
         "college_name": (row.get("college_name") or "").strip() or None,
+        "user_count": (user_counts or {}).get(college_id_int, 0) if college_id_int else 0,
         "courses": courses,
         "updated_at": to_taipei_iso(row.get("updated_at")),
         "created_at": to_taipei_iso(row.get("created_at")),
@@ -88,7 +113,7 @@ def _college_public_dict(row: dict, courses_by_college: dict[int, list[dict]] | 
 
 @router.get("/colleges", response_model=ListCollegesResponse)
 def list_colleges(_person_id: PersonId):
-    """列出 College 表內容；僅回傳未刪除之列，並附所屬課程。"""
+    """列出 College 表內容；僅回傳未刪除之列，並附所屬課程與該學院 User 數（user_count，未刪除）。"""
     try:
         supabase = get_supabase()
         resp = (
@@ -101,8 +126,12 @@ def list_colleges(_person_id: PersonId):
         rows = resp.data or []
         college_ids = [int(r["college_id"]) for r in rows if r.get("college_id") is not None]
         courses_by_college = _fetch_courses_by_college_ids(supabase, college_ids)
+        user_counts = _fetch_user_counts_by_college_id(supabase)
         return ListCollegesResponse(
-            colleges=[CollegeListItem(**_college_public_dict(r, courses_by_college)) for r in rows],
+            colleges=[
+                CollegeListItem(**_college_public_dict(r, courses_by_college, user_counts))
+                for r in rows
+            ],
             count=len(rows),
         )
     except Exception as e:
