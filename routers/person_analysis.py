@@ -18,10 +18,7 @@ from pydantic import BaseModel, Field
 from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
 from services.exam_queries import (
-    exams_by_page_ids,
-    enrich_exam_quizzes_rag_tab_from_units,
-    ensure_exam_quiz_rag_id_keys,
-    exam_tab_quizzes_response,
+    exams_with_quizzes_response,
     quizzes_by_person_id,
 )
 from services.analysis_setting import (
@@ -73,6 +70,10 @@ class PersonAnalysisListItem(BaseModel):
     )
     analysis_text: Optional[str] = Field(
         default=None, description="弱點報告 Markdown（對應 answer_critique）",
+    )
+    exams: Optional[list[dict]] = Field(
+        default=None,
+        description="該列課程目前已作答題目（即時自資料庫彙整），與 POST /{id}/llm-analysis 回傳 exams 同格式；無已作答題目時為空陣列",
     )
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -149,11 +150,20 @@ class PersonLlmAnalysisResponse(BaseModel):
 def list_person_analyses(person_id: PersonId):
     """
     取值：不呼叫 LLM。必填 query `person_id`（呼叫者）。
-    回傳該使用者所有課程的 Person_Analysis 結果列（analysis_text 非 null）。
+    回傳該使用者所有課程的 Person_Analysis 結果列（analysis_text 非 null）；
+    每列附上該課程目前已作答題目 `exams`（抓法同 POST /{id}/llm-analysis）。
     """
     try:
         caller = _caller_person_id_or_404(person_id)
         rows = to_json_safe(fetch_person_analyses_by_person(caller))
+        exams_by_course: dict[int, list[dict]] = {}
+        for row in rows:
+            cid = row.get("course_id")
+            if cid is None or cid in exams_by_course:
+                continue
+            quizzes = quizzes_by_person_id(caller, course_id=cid)
+            answered = [q for q in quizzes if quiz_has_answer(q)]
+            exams_by_course[cid] = to_json_safe(exams_with_quizzes_response(answered))
         items = [
             PersonAnalysisListItem(
                 person_analysis_id=row.get("person_analysis_id"),
@@ -163,6 +173,7 @@ def list_person_analyses(person_id: PersonId):
                 analysis_user_prompt_text=row.get("analysis_prompt_text"),
                 analysis_prompt_text=row.get("analysis_prompt_text"),
                 analysis_text=row.get("analysis_text"),
+                exams=exams_by_course.get(row.get("course_id")),
                 created_at=row.get("created_at"),
                 updated_at=row.get("updated_at"),
             )
@@ -313,26 +324,7 @@ def person_llm_analysis(
             )
         quizzes = quizzes_by_person_id(caller, course_id=course_id)
         quizzes_with_answers = [q for q in quizzes if quiz_has_answer(q)]
-
-        page_ids: list[str] = list(dict.fromkeys(
-            str(q.get("exam_page_id")) for q in quizzes_with_answers if q.get("exam_page_id") is not None
-        ))
-        exam_rows = exams_by_page_ids(page_ids)
-        quizzes_by_tab: dict[str, list[dict]] = {tid: [] for tid in page_ids}
-        for q in quizzes_with_answers:
-            tid = q.get("exam_page_id")
-            if tid is not None:
-                quizzes_by_tab.setdefault(str(tid), []).append(q)
-
-        flat_for_enrich = [qz for tid in page_ids for qz in quizzes_by_tab.get(tid, [])]
-        enrich_exam_quizzes_rag_tab_from_units(flat_for_enrich)
-        ensure_exam_quiz_rag_id_keys(flat_for_enrich)
-
-        for row in exam_rows:
-            tid = str(row.get("exam_page_id") or "")
-            row["quizzes"] = exam_tab_quizzes_response(quizzes_by_tab.get(tid, []))
-
-        data = to_json_safe(exam_rows)
+        data = to_json_safe(exams_with_quizzes_response(quizzes_with_answers))
         analysis_llm_model = get_rag_llm_model(course_id)
         weakness_report: Optional[str] = None
         llm_error: Optional[str] = None

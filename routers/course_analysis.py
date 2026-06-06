@@ -28,10 +28,7 @@ from services.analysis_setting import (
     update_course_analysis_name,
 )
 from services.exam_queries import (
-    exams_by_page_ids,
-    enrich_exam_quizzes_rag_tab_from_units,
-    ensure_exam_quiz_rag_id_keys,
-    exam_tab_quizzes_response,
+    exams_with_quizzes_response,
     quizzes_by_course_id,
 )
 from services.weakness_report import generate_weakness_report_md, quiz_has_answer
@@ -73,6 +70,10 @@ class CourseAnalysisListItem(BaseModel):
     )
     analysis_text: Optional[str] = Field(
         default=None, description="弱點報告 Markdown（對應 answer_critique）",
+    )
+    exams: Optional[list[dict]] = Field(
+        default=None,
+        description="該課程目前已作答題目（即時自資料庫彙整，全課程共用），與 POST /{id}/llm-analysis 回傳 exams 同格式；無已作答題目時為空陣列",
     )
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -149,11 +150,15 @@ class CourseLlmAnalysisResponse(BaseModel):
 def list_course_analyses(person_id: PersonId, course_id: CourseId):
     """
     取值：不呼叫 LLM。必填 query `person_id`（呼叫者）、`course_id`。
-    回傳該課程所有 Course_Analysis 結果列（analysis_text 非 null）。
+    回傳該課程所有 Course_Analysis 結果列（analysis_text 非 null）；
+    每列附上該課程目前已作答題目 `exams`（抓法同 POST /{id}/llm-analysis）。
     """
     try:
         _caller_person_id_or_404(person_id)
         rows = to_json_safe(fetch_course_analyses_by_course(course_id))
+        quizzes = quizzes_by_course_id(course_id)
+        answered = [q for q in quizzes if quiz_has_answer(q)]
+        course_exams = to_json_safe(exams_with_quizzes_response(answered))
         items = [
             CourseAnalysisListItem(
                 course_analysis_id=row.get("course_analysis_id"),
@@ -163,6 +168,7 @@ def list_course_analyses(person_id: PersonId, course_id: CourseId):
                 analysis_user_prompt_text=row.get("analysis_prompt_text"),
                 analysis_prompt_text=row.get("analysis_prompt_text"),
                 analysis_text=row.get("analysis_text"),
+                exams=course_exams,
                 created_at=row.get("created_at"),
                 updated_at=row.get("updated_at"),
             )
@@ -315,26 +321,7 @@ def course_llm_analysis(
             )
         quizzes = quizzes_by_course_id(course_id)
         quizzes_with_answers = [q for q in quizzes if quiz_has_answer(q)]
-
-        page_ids: list[str] = list(dict.fromkeys(
-            str(q.get("exam_page_id")) for q in quizzes_with_answers if q.get("exam_page_id") is not None
-        ))
-        exam_rows = exams_by_page_ids(page_ids)
-        quizzes_by_tab: dict[str, list[dict]] = {tid: [] for tid in page_ids}
-        for q in quizzes_with_answers:
-            tid = q.get("exam_page_id")
-            if tid is not None:
-                quizzes_by_tab.setdefault(str(tid), []).append(q)
-
-        flat_for_enrich = [qz for tid in page_ids for qz in quizzes_by_tab.get(tid, [])]
-        enrich_exam_quizzes_rag_tab_from_units(flat_for_enrich)
-        ensure_exam_quiz_rag_id_keys(flat_for_enrich)
-
-        for row in exam_rows:
-            tid = str(row.get("exam_page_id") or "")
-            row["quizzes"] = exam_tab_quizzes_response(quizzes_by_tab.get(tid, []))
-
-        data = to_json_safe(exam_rows)
+        data = to_json_safe(exams_with_quizzes_response(quizzes_with_answers))
         analysis_llm_model = get_rag_llm_model(course_id)
         weakness_report: Optional[str] = None
         llm_error: Optional[str] = None

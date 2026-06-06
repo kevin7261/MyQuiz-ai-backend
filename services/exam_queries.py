@@ -413,6 +413,31 @@ def exam_tab_quizzes_response(quizzes: list[dict]) -> list[dict]:
     return roots
 
 
+def exams_with_quizzes_response(quizzes: list[dict]) -> list[dict]:
+    """
+    依 exam_page_id 將 quizzes 分組組裝為 Exam 列（每筆含 quizzes[]）。
+    弱點分析 llm-analysis 回傳的 exams 與 GET /{person,course}-analyses 的 exams 共用此組裝。
+    """
+    page_ids: list[str] = list(dict.fromkeys(
+        str(q.get("exam_page_id")) for q in quizzes if q.get("exam_page_id") is not None
+    ))
+    exam_rows = exams_by_page_ids(page_ids)
+    quizzes_by_tab: dict[str, list[dict]] = {tid: [] for tid in page_ids}
+    for q in quizzes:
+        tid = q.get("exam_page_id")
+        if tid is not None:
+            quizzes_by_tab.setdefault(str(tid), []).append(q)
+
+    flat_for_enrich = [qz for tid in page_ids for qz in quizzes_by_tab.get(tid, [])]
+    enrich_exam_quizzes_rag_tab_from_units(flat_for_enrich)
+    ensure_exam_quiz_rag_id_keys(flat_for_enrich)
+
+    for row in exam_rows:
+        tid = str(row.get("exam_page_id") or "")
+        row["quizzes"] = exam_tab_quizzes_response(quizzes_by_tab.get(tid, []))
+    return exam_rows
+
+
 def rag_quiz_for_exam_response_row(row: dict[str, Any]) -> dict[str, Any]:
     """Rag_Quiz 列：for-exam 端點回傳 RAG 關聯鍵與出題／批改 prompt。"""
     ru = row.get("rag_unit_id")
