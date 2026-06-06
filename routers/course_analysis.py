@@ -83,7 +83,7 @@ class CourseAnalysesResponse(BaseModel):
     """GET /course-analyses 回應。"""
     course_id: int
     analyses: list[CourseAnalysisListItem] = Field(
-        ..., description="該課程所有 Course_Analysis 列（updated_at 新到舊）"
+        ..., description="該課程所有 Course_Analysis 列（course_analysis_id 升冪）"
     )
     count: int
 

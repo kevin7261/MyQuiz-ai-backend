@@ -250,7 +250,7 @@ def fetch_person_analysis_user_prompt_for_llm(course_id: int | str) -> str:
 def fetch_person_analyses_by_person(
     caller_person_id: str | int,
 ) -> list[dict[str, Any]]:
-    """讀取呼叫者所有 Person_Analysis 結果列（跨課程；analysis_text 非 null），updated_at 新到舊。"""
+    """讀取呼叫者所有 Person_Analysis 結果列（跨課程；analysis_text 非 null），依 person_analysis_id 升冪。"""
     caller = _person_id_for_db(caller_person_id)
     if not caller:
         return []
@@ -266,7 +266,7 @@ def fetch_person_analyses_by_person(
                 .eq("person_id", pid)
                 .eq("deleted", False)
                 .not_.is_("analysis_text", "null")
-                .order("updated_at", desc=True)
+                .order("person_analysis_id", desc=False)
                 .execute()
             )
         except APIError as e:
@@ -291,7 +291,7 @@ def fetch_person_analyses_by_person(
                 continue
             seen_ids.add(rid)
             rows.append(_normalize_row_person_id(row))
-    rows.sort(key=lambda r: str(r.get("updated_at") or r.get("created_at") or ""), reverse=True)
+    rows.sort(key=lambda r: int(r.get("person_analysis_id") or 0))
     return rows
 
 
@@ -482,7 +482,7 @@ def fetch_course_analysis_user_prompt_for_llm(course_id: int | str) -> str:
 def fetch_course_analyses_by_course(
     course_id: int | str,
 ) -> list[dict[str, Any]]:
-    """讀取課程所有 Course_Analysis 結果列（跨使用者；analysis_text 非 null），updated_at 新到舊。"""
+    """讀取課程所有 Course_Analysis 結果列（跨使用者；analysis_text 非 null），依 course_analysis_id 升冪。"""
     try:
         supabase = get_supabase()
         resp = (
@@ -491,7 +491,7 @@ def fetch_course_analyses_by_course(
             .eq("course_id", int(course_id))
             .eq("deleted", False)
             .not_.is_("analysis_text", "null")
-            .order("updated_at", desc=True)
+            .order("course_analysis_id", desc=False)
             .execute()
         )
         return [_normalize_row_person_id(row) for row in resp.data or []]

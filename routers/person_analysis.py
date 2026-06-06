@@ -83,7 +83,7 @@ class PersonAnalysesResponse(BaseModel):
     """GET /person-analyses 回應。"""
     person_id: str = Field(..., description="呼叫者登入帳號")
     analyses: list[PersonAnalysisListItem] = Field(
-        ..., description="該使用者所有課程的 Person_Analysis 列（updated_at 新到舊）"
+        ..., description="該使用者所有課程的 Person_Analysis 列（person_analysis_id 升冪）"
     )
     count: int
 
