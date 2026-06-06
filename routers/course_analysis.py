@@ -10,15 +10,18 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi import Path as PathParam
 from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
 from services.analysis_setting import (
+    fetch_course_analyses_by_course,
     fetch_course_analysis_stored,
     fetch_course_analysis_user_prompt_for_llm,
     resolve_login_person_id,
     save_course_analysis_setting,
+    soft_delete_course_analysis,
 )
 from services.exam_queries import (
     exams_by_page_ids,
@@ -71,6 +74,46 @@ class CourseStoredAnalysisResponse(BaseModel):
     )
 
 
+class CourseAnalysisListItem(BaseModel):
+    """單筆 Course_Analysis 列（GET /course-analysis/analyses）。"""
+    course_analysis_id: Optional[int] = Field(
+        default=None, description="Course_Analysis 主鍵"
+    )
+    person_id: Optional[str] = Field(default=None, description="該列登入帳號")
+    course_id: Optional[int] = None
+    analysis_user_prompt_text: Optional[str] = Field(
+        default=None,
+        description="教師分析指令（對應 answer_user_prompt_text）",
+    )
+    analysis_prompt_text: Optional[str] = Field(
+        default=None,
+        description="與 analysis_user_prompt_text 同源（DB 欄位 analysis_prompt_text）",
+    )
+    analysis_text: Optional[str] = Field(
+        default=None, description="弱點報告 Markdown（對應 answer_critique）",
+    )
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class CourseAnalysesResponse(BaseModel):
+    """GET /course-analysis/analyses 回應。"""
+    course_id: int
+    analyses: list[CourseAnalysisListItem] = Field(
+        ..., description="該課程所有 Course_Analysis 列（updated_at 新到舊）"
+    )
+    count: int
+
+
+class CourseAnalysisDeleteResponse(BaseModel):
+    """PUT /course-analysis/delete/{course_analysis_id} 回應。"""
+    message: str
+    course_analysis_id: int
+    person_id: Optional[str] = Field(default=None, description="該列登入帳號")
+    course_id: Optional[int] = None
+    updated_at: Optional[str] = None
+
+
 class CourseLlmAnalysisResponse(BaseModel):
     """POST /course-analysis/llm-analysis 回應。"""
     exams: list[dict]
@@ -118,6 +161,73 @@ def get_course_stored_analysis(person_id: PersonId, course_id: CourseId):
         caller = _caller_person_id_or_404(person_id)
         stored = fetch_course_analysis_stored(caller, course_id)
         return _stored_to_response(stored, analysis_llm_model=get_rag_llm_model(course_id))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/analyses", response_model=CourseAnalysesResponse)
+def list_course_analyses(person_id: PersonId, course_id: CourseId):
+    """
+    取值：不呼叫 LLM。必填 query `person_id`（呼叫者）、`course_id`。
+    回傳該課程所有 Course_Analysis 列。
+    """
+    try:
+        _caller_person_id_or_404(person_id)
+        rows = to_json_safe(fetch_course_analyses_by_course(course_id))
+        items = [
+            CourseAnalysisListItem(
+                course_analysis_id=row.get("course_analysis_id"),
+                person_id=row.get("person_id"),
+                course_id=row.get("course_id"),
+                analysis_user_prompt_text=row.get("analysis_prompt_text"),
+                analysis_prompt_text=row.get("analysis_prompt_text"),
+                analysis_text=row.get("analysis_text"),
+                created_at=row.get("created_at"),
+                updated_at=row.get("updated_at"),
+            )
+            for row in rows
+        ]
+        return CourseAnalysesResponse(
+            course_id=int(course_id), analyses=items, count=len(items)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.put(
+    "/delete/{course_analysis_id}",
+    response_model=CourseAnalysisDeleteResponse,
+)
+def delete_course_analysis(
+    person_id: PersonId,
+    course_analysis_id: int = PathParam(
+        ..., gt=0, description="要軟刪除的 Course_Analysis 主鍵"
+    ),
+):
+    """
+    軟刪除：將 Course_Analysis 該列 deleted 設為 true。必填 query `person_id`（呼叫者）。
+    刪除後 GET /course-analysis/analyses 不再回傳該列。
+    """
+    try:
+        _caller_person_id_or_404(person_id)
+        row = soft_delete_course_analysis(course_analysis_id)
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"找不到 course_analysis_id={course_analysis_id} 的 Course_Analysis 資料，或已刪除",
+            )
+        safe = to_json_safe(row)
+        return CourseAnalysisDeleteResponse(
+            message="已將 Course_Analysis 標記為刪除",
+            course_analysis_id=course_analysis_id,
+            person_id=safe.get("person_id"),
+            course_id=safe.get("course_id"),
+            updated_at=safe.get("updated_at"),
+        )
     except HTTPException:
         raise
     except Exception as e:

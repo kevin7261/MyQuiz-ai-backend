@@ -10,6 +10,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi import Path as PathParam
 from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
@@ -22,10 +23,12 @@ from services.exam_queries import (
     quizzes_by_person_id,
 )
 from services.analysis_setting import (
+    fetch_person_analyses_by_person,
     fetch_person_analysis_stored,
     fetch_person_analysis_user_prompt_for_llm,
     resolve_login_person_id,
     save_person_analysis_setting,
+    soft_delete_person_analysis,
 )
 from services.weakness_report import generate_weakness_report_md, quiz_has_answer
 from utils.llm_key import get_person_analysis_api_key, get_rag_llm_model
@@ -69,6 +72,46 @@ class PersonStoredAnalysisResponse(BaseModel):
         default=None,
         description="目前課程設定的 LLM 模型（Course_Setting key=llm-model）；非當初產生 analysis_text 時所用模型",
     )
+
+
+class PersonAnalysisListItem(BaseModel):
+    """單筆 Person_Analysis 列（GET /person-analysis/analyses）。"""
+    person_analysis_id: Optional[int] = Field(
+        default=None, description="Person_Analysis 主鍵"
+    )
+    person_id: Optional[str] = Field(default=None, description="該列登入帳號")
+    course_id: Optional[int] = None
+    analysis_user_prompt_text: Optional[str] = Field(
+        default=None,
+        description="教師分析指令（對應 answer_user_prompt_text）",
+    )
+    analysis_prompt_text: Optional[str] = Field(
+        default=None,
+        description="與 analysis_user_prompt_text 同源（DB 欄位 analysis_prompt_text）",
+    )
+    analysis_text: Optional[str] = Field(
+        default=None, description="弱點報告 Markdown（對應 answer_critique）",
+    )
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class PersonAnalysesResponse(BaseModel):
+    """GET /person-analysis/analyses 回應。"""
+    person_id: str = Field(..., description="呼叫者登入帳號")
+    analyses: list[PersonAnalysisListItem] = Field(
+        ..., description="該使用者所有課程的 Person_Analysis 列（updated_at 新到舊）"
+    )
+    count: int
+
+
+class PersonAnalysisDeleteResponse(BaseModel):
+    """PUT /person-analysis/delete/{person_analysis_id} 回應。"""
+    message: str
+    person_analysis_id: int
+    person_id: Optional[str] = Field(default=None, description="該列登入帳號")
+    course_id: Optional[int] = None
+    updated_at: Optional[str] = None
 
 
 class PersonLlmAnalysisResponse(BaseModel):
@@ -121,6 +164,71 @@ def get_person_stored_analysis(
         caller = _caller_person_id_or_404(person_id)
         stored = fetch_person_analysis_stored(caller, course_id)
         return _stored_to_response(stored, analysis_llm_model=get_rag_llm_model(course_id))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/analyses", response_model=PersonAnalysesResponse)
+def list_person_analyses(person_id: PersonId):
+    """
+    取值：不呼叫 LLM。必填 query `person_id`（呼叫者）。
+    回傳該使用者所有課程的 Person_Analysis 列。
+    """
+    try:
+        caller = _caller_person_id_or_404(person_id)
+        rows = to_json_safe(fetch_person_analyses_by_person(caller))
+        items = [
+            PersonAnalysisListItem(
+                person_analysis_id=row.get("person_analysis_id"),
+                person_id=row.get("person_id"),
+                course_id=row.get("course_id"),
+                analysis_user_prompt_text=row.get("analysis_prompt_text"),
+                analysis_prompt_text=row.get("analysis_prompt_text"),
+                analysis_text=row.get("analysis_text"),
+                created_at=row.get("created_at"),
+                updated_at=row.get("updated_at"),
+            )
+            for row in rows
+        ]
+        return PersonAnalysesResponse(person_id=caller, analyses=items, count=len(items))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.put(
+    "/delete/{person_analysis_id}",
+    response_model=PersonAnalysisDeleteResponse,
+)
+def delete_person_analysis(
+    person_id: PersonId,
+    person_analysis_id: int = PathParam(
+        ..., gt=0, description="要軟刪除的 Person_Analysis 主鍵"
+    ),
+):
+    """
+    軟刪除：將 Person_Analysis 該列 deleted 設為 true。必填 query `person_id`（呼叫者）。
+    刪除後 GET /person-analysis/analyses 不再回傳該列。
+    """
+    try:
+        _caller_person_id_or_404(person_id)
+        row = soft_delete_person_analysis(person_analysis_id)
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"找不到 person_analysis_id={person_analysis_id} 的 Person_Analysis 資料，或已刪除",
+            )
+        safe = to_json_safe(row)
+        return PersonAnalysisDeleteResponse(
+            message="已將 Person_Analysis 標記為刪除",
+            person_analysis_id=person_analysis_id,
+            person_id=safe.get("person_id"),
+            course_id=safe.get("course_id"),
+            updated_at=safe.get("updated_at"),
+        )
     except HTTPException:
         raise
     except Exception as e:

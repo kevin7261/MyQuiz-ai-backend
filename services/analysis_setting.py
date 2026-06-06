@@ -427,6 +427,74 @@ def fetch_person_analysis_stored(
     }
 
 
+def fetch_person_analyses_by_person(
+    caller_person_id: str | int,
+) -> list[dict[str, Any]]:
+    """讀取呼叫者所有 Person_Analysis 列（跨課程），updated_at 新到舊。"""
+    caller = _person_id_for_db(caller_person_id)
+    if not caller:
+        return []
+
+    supabase = get_supabase()
+    rows: list[dict[str, Any]] = []
+    seen_ids: set[Any] = set()
+    for pid in person_id_db_lookup_keys(caller):
+        try:
+            resp = (
+                supabase.table(PERSON_ANALYSIS_TABLE)
+                .select(PERSON_ANALYSIS_COLUMNS)
+                .eq("person_id", pid)
+                .eq("deleted", False)
+                .order("updated_at", desc=True)
+                .execute()
+            )
+        except APIError as e:
+            if _is_person_id_type_error(e):
+                continue
+            logger.exception(
+                "fetch_person_analyses_by_person failed person_id=%s key=%s",
+                caller,
+                pid,
+            )
+            return rows
+        except Exception:
+            logger.exception(
+                "fetch_person_analyses_by_person failed person_id=%s key=%s",
+                caller,
+                pid,
+            )
+            return rows
+        for row in resp.data or []:
+            rid = row.get("person_analysis_id")
+            if rid in seen_ids:
+                continue
+            seen_ids.add(rid)
+            rows.append(_normalize_row_person_id(row))
+    rows.sort(key=lambda r: str(r.get("updated_at") or r.get("created_at") or ""), reverse=True)
+    return rows
+
+
+def soft_delete_person_analysis(person_analysis_id: int) -> Optional[dict[str, Any]]:
+    """軟刪除：將 Person_Analysis 該列 deleted 設為 true；找不到未刪除列時回 None。"""
+    try:
+        supabase = get_supabase()
+        resp = (
+            supabase.table(PERSON_ANALYSIS_TABLE)
+            .update({"deleted": True, "updated_at": now_taipei_iso()})
+            .eq("person_analysis_id", int(person_analysis_id))
+            .eq("deleted", False)
+            .execute()
+        )
+        if resp.data:
+            return _normalize_row_person_id(resp.data[0])
+    except Exception:
+        logger.exception(
+            "soft_delete_person_analysis failed person_analysis_id=%s",
+            person_analysis_id,
+        )
+    return None
+
+
 def save_person_analysis_prompt_instruction(
     caller_person_id: str | int,
     course_id: int | str,
@@ -642,6 +710,49 @@ def fetch_course_analysis_stored(
         "created_at": primary.get("created_at"),
         "updated_at": (row or prompt_row or {}).get("updated_at"),
     }
+
+
+def fetch_course_analyses_by_course(
+    course_id: int | str,
+) -> list[dict[str, Any]]:
+    """讀取課程所有 Course_Analysis 列（跨使用者），updated_at 新到舊。"""
+    try:
+        supabase = get_supabase()
+        resp = (
+            supabase.table(COURSE_ANALYSIS_TABLE)
+            .select(COURSE_ANALYSIS_COLUMNS)
+            .eq("course_id", int(course_id))
+            .eq("deleted", False)
+            .order("updated_at", desc=True)
+            .execute()
+        )
+        return [_normalize_row_person_id(row) for row in resp.data or []]
+    except Exception:
+        logger.exception(
+            "fetch_course_analyses_by_course failed course_id=%s", course_id
+        )
+        return []
+
+
+def soft_delete_course_analysis(course_analysis_id: int) -> Optional[dict[str, Any]]:
+    """軟刪除：將 Course_Analysis 該列 deleted 設為 true；找不到未刪除列時回 None。"""
+    try:
+        supabase = get_supabase()
+        resp = (
+            supabase.table(COURSE_ANALYSIS_TABLE)
+            .update({"deleted": True, "updated_at": now_taipei_iso()})
+            .eq("course_analysis_id", int(course_analysis_id))
+            .eq("deleted", False)
+            .execute()
+        )
+        if resp.data:
+            return _normalize_row_person_id(resp.data[0])
+    except Exception:
+        logger.exception(
+            "soft_delete_course_analysis failed course_analysis_id=%s",
+            course_analysis_id,
+        )
+    return None
 
 
 def save_course_analysis_prompt_instruction(
