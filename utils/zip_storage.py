@@ -14,6 +14,7 @@ get_zip_path() / get_zip_path_by_person() 會將 ZIP 下載至暫存檔後回傳
 """
 
 import json
+import logging
 import os
 import tempfile
 from datetime import datetime
@@ -21,6 +22,8 @@ from pathlib import Path
 from typing import Optional
 
 from utils.taipei_time import TAIPEI_TZ
+
+_logger = logging.getLogger(__name__)
 
 
 # 子目錄名稱常數：上傳、重新壓縮、RAG
@@ -85,26 +88,50 @@ def _upload_object_basename(page_id: str) -> str:
     return f"{page_id}.zip"
 
 
+def _is_storage_not_found(e: Exception) -> bool:
+    """判斷 storage3 例外是否為「物件不存在」（code=not_found 或 status=404）。"""
+    code = getattr(e, "code", None)
+    status = getattr(e, "status", None)
+    return code == "not_found" or str(status) == "404"
+
+
 def _load_metadata() -> dict:
-    """從 Supabase Storage 下載 _metadata.json；不存在或失敗時回傳空 dict。"""
+    """
+    從 Supabase Storage 下載 _metadata.json。
+
+    - 檔案不存在（首次使用）→ 回傳空 dict
+    - 內容損毀（非合法 JSON）→ 警告後回傳空 dict（允許之後重建覆寫）
+    - 其他錯誤（網路、權限等）→ 拋出例外。
+      不可吞掉改回空 dict：save_zip 會以回傳值整份覆寫 _metadata.json，
+      暫時性錯誤若變成空 dict 會把所有既存紀錄洗掉。
+    """
     try:
         data = _get_storage().download(_METADATA_KEY)
+    except Exception as e:
+        if _is_storage_not_found(e):
+            return {}
+        raise
+    try:
         return json.loads(data.decode("utf-8"))
-    except Exception:
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        _logger.warning("_metadata.json 內容損毀，視為空 metadata（將於下次寫入時重建）")
         return {}
 
 
 def _save_metadata(data: dict) -> None:
-    """將 metadata 上傳至 Supabase Storage（update 優先，失敗再 upload）。"""
+    """
+    將 metadata 上傳至 Supabase Storage（update 優先，不存在再 upload）。
+    最終仍失敗時拋出例外：不可默默吞掉，否則 ZIP 已上傳但 metadata 沒記錄，
+    之後 get_zip_path 會找不到（呼叫端卻以為成功）。
+    """
     content = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     storage = _get_storage()
     try:
         storage.update(_METADATA_KEY, content, {"content-type": "application/json"})
-    except Exception:
-        try:
-            storage.upload(_METADATA_KEY, content, {"content-type": "application/json"})
-        except Exception:
-            pass
+    except Exception as e:
+        if not _is_storage_not_found(e):
+            raise
+        storage.upload(_METADATA_KEY, content, {"content-type": "application/json"})
 
 
 def _upload_to_bucket(storage_path: str, content: bytes) -> None:
@@ -112,11 +139,9 @@ def _upload_to_bucket(storage_path: str, content: bytes) -> None:
     storage = _get_storage()
     try:
         storage.update(storage_path, content, {"content-type": "application/zip"})
-    except Exception:
-        try:
-            storage.remove([storage_path])
-        except Exception:
-            pass
+    except Exception as e:
+        if not _is_storage_not_found(e):
+            raise
         storage.upload(storage_path, content, {"content-type": "application/zip"})
 
 
@@ -178,19 +203,22 @@ def save_zip(
 def _download_to_temp(storage_path: str) -> Optional[Path]:
     """
     從 Supabase Storage 下載檔案至系統暫存目錄，回傳 Path。
-    失敗或檔案不存在時回傳 None。
+    檔案不存在時回傳 None；其他錯誤（網路等）拋出例外，
+    避免暫時性錯誤被誤判成「找不到檔案」。
     呼叫端負責用完後刪除暫存檔（path.unlink(missing_ok=True)）。
     """
     try:
         data = _get_storage().download(storage_path)
-        if not data:
+    except Exception as e:
+        if _is_storage_not_found(e):
             return None
-        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="myquizai_dl_")
-        os.close(fd)
-        Path(tmp_path).write_bytes(data)
-        return Path(tmp_path)
-    except Exception:
+        raise
+    if not data:
         return None
+    fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="myquizai_dl_")
+    os.close(fd)
+    Path(tmp_path).write_bytes(data)
+    return Path(tmp_path)
 
 
 def get_zip_path(page_id: str) -> Optional[Path]:

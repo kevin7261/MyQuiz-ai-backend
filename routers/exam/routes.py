@@ -33,7 +33,6 @@ from services.grading import (
     update_exam_quiz_with_grade,
 )
 from utils.taipei_time import now_taipei_iso, to_taipei_iso
-from utils.retry import call_with_transient_http_retry
 from utils.serialization import to_json_safe
 from utils.llm_key import course_api_key_exists, fetch_api_key_setting_row, get_exam_api_key, get_rag_llm_model
 from utils.course_setting import COURSE_SETTING_EXAM_API_KEY
@@ -130,7 +129,8 @@ def list_exams(
         return ListExamResponse(exams=data, count=len(data))
 
     try:
-        return call_with_transient_http_retry(_list_exams_once)
+        # 暫時性連線錯誤重試已由 utils.supabase 全域套用於 .execute()
+        return _list_exams_once()
     except Exception as e:
         _logger.exception("GET /exam/pages 錯誤")
         raise HTTPException(status_code=500, detail=f"列出 Exam 失敗: {e!s}")
@@ -274,7 +274,8 @@ def list_rag_for_exams(
         return ListRagForExamsResponse(units=out, count=len(out))
 
     try:
-        return call_with_transient_http_retry(_list_rag_for_exams_once)
+        # 暫時性連線錯誤重試已由 utils.supabase 全域套用於 .execute()
+        return _list_rag_for_exams_once()
     except HTTPException:
         raise
     except Exception as e:
