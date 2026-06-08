@@ -1,5 +1,5 @@
 """
-GET /v1/prompt-templates 占位符說明（與 services/quiz_generation、grading、weakness_report、rag_prompts 填入邏輯對齊）。
+GET /v1/prompt-templates 占位符說明（與 services/quiz_generation、answering、weakness_report、rag_prompts 填入邏輯對齊）。
 """
 
 

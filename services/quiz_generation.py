@@ -12,7 +12,7 @@
 1. 模型／檢索常數（`QUIZ_LLM_MODEL`、embedding、k、檢索查詢句）
 2. **LLM Prompt 全文**（system／user、`{quiz_user_prompt_text}`／`## 已出過題目`＋`{quiz_history_body}`／`{context_md}`）
 3. `_context_as_markdown_fenced`（`{context_md}`）、LLM 回傳正規化、`_invoke_quiz_json_llm`
-4. 公開函式（exam／grade 路由動態 import；追問 `generate_quiz_followup*`：答不好追問弱點，答好則出新題）
+4. 公開函式（exam／answer 路由動態 import；追問 `generate_quiz_followup*`：答不好追問弱點，答好則出新題）
 """
 
 import json
@@ -39,7 +39,7 @@ from openai import OpenAI
 QUIZ_LLM_MODEL = "gpt-5.4"
 EMBEDDING_MODEL = "text-embedding-3-small"
 RETRIEVAL_K = 5
-# 出題時「固定查詢句」送進向量檢索；與批改 run_grade_job（以題幹當查詢）刻意不同。
+# 出題時「固定查詢句」送進向量檢索；與批改 run_answer_job（以題幹當查詢）刻意不同。
 DEFAULT_RETRIEVAL_QUERY = "課程重點概念"
 
 
@@ -442,7 +442,7 @@ def _invoke_quiz_json_llm(client: OpenAI, messages: list, *, llm_model: str | No
     """
     呼叫 GPT 並解析 JSON 物件回應。
 
-    - temperature=0.7：出題需要一定變化；批改在 services/grading 用 0.3，兩者勿混用語意。
+    - temperature=0.7：出題需要一定變化；批改在 services/answering 用 0.3，兩者勿混用語意。
     - 若 parse 結果非 dict（極少見），當成空 dict 再 normalize，避免呼叫端 KeyError。
     """
     response = client.chat.completions.create(
@@ -524,7 +524,7 @@ def _generate_quiz_followup_from_context(
 
 
 # ---------------------------------------------------------------------------
-# 公開 API（由 routers/exam、routers/grade 動態 import）
+# 公開 API（由 routers/exam、routers/answer 動態 import）
 # ---------------------------------------------------------------------------
 
 def generate_quiz_transcript_only(

@@ -18,7 +18,7 @@ from utils.db_schema import (
 # 模型與檢索常數
 # ---------------------------------------------------------------------------
 # 本模組不直接宣告 OpenAI 模型名；出題呼叫 `services.quiz_generation`（`QUIZ_LLM_MODEL`、embedding、k），
-# 批改呼叫 `services.grading`（`GRADE_LLM_MODEL`＝`QUIZ_LLM_MODEL`、GET/PUT /v1/rag/llm-model、檢索與 chunk 常數）。
+# 批改呼叫 `services.answering`（`ANSWER_LLM_MODEL`＝`QUIZ_LLM_MODEL`、GET/PUT /v1/rag/llm-model、檢索與 chunk 常數）。
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +341,7 @@ class ExamQuizAnswerRateRequest(BaseModel):
     answer_rate: ExamQuizRateValue = Field(0, description="僅 -1、0、1")
 
 
-class ExamQuizGradeRequest(BaseModel):
+class ExamQuizAnswerRequest(BaseModel):
     """POST /exam/quizzes/llm-answer：body 欄位依序對應 public.Exam_Quiz 之 exam_quiz_id、quiz_content、answer_content（學生作答 quiz_answer）。
     批改用 quiz_user_prompt_text／answer_user_prompt_text 優先採 Exam_Quiz 列，缺則自 Rag_Quiz 補齊。"""
     exam_quiz_id: int = Field(..., gt=0, description="Exam_Quiz 主鍵（必填，>0）；置入評分 prompt")

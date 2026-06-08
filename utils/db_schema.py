@@ -53,25 +53,25 @@ RAG_UNIT_SELECT_COLUMNS = (
 RAG_QUIZ_SELECT_COLUMNS = (
     "rag_quiz_id, rag_page_id, rag_unit_id, person_id, course_id, follow_up, quiz_name, "
     "quiz_user_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, "
-    "answer_user_prompt_text, answer_content, answer_critique, quiz_llm_model, grade_llm_model, "
+    "answer_user_prompt_text, answer_content, answer_critique, quiz_llm_model, answer_llm_model, "
     "quiz_history_list, quiz_history_list_prompt_text, for_exam, deleted, updated_at, created_at"
 )
 RAG_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP = (
     "rag_quiz_id, rag_page_id, rag_unit_id, person_id, course_id, quiz_name, "
     "quiz_user_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, "
-    "answer_user_prompt_text, answer_content, answer_critique, quiz_llm_model, grade_llm_model, "
+    "answer_user_prompt_text, answer_content, answer_critique, quiz_llm_model, answer_llm_model, "
     "quiz_history_list, quiz_history_list_prompt_text, for_exam, deleted, updated_at, created_at"
 )
 RAG_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY_LIST = (
     "rag_quiz_id, rag_page_id, rag_unit_id, person_id, course_id, follow_up, quiz_name, "
     "quiz_user_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, "
-    "answer_user_prompt_text, answer_content, answer_critique, quiz_llm_model, grade_llm_model, "
+    "answer_user_prompt_text, answer_content, answer_critique, quiz_llm_model, answer_llm_model, "
     "for_exam, deleted, updated_at, created_at"
 )
 RAG_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_NO_QUIZ_HISTORY_LIST = (
     "rag_quiz_id, rag_page_id, rag_unit_id, person_id, course_id, quiz_name, "
     "quiz_user_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, "
-    "answer_user_prompt_text, answer_content, answer_critique, quiz_llm_model, grade_llm_model, "
+    "answer_user_prompt_text, answer_content, answer_critique, quiz_llm_model, answer_llm_model, "
     "for_exam, deleted, updated_at, created_at"
 )
 
@@ -361,7 +361,7 @@ def rag_quiz_list_row(row: dict[str, Any]) -> dict[str, Any]:
         "quiz_answer": ans_s,
         "answer_critique": row.get("answer_critique"),
         "quiz_llm_model": row.get("quiz_llm_model"),
-        "grade_llm_model": row.get("grade_llm_model"),
+        "answer_llm_model": row.get("answer_llm_model"),
         "quiz_history_list": parse_rag_quiz_history_list(row.get("quiz_history_list")),
         "quiz_history_list_prompt_text": parse_quiz_history_prompt_text(
             row.get("quiz_history_list_prompt_text"),
@@ -388,55 +388,55 @@ EXAM_QUIZ_SELECT_COLUMNS = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "follow_up, follow_up_exam_quiz_id, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, "
     "quiz_hint, quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, "
-    "answer_critique, answer_rate, quiz_llm_model, grade_llm_model, quiz_history_list, "
+    "answer_critique, answer_rate, quiz_llm_model, answer_llm_model, quiz_history_list, "
     "quiz_history_list_prompt_text, updated_at, created_at"
 )
 EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY_LIST = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "follow_up, follow_up_exam_quiz_id, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, "
     "quiz_hint, quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, "
-    "answer_critique, answer_rate, quiz_llm_model, grade_llm_model, quiz_history_list_prompt_text, updated_at, created_at"
+    "answer_critique, answer_rate, quiz_llm_model, answer_llm_model, quiz_history_list_prompt_text, updated_at, created_at"
 )
 EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY_LIST_PROMPT_TEXT = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "follow_up, follow_up_exam_quiz_id, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, "
     "quiz_hint, quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, "
-    "answer_critique, answer_rate, quiz_llm_model, grade_llm_model, quiz_history_list, updated_at, created_at"
+    "answer_critique, answer_rate, quiz_llm_model, answer_llm_model, quiz_history_list, updated_at, created_at"
 )
 EXAM_QUIZ_SELECT_COLUMNS_NO_QUIZ_HISTORY = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "follow_up, follow_up_exam_quiz_id, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, "
     "quiz_hint, quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, "
-    "answer_critique, answer_rate, quiz_llm_model, grade_llm_model, updated_at, created_at"
+    "answer_critique, answer_rate, quiz_llm_model, answer_llm_model, updated_at, created_at"
 )
 EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "follow_up, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, quiz_hint, "
     "quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, answer_critique, answer_rate, "
-    "quiz_llm_model, grade_llm_model, quiz_history_list, quiz_history_list_prompt_text, updated_at, created_at"
+    "quiz_llm_model, answer_llm_model, quiz_history_list, quiz_history_list_prompt_text, updated_at, created_at"
 )
 EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID_NO_QUIZ_HISTORY_LIST = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "follow_up, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, quiz_hint, "
     "quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, answer_critique, answer_rate, "
-    "quiz_llm_model, grade_llm_model, quiz_history_list_prompt_text, updated_at, created_at"
+    "quiz_llm_model, answer_llm_model, quiz_history_list_prompt_text, updated_at, created_at"
 )
 EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_EXAM_QUIZ_ID_NO_QUIZ_HISTORY = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "follow_up, unit_name, quiz_name, quiz_user_prompt_text, quiz_content, quiz_hint, "
     "quiz_answer_reference, quiz_rate, answer_user_prompt_text, answer_content, answer_critique, answer_rate, "
-    "quiz_llm_model, grade_llm_model, updated_at, created_at"
+    "quiz_llm_model, answer_llm_model, updated_at, created_at"
 )
 EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "unit_name, quiz_name, quiz_user_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, "
-    "quiz_rate, answer_user_prompt_text, answer_content, answer_critique, answer_rate, quiz_llm_model, grade_llm_model, "
+    "quiz_rate, answer_user_prompt_text, answer_content, answer_critique, answer_rate, quiz_llm_model, answer_llm_model, "
     "quiz_history_list, quiz_history_list_prompt_text, updated_at, created_at"
 )
 EXAM_QUIZ_SELECT_COLUMNS_NO_FOLLOW_UP_NO_QUIZ_HISTORY_LIST = (
     "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
     "unit_name, quiz_name, quiz_user_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, "
-    "quiz_rate, answer_user_prompt_text, answer_content, answer_critique, answer_rate, quiz_llm_model, grade_llm_model, "
+    "quiz_rate, answer_user_prompt_text, answer_content, answer_critique, answer_rate, quiz_llm_model, answer_llm_model, "
     "updated_at, created_at"
 )
 
@@ -470,7 +470,7 @@ def exam_quiz_list_row(row: dict[str, Any]) -> dict[str, Any]:
         "answer_critique": row.get("answer_critique"),
         "answer_rate": 0 if row.get("answer_rate") is None else row.get("answer_rate"),
         "quiz_llm_model": row.get("quiz_llm_model"),
-        "grade_llm_model": row.get("grade_llm_model"),
+        "answer_llm_model": row.get("answer_llm_model"),
         "quiz_history_list": parse_rag_quiz_history_list(row.get("quiz_history_list")),
         "quiz_history_list_prompt_text": parse_quiz_history_prompt_text(
             row.get("quiz_history_list_prompt_text"),

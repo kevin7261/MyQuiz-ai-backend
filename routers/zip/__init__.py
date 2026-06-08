@@ -10,7 +10,7 @@ ZIP 與 RAG 相關 API 模組。路徑層級與排序與 Exam 對齊（見 utils
 GET /rag/pages/{rag_page_id}/unit-preview/text、…/unit-preview/mp3-file、…/unit-preview/youtube-url
 
 **題目**：POST /rag/quizzes → PATCH /rag/quizzes/{rag_quiz_id} → DELETE /rag/quizzes/{rag_quiz_id}
-→（followup／for-exam／llm-* 見 routers/grade）
+→（followup／for-exam／llm-* 見 routers/answer）
 
 GET /rag/pages 須 course_id、person_id；`local` 未傳時依連線判定。build-rag-zip 見路由 docstring。
 """

@@ -27,10 +27,10 @@ from services.exam_queries import (
     quizzes_by_exam_page_ids,
     rag_quiz_for_exam_response_row,
 )
-from services.grading import (
-    cleanup_grade_workspace,
-    run_grade_job_background,
-    update_exam_quiz_with_grade,
+from services.answering import (
+    cleanup_answer_workspace,
+    run_answer_job_background,
+    update_exam_quiz_with_answer,
 )
 from utils.taipei_time import now_taipei_iso, to_taipei_iso
 from utils.serialization import to_json_safe
@@ -70,7 +70,7 @@ from .schemas import (
     ExamLlmGenerateQuizFollowupRequest,
     ExamLlmGenerateQuizRequest,
     ExamQuizAnswerRateRequest,
-    ExamQuizGradeRequest,
+    ExamQuizAnswerRequest,
     ExamQuizRateRequest,
     ListExamResponse,
     ListRagForExamsResponse,
@@ -88,7 +88,7 @@ _logger = logging.getLogger("routers.exam")
 
 router = APIRouter(prefix="/exam", tags=["exam"])
 
-_exam_grade_job_results: dict[str, dict[str, Any]] = {}
+_exam_answer_job_results: dict[str, dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -679,13 +679,13 @@ def exam_create_llm_generate_quiz_followup(
 # POST /exam/quizzes/llm-answer
 # ---------------------------------------------------------------------------
 
-@router.post("/quizzes/llm-answer", summary="Exam Grade Quiz", operation_id="exam_llm_answer_quiz")
-@router.post("/quizzes/grade", summary="Exam Grade Quiz", include_in_schema=False)
-async def exam_grade_submission(
+@router.post("/quizzes/llm-answer", summary="Exam Answer Quiz", operation_id="exam_llm_answer_quiz")
+@router.post("/quizzes/answer", summary="Exam Answer Quiz", include_in_schema=False)
+async def exam_answer_submission(
     request: Request,
     background_tasks: BackgroundTasks,
     body: openapi_body(
-        ExamQuizGradeRequest,
+        ExamQuizAnswerRequest,
         {"exam_quiz_id": 1, "quiz_content": "", "quiz_answer": "學生作答文字"},
     ),
     caller_person_id: PersonId,
@@ -751,12 +751,12 @@ async def exam_grade_submission(
         except (TypeError, ValueError):
             rag_rqid_int = 0
 
-    grade_unit_filter: str | None = (qrow.get("unit_name") or "").strip() or None
-    exam_grade_unit_type = 0
+    answer_unit_filter: str | None = (qrow.get("unit_name") or "").strip() or None
+    exam_answer_unit_type = 0
     transcript_for_unit = ""
     if rag_uid_int > 0:
 
-        def _grade_unit_sel(cols: str, with_course_filter: bool):
+        def _answer_unit_sel(cols: str, with_course_filter: bool):
             c = select_without_course_id_if_needed("Rag_Unit", cols, with_course_filter)
             q = (
                 supabase.table("Rag_Unit")
@@ -768,10 +768,10 @@ async def exam_grade_submission(
                 q = q.eq("course_id", course_id)
             return q.limit(1)
 
-        def _grade_unit_execute(cols: str):
+        def _answer_unit_execute(cols: str):
             return execute_with_course_id_fallback(
                 "Rag_Unit",
-                lambda wc: _grade_unit_sel(cols, wc),
+                lambda wc: _answer_unit_sel(cols, wc),
                 course_id,
             )
 
@@ -800,35 +800,35 @@ async def exam_grade_submission(
             "rag_file_size, rag_chunk_size, rag_chunk_overlap, transcription"
         )
         try:
-            unit_sel = _grade_unit_execute(_gcols_full)
+            unit_sel = _answer_unit_execute(_gcols_full)
         except APIError as e:
             msg = (e.message or "").lower()
             if e.code != "42703":
                 raise
             if "transcript" in msg:
                 try:
-                    unit_sel = _grade_unit_execute(_gcols_legacy_tr)
+                    unit_sel = _answer_unit_execute(_gcols_legacy_tr)
                 except APIError as e_legacy:
                     if e_legacy.code == "42703" and "transcription" in (e_legacy.message or "").lower():
                         try:
-                            unit_sel = _grade_unit_execute(_gcols_no_tr)
+                            unit_sel = _answer_unit_execute(_gcols_no_tr)
                         except APIError as e2:
                             if e2.code == "42703" and "folder_combination" in (e2.message or "").lower():
-                                unit_sel = _grade_unit_execute(_gcols_min)
+                                unit_sel = _answer_unit_execute(_gcols_min)
                             else:
                                 raise
                     else:
                         raise
             elif "folder_combination" in msg:
                 try:
-                    unit_sel = _grade_unit_execute(_gcols_no_fc)
+                    unit_sel = _answer_unit_execute(_gcols_no_fc)
                 except APIError as e2:
                     if e2.code == "42703" and "transcript" in (e2.message or "").lower():
                         try:
-                            unit_sel = _grade_unit_execute(_gcols_no_fc_legacy_tr)
+                            unit_sel = _answer_unit_execute(_gcols_no_fc_legacy_tr)
                         except APIError as e3:
                             if e3.code == "42703" and "transcription" in (e3.message or "").lower():
-                                unit_sel = _grade_unit_execute(_gcols_min)
+                                unit_sel = _answer_unit_execute(_gcols_min)
                             else:
                                 raise
                     else:
@@ -839,11 +839,11 @@ async def exam_grade_submission(
             u0 = unit_sel.data[0]
             path_key = (u0.get("folder_combination") or u0.get("unit_name") or "").strip()
             if path_key:
-                grade_unit_filter = path_key
+                answer_unit_filter = path_key
             try:
-                exam_grade_unit_type = int(u0.get("unit_type") or 0)
+                exam_answer_unit_type = int(u0.get("unit_type") or 0)
             except (TypeError, ValueError):
-                exam_grade_unit_type = 0
+                exam_answer_unit_type = 0
             transcript_for_unit = transcript_from_row(u0)
 
     rag_id_used: int | None = None
@@ -878,7 +878,7 @@ async def exam_grade_submission(
             supabase,
             rag_id,
             include_row=True,
-            unit_name=grade_unit_filter,
+            unit_name=answer_unit_filter,
             rag_unit_id=rag_uid_int if rag_uid_int > 0 else None,
         )
     except HTTPException as e:
@@ -922,60 +922,60 @@ async def exam_grade_submission(
     except (TypeError, ValueError):
         pass
 
-    transcript_grade: str | None = None
+    transcript_answer: str | None = None
 
-    if exam_grade_unit_type in (2, 3, 4):
+    if exam_answer_unit_type in (2, 3, 4):
         if not transcript_text:
             return JSONResponse(
                 status_code=400,
                 content={"error": "批改用 transcript 未設定（單元 2／3／4）；請於 Rag_Unit 或 Rag 設定 transcript"},
             )
-        transcript_grade = transcript_text
-        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_exam_grade_tx_"))
+        transcript_answer = transcript_text
+        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_exam_answer_tx_"))
     else:
         rag_zip_path = get_zip_path(rag_zip_page_id)
         if not rag_zip_path or not rag_zip_path.exists():
             return JSONResponse(status_code=404, content={"error": f"找不到 RAG ZIP（page_id={rag_zip_page_id}）"})
-        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_exam_grade_"))
+        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_exam_answer_"))
         zip_source_path = work_dir / "ref.zip"
         extract_folder = work_dir / "extract"
         extract_folder.mkdir(parents=True, exist_ok=True)
         try:
             shutil.copy(rag_zip_path, zip_source_path)
             if not zipfile.is_zipfile(zip_source_path):
-                cleanup_grade_workspace(work_dir)
+                cleanup_answer_workspace(work_dir)
                 return JSONResponse(status_code=400, content={"error": "無效的 ZIP 檔"})
         except Exception as e:
-            cleanup_grade_workspace(work_dir)
+            cleanup_answer_workspace(work_dir)
             return JSONResponse(status_code=500, content={"error": str(e)})
         finally:
             safe_unlink(rag_zip_path)
 
     job_id = str(uuid.uuid4())
-    _exam_grade_job_results[job_id] = {"status": "pending", "result": None, "error": None, "llm_error": None}
+    _exam_answer_job_results[job_id] = {"status": "pending", "result": None, "error": None, "llm_error": None}
     exam_quiz_id_int = int(body.exam_quiz_id)
     def insert_fn(rd, qa):
-        return update_exam_quiz_with_grade(
-            rd, qa, exam_quiz_id=exam_quiz_id_int, grade_llm_model=llm_model
+        return update_exam_quiz_with_answer(
+            rd, qa, exam_quiz_id=exam_quiz_id_int, answer_llm_model=llm_model
         )
     background_tasks.add_task(
-        run_grade_job_background,
+        run_answer_job_background,
         job_id,
         work_dir,
         api_key,
         quiz_content,
         body.quiz_answer or "",
-        _exam_grade_job_results,
+        _exam_answer_job_results,
         insert_fn,
         answer_user_prompt_exam,
         exam_quiz_id=exam_quiz_id_int,
         rag_quiz_id=exam_rag_quiz_id,
-        unit_type=exam_grade_unit_type,
-        transcript_grade=transcript_grade,
+        unit_type=exam_answer_unit_type,
+        transcript_answer=transcript_answer,
         quiz_user_prompt_text=quiz_user_prompt_exam,
         llm_model=llm_model,
     )
-    return JSONResponse(status_code=202, content={"job_id": job_id, "grade_llm_model": llm_model})
+    return JSONResponse(status_code=202, content={"job_id": job_id, "answer_llm_model": llm_model})
 
 
 # ---------------------------------------------------------------------------
@@ -988,7 +988,7 @@ async def get_exam_answer_result(job_id: str, _person_id: PersonId, course_id: C
     輪詢 Exam 評分結果（搭配 POST /exam/quizzes/llm-answer）。
     status: pending | ready | error；ready 時 result 含 quiz_comments、exam_quiz_id。
     """
-    if job_id not in _exam_grade_job_results:
+    if job_id not in _exam_answer_job_results:
         return JSONResponse(
             status_code=404,
             content={
@@ -997,7 +997,7 @@ async def get_exam_answer_result(job_id: str, _person_id: PersonId, course_id: C
                 "error": "job not found（可能為服務重啟或冷啟動，請重新送出評分）",
             },
         )
-    data = _exam_grade_job_results[job_id]
+    data = _exam_answer_job_results[job_id]
     out: dict[str, Any] = {
         "status": data["status"],
         "result": data.get("result"),
@@ -1083,7 +1083,7 @@ def update_exam_quiz_rate(
 # PUT /exam/quizzes/{exam_quiz_id}/answer-rate
 # ---------------------------------------------------------------------------
 
-@router.put("/quizzes/{exam_quiz_id}/answer-rate", summary="Exam Rate Grade", status_code=200)
+@router.put("/quizzes/{exam_quiz_id}/answer-rate", summary="Exam Rate Answer", status_code=200)
 def update_exam_quiz_answer_rate(
     body: openapi_body(ExamQuizAnswerRateRequest, {"answer_rate": 0}),
     caller_person_id: PersonId,

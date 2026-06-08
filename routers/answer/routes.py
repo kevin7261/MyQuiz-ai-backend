@@ -1,4 +1,4 @@
-"""routers.grade routes（自 grade.py 拆分）。"""
+"""routers.answer routes（自 answer.py 拆分）。"""
 
 import logging
 from typing import Any
@@ -40,8 +40,8 @@ from .schemas import (
     GenerateQuizRequest,
     PutRagApiKeyRequest,
     PutRagLlmModelRequest,
-    QuizGradeDbOnlyRequest,
-    QuizGradeRequest,
+    QuizAnswerDbOnlyRequest,
+    QuizAnswerRequest,
     RagApiKeyExistsResponse,
     RagApiKeyResponse,
     RagLlmModelResponse,
@@ -50,12 +50,12 @@ from .schemas import (
 )
 from .helpers import (
     _enqueue_rag_llm_answer_job,
-    _grade_job_results,
+    _answer_job_results,
     _quiz_history_prompt_dicts,
     _rag_llm_generate_quiz_impl,
 )
 
-_logger = logging.getLogger("routers.grade")
+_logger = logging.getLogger("routers.answer")
 
 
 router = APIRouter(prefix="/rag", tags=["rag"])
@@ -324,11 +324,11 @@ def rag_llm_generate_quiz_followup_db_prompt(
     )
 
 
-@router.post("/quizzes/llm-answer", summary="Rag Grade Quiz")
-async def grade_submission(
+@router.post("/quizzes/llm-answer", summary="Rag Answer Quiz")
+async def answer_submission(
     background_tasks: BackgroundTasks,
     body: openapi_body(
-        QuizGradeRequest,
+        QuizAnswerRequest,
         {
             "rag_id": "1",
             "rag_page_id": "",
@@ -362,13 +362,13 @@ async def grade_submission(
 
 @router.post(
     "/quizzes/llm-answer-db",
-    summary="Rag Grade Quiz (stored answer_user_prompt_text)",
+    summary="Rag Answer Quiz (stored answer_user_prompt_text)",
     operation_id="rag_llm_answer_quiz_db_prompt",
 )
-async def grade_submission_stored_answer_prompt(
+async def answer_submission_stored_answer_prompt(
     background_tasks: BackgroundTasks,
     body: openapi_body(
-        QuizGradeDbOnlyRequest,
+        QuizAnswerDbOnlyRequest,
         {
             "rag_id": "1",
             "rag_page_id": "",
@@ -481,13 +481,13 @@ def mark_rag_quiz_for_exam(
 # GET /rag/quizzes/answer-result/{job_id}
 # ---------------------------------------------------------------------------
 
-@router.get("/quizzes/answer-result/{job_id}", summary="Get Grade Result", tags=["rag"])
+@router.get("/quizzes/answer-result/{job_id}", summary="Get Answer Result", tags=["rag"])
 async def get_answer_result(job_id: str, _person_id: PersonId, course_id: CourseId):
     """
     輪詢評分結果。status: pending | ready | error；
     ready 時 result 為 quiz_comments、rag_quiz_id（另含 rag_answer_id），並自資料庫讀取 rag_quiz 整列。
     """
-    if job_id not in _grade_job_results:
+    if job_id not in _answer_job_results:
         return JSONResponse(
             status_code=404,
             content={
@@ -496,7 +496,7 @@ async def get_answer_result(job_id: str, _person_id: PersonId, course_id: Course
                 "error": "job not found（可能為服務重啟或冷啟動，請重新送出評分）",
             },
         )
-    data = _grade_job_results[job_id]
+    data = _answer_job_results[job_id]
     out: dict[str, Any] = {
         "status": data["status"],
         "result": data.get("result"),

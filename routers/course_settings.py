@@ -104,7 +104,7 @@ def _require_developer_or_manager_for_course_setting_write(
         raise HTTPException(status_code=403, detail="僅開發者或管理者可變更課程設定")
 
 
-# 供 grade／exam api_key 端點沿用之別名
+# 供 answer／exam api_key 端點沿用之別名
 _require_developer_or_manager_for_analysis_prompt_write = (
     _require_developer_or_manager_for_course_setting_write
 )

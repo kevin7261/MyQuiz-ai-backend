@@ -1,4 +1,4 @@
-"""routers.grade helpers（自 grade.py 拆分）。"""
+"""routers.answer helpers（自 answer.py 拆分）。"""
 
 import json
 import logging
@@ -21,10 +21,10 @@ from fastapi import BackgroundTasks, HTTPException
 from postgrest.exceptions import APIError
 from fastapi.responses import JSONResponse, Response
 
-from services.grading import (
-    cleanup_grade_workspace,
-    run_grade_job_background,
-    update_rag_quiz_with_grade,
+from services.answering import (
+    cleanup_answer_workspace,
+    run_answer_job_background,
+    update_rag_quiz_with_answer,
     _rag_quiz_missing_column_error,
 )
 from utils.llm_error import format_llm_error, is_llm_call_error, llm_error_json_response
@@ -50,10 +50,10 @@ from utils.db_schema import (
 from utils.fs import safe_unlink
 from .schemas import QuizHistoryPair, QuizHistoryPromptFollowup, QuizHistoryPromptStem
 
-_logger = logging.getLogger("routers.grade")
+_logger = logging.getLogger("routers.answer")
 
 
-_grade_job_results: dict[str, dict[str, Any]] = {}
+_answer_job_results: dict[str, dict[str, Any]] = {}
 
 
 def _quiz_history_qa_dicts(pairs: list[QuizHistoryPair]) -> list[dict[str, Any]]:
@@ -522,7 +522,7 @@ async def _enqueue_rag_llm_answer_job(
         )
     llm_model = get_rag_llm_model(course_id)
 
-    def build_grade_quiz_sel(with_course_filter: bool):
+    def build_answer_quiz_sel(with_course_filter: bool):
         cols = select_without_course_id_if_needed(
             "Rag_Quiz",
             "rag_unit_id, quiz_user_prompt_text, quiz_content, answer_user_prompt_text, course_id",
@@ -538,7 +538,7 @@ async def _enqueue_rag_llm_answer_job(
             q = q.eq("course_id", course_id)
         return q.limit(1)
 
-    rq_sel = execute_with_course_id_fallback("Rag_Quiz", build_grade_quiz_sel, course_id)
+    rq_sel = execute_with_course_id_fallback("Rag_Quiz", build_answer_quiz_sel, course_id)
     if not rq_sel.data:
         return JSONResponse(status_code=404, content={"error": f"找不到 rag_quiz_id={rag_quiz_id_int} 的 Rag_Quiz"})
     rq_row = rq_sel.data[0]
@@ -560,7 +560,7 @@ async def _enqueue_rag_llm_answer_job(
     else:
         aup = (answer_user_prompt_from_request or "").strip()
 
-    grade_unit_type = 0
+    answer_unit_type = 0
     transcript_text = ""
     try:
         ruid_raw = rq_row.get("rag_unit_id")
@@ -568,7 +568,7 @@ async def _enqueue_rag_llm_answer_job(
     except (TypeError, ValueError):
         ruid_i = 0
     if ruid_i > 0:
-        def build_grade_unit_sel(with_course_filter: bool):
+        def build_answer_unit_sel(with_course_filter: bool):
             cols = select_without_course_id_if_needed(
                 "Rag_Unit",
                 "unit_type, transcript, course_id",
@@ -584,27 +584,27 @@ async def _enqueue_rag_llm_answer_job(
                 q = q.eq("course_id", course_id)
             return q.limit(1)
 
-        uu = execute_with_course_id_fallback("Rag_Unit", build_grade_unit_sel, course_id)
+        uu = execute_with_course_id_fallback("Rag_Unit", build_answer_unit_sel, course_id)
         if uu.data:
             u0 = uu.data[0]
             try:
-                grade_unit_type = int(u0.get("unit_type") or 0)
+                answer_unit_type = int(u0.get("unit_type") or 0)
             except (TypeError, ValueError):
-                grade_unit_type = 0
+                answer_unit_type = 0
             transcript_text = transcript_from_row(u0)
     if not transcript_text:
         transcript_text = instruction_from_rag_row(row)
 
-    transcript_grade: str | None = None
+    transcript_answer: str | None = None
 
-    if grade_unit_type in (2, 3, 4):
+    if answer_unit_type in (2, 3, 4):
         if not transcript_text.strip():
             return JSONResponse(
                 status_code=400,
                 content={"error": "批改用 transcript 未設定：請於 Rag_Unit 或 Rag 設定 transcript（單元 2／3／4）"},
             )
-        transcript_grade = transcript_text
-        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_grade_tx_"))
+        transcript_answer = transcript_text
+        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_answer_tx_"))
     else:
         rag_zip_path = get_zip_path(rag_zip_page_id)
         if not rag_zip_path or not rag_zip_path.exists():
@@ -612,46 +612,46 @@ async def _enqueue_rag_llm_answer_job(
                 status_code=404,
                 content={"error": f"找不到 RAG ZIP，請確認 rag_id={rag_id_str}（page_id={rag_zip_page_id}）"},
             )
-        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_grade_"))
+        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_answer_"))
         zip_source_path = work_dir / "ref.zip"
         extract_folder = work_dir / "extract"
         extract_folder.mkdir(parents=True, exist_ok=True)
         try:
             shutil.copy(rag_zip_path, zip_source_path)
             if not zipfile.is_zipfile(zip_source_path):
-                cleanup_grade_workspace(work_dir)
+                cleanup_answer_workspace(work_dir)
                 return JSONResponse(status_code=400, content={"error": "無效的 ZIP 檔"})
         except Exception as e:
-            cleanup_grade_workspace(work_dir)
+            cleanup_answer_workspace(work_dir)
             return JSONResponse(status_code=500, content={"error": str(e)})
         finally:
             safe_unlink(rag_zip_path)
 
     job_id = str(uuid.uuid4())
-    _grade_job_results[job_id] = {"status": "pending", "result": None, "error": None, "llm_error": None}
+    _answer_job_results[job_id] = {"status": "pending", "result": None, "error": None, "llm_error": None}
     def insert_fn(rd, qa):
-        return update_rag_quiz_with_grade(
+        return update_rag_quiz_with_answer(
             rd,
             qa,
             rag_quiz_id=rag_quiz_id_int,
             answer_user_prompt_text=aup,
             quiz_content=qc_from_body,
-            grade_llm_model=llm_model,
+            answer_llm_model=llm_model,
         )
     background_tasks.add_task(
-        run_grade_job_background,
+        run_answer_job_background,
         job_id,
         work_dir,
         api_key,
         quiz_content_resolved,
         quiz_answer or "",
-        _grade_job_results,
+        _answer_job_results,
         insert_fn,
         aup,
         rag_quiz_id=rag_quiz_id_int,
-        unit_type=grade_unit_type,
-        transcript_grade=transcript_grade,
+        unit_type=answer_unit_type,
+        transcript_answer=transcript_answer,
         quiz_user_prompt_text=quiz_user_prompt_db,
         llm_model=llm_model,
     )
-    return JSONResponse(status_code=202, content={"job_id": job_id, "grade_llm_model": llm_model})
+    return JSONResponse(status_code=202, content={"job_id": job_id, "answer_llm_model": llm_model})

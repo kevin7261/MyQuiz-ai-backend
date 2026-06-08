@@ -1,4 +1,4 @@
-"""routers.grade schemas（自 grade.py 拆分）。"""
+"""routers.answer schemas（自 answer.py 拆分）。"""
 
 from typing import Any, Optional
 
@@ -140,7 +140,7 @@ class GenerateQuizRequest(BaseModel):
         return _coerce_quiz_history_prompt_stem_validator(v)
 
 
-class QuizGradeRequest(BaseModel):
+class QuizAnswerRequest(BaseModel):
     """
     POST /rag/quizzes/llm-answer 請求 body。
     欄位順序：Rag.rag_id → public.Rag_Quiz（rag_page_id, rag_quiz_id, quiz_content, answer_user_prompt_text, answer_content／quiz_answer）。
@@ -241,7 +241,7 @@ class GenerateQuizFollowupDbOnlyRequest(BaseModel):
         return _coerce_quiz_history_prompt_followup_validator(v)
 
 
-class QuizGradeDbOnlyRequest(BaseModel):
+class QuizAnswerDbOnlyRequest(BaseModel):
     """
     POST /rag/quizzes/llm-answer-db。
     欄位順序：Rag.rag_id → Rag_Quiz（rag_page_id, rag_quiz_id, quiz_content, answer_content／quiz_answer）；不含 answer_user_prompt_text。
@@ -330,5 +330,5 @@ class PutRagLlmModelRequest(BaseModel):
 
     llm_model: str = Field(
         ...,
-        description="RAG 出題／批改／弱點分析 LLM 模型名（對應 QUIZ_LLM_MODEL／GRADE_LLM_MODEL／WEAKNESS_LLM_MODEL，預設 gpt-5.4）",
+        description="RAG 出題／批改／弱點分析 LLM 模型名（對應 QUIZ_LLM_MODEL／ANSWER_LLM_MODEL／WEAKNESS_LLM_MODEL，預設 gpt-5.4）",
     )

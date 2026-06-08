@@ -1,6 +1,6 @@
 """
 弱點報告 LLM 產生（個人分析、課程分析共用）。
-對齊 `services/quiz_generation`、`services/grading`：system／user Markdown prompt、`.format(analysis_user_prompt_text=…, material_md=…)`。
+對齊 `services/quiz_generation`、`services/answering`：system／user Markdown prompt、`.format(analysis_user_prompt_text=…, material_md=…)`。
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ def quiz_has_answer(quiz: dict) -> bool:
 
 
 def analysis_user_prompt_display(raw: Optional[str]) -> str:
-    """填入弱點報告 user 模板；空則與批改 `_grade_field_display` 一致為「（未提供）」。"""
+    """填入弱點報告 user 模板；空則與批改 `_answer_field_display` 一致為「（未提供）」。"""
     return (raw or "").strip() or "（未提供）"
 
 

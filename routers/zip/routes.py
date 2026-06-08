@@ -1029,7 +1029,7 @@ def insert_rag_quiz_row(
 ):
     """
     依 `rag_page_id`／`rag_unit_id` 解析 Rag_Unit 後新增一筆空白 `Rag_Quiz`，**不呼叫 LLM**。`rag_quiz_id` 由資料庫自動產生並於回傳中帶出。
-    LLM 出題請用 grade router 之 LLM 出題端點。
+    LLM 出題請用 answer router 之 LLM 出題端點。
     """
     try:
         supabase = get_supabase()

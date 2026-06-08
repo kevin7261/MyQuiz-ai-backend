@@ -25,7 +25,7 @@ from services.exam_queries import (
     enrich_exam_quizzes_rag_tab_from_units,
     select_rag_row_with_transcript_fallback,
 )
-from services.grading import (
+from services.answering import (
     _rag_quiz_missing_column_error,
 )
 from utils.llm_error import format_llm_error, is_llm_call_error, llm_error_json_response

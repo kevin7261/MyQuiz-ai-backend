@@ -8,10 +8,10 @@ from pydantic import BaseModel, Field
 
 from dependencies.person_id import PersonId
 
-from services.grading import (
-    SYSTEM_PROMPT_GRADE,
-    USER_PROMPT_GRADE_FAISS_COURSE,
-    USER_PROMPT_GRADE_TRANSCRIPT_COURSE,
+from services.answering import (
+    SYSTEM_PROMPT_ANSWER,
+    USER_PROMPT_ANSWER_FAISS_COURSE,
+    USER_PROMPT_ANSWER_TRANSCRIPT_COURSE,
 )
 from services.quiz_generation import (
     SYSTEM_PROMPT_QUIZ,
@@ -69,14 +69,14 @@ class LlmGeneratePrompts(BaseModel):
 class LlmAnswerPrompts(BaseModel):
     """POST .../llm-answer 所用 prompt 模板。"""
 
-    system: str = Field(..., description="批改 system prompt（SYSTEM_PROMPT_GRADE）")
+    system: str = Field(..., description="批改 system prompt（SYSTEM_PROMPT_ANSWER）")
     user_transcript_course: str = Field(
         ...,
-        description="逐字稿路徑 user prompt（USER_PROMPT_GRADE_TRANSCRIPT_COURSE）",
+        description="逐字稿路徑 user prompt（USER_PROMPT_ANSWER_TRANSCRIPT_COURSE）",
     )
     user_faiss_course: str = Field(
         ...,
-        description="FAISS 檢索路徑 user prompt（USER_PROMPT_GRADE_FAISS_COURSE）",
+        description="FAISS 檢索路徑 user prompt（USER_PROMPT_ANSWER_FAISS_COURSE）",
     )
 
 
@@ -122,9 +122,9 @@ def get_all_prompt_templates(_person_id: PersonId):
             user_followup=USER_PROMPT_COURSE_FOLLOWUP,
         ),
         llm_answer=LlmAnswerPrompts(
-            system=SYSTEM_PROMPT_GRADE,
-            user_transcript_course=USER_PROMPT_GRADE_TRANSCRIPT_COURSE,
-            user_faiss_course=USER_PROMPT_GRADE_FAISS_COURSE,
+            system=SYSTEM_PROMPT_ANSWER,
+            user_transcript_course=USER_PROMPT_ANSWER_TRANSCRIPT_COURSE,
+            user_faiss_course=USER_PROMPT_ANSWER_FAISS_COURSE,
         ),
         person_analysis=AnalysisPrompts(**person_tpl),
         course_analysis=AnalysisPrompts(**course_tpl),

@@ -26,7 +26,7 @@ from routers.college import router as college_router
 from routers.course import router as course_router
 from routers.course_analysis import router as course_analysis_router
 from routers.exam import router as exam_router
-from routers.grade import router as grade_router
+from routers.answer import router as answer_router
 from routers.log import router as log_router
 from routers.person_analysis import router as person_analysis_router
 from routers.prompt import router as prompt_router
@@ -92,12 +92,12 @@ app.add_middleware(APILogMiddleware)
 # 路由掛載
 # ---------------------------------------------------------------------------
 # 全部 API 掛在 /v1 之下（版本前綴；未來 breaking change 走 /v2）。
-# zip_router 先於 grade_router 掛載（歷史原因）；OpenAPI 路徑順序見 utils.openapi_order。
+# zip_router 先於 answer_router 掛載（歷史原因）；OpenAPI 路徑順序見 utils.openapi_order。
 
 API_PREFIX = "/v1"
 
 app.include_router(zip_router, prefix=API_PREFIX)
-app.include_router(grade_router, prefix=API_PREFIX)
+app.include_router(answer_router, prefix=API_PREFIX)
 app.include_router(exam_router, prefix=API_PREFIX)
 app.include_router(person_analysis_router, prefix=API_PREFIX)
 app.include_router(course_analysis_router, prefix=API_PREFIX)

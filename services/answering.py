@@ -1,15 +1,15 @@
 """
 評分管線 service。包含 LLM JSON 解析、RAG ZIP 批改、逐字稿批改、DB 寫回輔助。
-routers/grade 與 routers/exam 共用，不含任何 FastAPI 路由。
+routers/answer 與 routers/exam 共用，不含任何 FastAPI 路由。
 
 檔案結構（由上而下）：
 1. 模型／檢索（及講義臨時向量）常數
-2. **LLM 批改 Prompt**（對齊 `quiz_generation`：`SYSTEM_PROMPT_GRADE`、`USER_PROMPT_GRADE_TRANSCRIPT_COURSE`、`USER_PROMPT_GRADE_FAISS_COURSE`）
-3. `_grade_field_display`、LLM JSON 解析輔助、暫存清理、批改與 DB 寫回
+2. **LLM 批改 Prompt**（對齊 `quiz_generation`：`SYSTEM_PROMPT_ANSWER`、`USER_PROMPT_ANSWER_TRANSCRIPT_COURSE`、`USER_PROMPT_ANSWER_FAISS_COURSE`）
+3. `_answer_field_display`、LLM JSON 解析輔助、暫存清理、批改與 DB 寫回
 
 重要（維持行為時請留意）：
 - 批改 LLM 使用 `response_format=json_object`；模板須含「json」字樣。模型頂層 JSON **僅**含 `answer_critique`（純評語，無分數欄）；管線展開為 **`quiz_comments`** 後，**寫入 DB 之 `answer_critique` 為合併後純文字**（非 `{"quiz_comments":[…]}`）；記憶體 job `result` 仍含 `quiz_comments` 陣列供輪詢（**不依數值評分**）。
-- run_grade_job_background：transcript_grade 非空時不走向量庫，與有 FAISS 路徑互斥。
+- run_answer_job_background：transcript_answer 非空時不走向量庫，與有 FAISS 路徑互斥。
 - Rag_Quiz／Exam_Quiz 之 `answer_critique` 皆為評語純文字；不包含數值評分。
 """
 
@@ -43,26 +43,26 @@ _logger = logging.getLogger(__name__)
 # 模型與檢索（及講義臨時向量）常數
 # -----------------------------------------------------------------------------
 # 與出題 `services.quiz_generation` 共用同一 embedding 模型，維持索引維度一致。
-# `GRADE_RETRIEVAL_K`：有 FAISS 或臨時向量時，以題幹為查詢之檢索段數。
+# `ANSWER_RETRIEVAL_K`：有 FAISS 或臨時向量時，以題幹為查詢之檢索段數。
 # chunk 參數僅於「ZIP 無 FAISS、改由講義建臨時向量庫」時使用。
 
-GRADE_LLM_MODEL = QUIZ_LLM_MODEL
-GRADE_EMBEDDING_MODEL = "text-embedding-3-small"
-GRADE_RETRIEVAL_K = 5
-GRADE_RAG_CHUNK_SIZE = 1000
-GRADE_RAG_CHUNK_OVERLAP = 200
+ANSWER_LLM_MODEL = QUIZ_LLM_MODEL
+ANSWER_EMBEDDING_MODEL = "text-embedding-3-small"
+ANSWER_RETRIEVAL_K = 5
+ANSWER_RAG_CHUNK_SIZE = 1000
+ANSWER_RAG_CHUNK_OVERLAP = 200
 
 
 # -----------------------------------------------------------------------------
 # LLM 批改 Prompt（與「出題」`services/quiz_generation` 相同分段：`SYSTEM_PROMPT_*` → `USER_PROMPT_*_COURSE`、`---`、`## 課程內容`；user 僅 `.format(...)`）
 # -----------------------------------------------------------------------------
 # Chat messages：
-#   role=system … SYSTEM_PROMPT_GRADE
-#   role=user … USER_PROMPT_GRADE_TRANSCRIPT_COURSE 或 USER_PROMPT_GRADE_FAISS_COURSE；
+#   role=system … SYSTEM_PROMPT_ANSWER
+#   role=user … USER_PROMPT_ANSWER_TRANSCRIPT_COURSE 或 USER_PROMPT_ANSWER_FAISS_COURSE；
 #   其中 `{context_md}` 僅由逐字稿／向量檢索經 `_context_as_markdown_fenced` 產生，`{id_block}`、`quiz_*` 占位同一 `.format` 填入。
 #
 
-SYSTEM_PROMPT_GRADE = textwrap.dedent("""
+SYSTEM_PROMPT_ANSWER = textwrap.dedent("""
     # 角色
 
     你是一位教授，請批改學生本題測驗作答。
@@ -86,7 +86,7 @@ SYSTEM_PROMPT_GRADE = textwrap.dedent("""
     - `answer_critique`：**物件**（頂層**僅**此鍵；**物件內**為 `quiz_comments`：Markdown 字串陣列，**與／或** `text`：Markdown 字串。**勿**出現鍵 `grade`、`quiz_grade`、`score`。）
     """).strip()
 
-USER_PROMPT_GRADE_TRANSCRIPT_COURSE = textwrap.dedent("""
+USER_PROMPT_ANSWER_TRANSCRIPT_COURSE = textwrap.dedent("""
     {id_block}## 必須遵守（最高優先）
 
     - 緊接於下的 **`## 出題 user prompt`**、**`## 作答 user prompt`** 兩節內文為本任務**最重要**之依據；與本訊息後段（題幹、學生作答、課程引用、**批改說明**）牴觸時，**以該兩節為準**。
@@ -123,7 +123,7 @@ USER_PROMPT_GRADE_TRANSCRIPT_COURSE = textwrap.dedent("""
     {context_md}
     """).strip()
 
-USER_PROMPT_GRADE_FAISS_COURSE = textwrap.dedent("""
+USER_PROMPT_ANSWER_FAISS_COURSE = textwrap.dedent("""
     {id_block}## 必須遵守（最高優先）
 
     - 緊接於下的 **`## 出題 user prompt`**、**`## 作答 user prompt`** 兩節內文為本任務**最重要**之依據；與本訊息後段（題幹、學生作答、課程引用、**批改說明**）牴觸時，**以該兩節為準**。
@@ -161,7 +161,7 @@ USER_PROMPT_GRADE_FAISS_COURSE = textwrap.dedent("""
     """).strip()
 
 
-def _grade_field_display(raw: str) -> str:
+def _answer_field_display(raw: str) -> str:
     """填入批改 user 模板之欄位；空則與舊版一致顯示「（未提供）」。"""
     return (raw or "").strip() or "（未提供）"
 
@@ -171,7 +171,7 @@ def _grade_field_display(raw: str) -> str:
 # ---------------------------------------------------------------------------
 # 以下函式不呼叫 LLM，僅處理「模型已回傳」或「DB 已儲存」的 JSON／欄位，供路由與寫回共用。
 
-def normalize_grading_llm_json(llm_json: dict[str, Any]) -> None:
+def normalize_answering_llm_json(llm_json: dict[str, Any]) -> None:
     """就地修改：舊鍵 comments → quiz_comments（與前端／DB 欄位命名一致）。"""
     if "quiz_comments" not in llm_json and "comments" in llm_json:
         llm_json["quiz_comments"] = llm_json.pop("comments")
@@ -208,7 +208,7 @@ def ingest_llm_answer_response(llm_json: dict[str, Any]) -> None:
         raw_comments = []
 
     llm_json["quiz_comments"] = raw_comments
-    normalize_grading_llm_json(llm_json)
+    normalize_answering_llm_json(llm_json)
 
     llm_json.pop("quiz_grade", None)
     llm_json.pop("score", None)
@@ -256,7 +256,7 @@ def answer_critique_plain_text_from_result(result_dict: dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
-def critique_stored_grade_matches(critique_raw: Any, expected: int) -> bool:
+def critique_stored_answer_matches(critique_raw: Any, expected: int) -> bool:
     """寫回後讀回驗證：answer_critique 欄位存在即可（已無數值得分／quiz_grade）。expected 保留以相容呼叫端。"""
     _ = expected
     return critique_raw is not None
@@ -266,7 +266,7 @@ def critique_stored_grade_matches(critique_raw: Any, expected: int) -> bool:
 # 暫存目錄清理
 # ---------------------------------------------------------------------------
 
-def cleanup_grade_workspace(work_dir: Path) -> None:
+def cleanup_answer_workspace(work_dir: Path) -> None:
     """刪除評分過程產生的暫存目錄（含 ref.zip 解壓內容）；ignore_errors 避免因權限略過失敗。"""
     if work_dir and work_dir.exists():
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -276,7 +276,7 @@ def cleanup_grade_workspace(work_dir: Path) -> None:
 # 逐字稿純 LLM 批改（unit_type 2／3／4，不讀 RAG ZIP）
 # ---------------------------------------------------------------------------
 
-def run_grade_job_transcript_only(
+def run_answer_job_transcript_only(
     api_key: str,
     transcript: str,
     quiz_content: str,
@@ -289,17 +289,17 @@ def run_grade_job_transcript_only(
     llm_model: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
-    無 RAG ZIP（unit_type 2／3／4）：system = SYSTEM_PROMPT_GRADE；user = USER_PROMPT_GRADE_TRANSCRIPT_COURSE，
+    無 RAG ZIP（unit_type 2／3／4）：system = SYSTEM_PROMPT_ANSWER；user = USER_PROMPT_ANSWER_TRANSCRIPT_COURSE，
     其中課程逐字稿／全文經 `_context_as_markdown_fenced` 填入 `{context_md}`。
     回傳 (LLM 訊息原文, 解析後 JSON)。
 
-    quiz_user_prompt_text／answer_user_prompt_text：與 **USER_PROMPT_GRADE_TRANSCRIPT_COURSE** 占位符同名，空則經 `_grade_field_display` 為「（未提供）」。
+    quiz_user_prompt_text／answer_user_prompt_text：與 **USER_PROMPT_ANSWER_TRANSCRIPT_COURSE** 占位符同名，空則經 `_answer_field_display` 為「（未提供）」。
     """
     ts = (transcript or "").strip()
     if not ts:
         raise ValueError("批改用 transcript 未設定")
 
-    # 關聯識別 Markdown（格式須與 run_grade_job 一致；供 USER_PROMPT_GRADE_TRANSCRIPT_COURSE）
+    # 關聯識別 Markdown（格式須與 run_answer_job 一致；供 USER_PROMPT_ANSWER_TRANSCRIPT_COURSE）
     id_lines: list[str] = []
     if exam_quiz_id is not None and exam_quiz_id > 0:
         id_lines.append(f"- **exam_quiz_id**：`{exam_quiz_id}`")
@@ -309,21 +309,21 @@ def run_grade_job_transcript_only(
 
     context_md = _context_as_markdown_fenced(ts)
     # system／user 與 services.quiz_generation 出題路徑一致：規範在 system；題目／欄位／課程內文在 user。
-    user_msg = USER_PROMPT_GRADE_TRANSCRIPT_COURSE.format(
+    user_msg = USER_PROMPT_ANSWER_TRANSCRIPT_COURSE.format(
         id_block=id_block,
-        quiz_user_prompt_text=_grade_field_display(quiz_user_prompt_text),
-        answer_user_prompt_text=_grade_field_display(answer_user_prompt_text),
-        quiz_content=_grade_field_display(quiz_content),
-        quiz_answer=_grade_field_display(quiz_answer),
+        quiz_user_prompt_text=_answer_field_display(quiz_user_prompt_text),
+        answer_user_prompt_text=_answer_field_display(answer_user_prompt_text),
+        quiz_content=_answer_field_display(quiz_content),
+        quiz_answer=_answer_field_display(quiz_answer),
         context_md=context_md,
     )
 
     client = OpenAI(api_key=api_key)
     try:
         response = client.chat.completions.create(
-            model=llm_model or GRADE_LLM_MODEL,
+            model=llm_model or ANSWER_LLM_MODEL,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT_GRADE},
+                {"role": "system", "content": SYSTEM_PROMPT_ANSWER},
                 {"role": "user", "content": user_msg},
             ],
             response_format={"type": "json_object"},
@@ -349,7 +349,7 @@ def run_grade_job_transcript_only(
 # RAG ZIP 批改
 # ---------------------------------------------------------------------------
 
-def run_grade_job(
+def run_answer_job(
     work_dir: Path,
     api_key: str,
     quiz_content: str,
@@ -367,8 +367,8 @@ def run_grade_job(
 
     work_dir：由路由建立；內含 ref.zip（RAG 或講義壓縮檔）與子目錄 extract（解壓目標）。
     unit_type：僅在「無 FAISS、改由講義建臨時向量庫」時傳入 process_zip_to_docs。
-    quiz_user_prompt_text：與 **USER_PROMPT_GRADE_FAISS_COURSE** 占位符同名；空則經 `_grade_field_display` 顯示「（未提供）」。
-    LLM 訊息：`SYSTEM_PROMPT_GRADE`（system）+ `USER_PROMPT_GRADE_FAISS_COURSE`（user，其中 `{context_md}` 為 `_context_as_markdown_fenced(檢索片段)`）。
+    quiz_user_prompt_text：與 **USER_PROMPT_ANSWER_FAISS_COURSE** 占位符同名；空則經 `_answer_field_display` 顯示「（未提供）」。
+    LLM 訊息：`SYSTEM_PROMPT_ANSWER`（system）+ `USER_PROMPT_ANSWER_FAISS_COURSE`（user，其中 `{context_md}` 為 `_context_as_markdown_fenced(檢索片段)`）。
     """
     zip_source_path = work_dir / "ref.zip"
     extract_folder = work_dir / "extract"
@@ -389,7 +389,7 @@ def run_grade_job(
             db_folder = root
             break
 
-    embeddings = OpenAIEmbeddings(model=GRADE_EMBEDDING_MODEL, api_key=api_key)
+    embeddings = OpenAIEmbeddings(model=ANSWER_EMBEDDING_MODEL, api_key=api_key)
 
     if is_rag_db:
         vectorstore = FAISS.load_local(
@@ -402,19 +402,19 @@ def run_grade_job(
         if not all_documents:
             raise ValueError("ZIP 內無支援的講義文件（請確認單元 unit_type 與檔案格式一致）")
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=GRADE_RAG_CHUNK_SIZE,
-            chunk_overlap=GRADE_RAG_CHUNK_OVERLAP,
+            chunk_size=ANSWER_RAG_CHUNK_SIZE,
+            chunk_overlap=ANSWER_RAG_CHUNK_OVERLAP,
         )
         split_docs = text_splitter.split_documents(all_documents)
         vectorstore = FAISS.from_documents(split_docs, embeddings)
 
     # 以題幹當檢索查詢（與 services.quiz_generation 固定查詢句不同，較貼近本題語意）。
-    retriever = vectorstore.as_retriever(search_kwargs={"k": GRADE_RETRIEVAL_K})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": ANSWER_RETRIEVAL_K})
     docs = retriever.invoke(quiz_content)
     context_text = "\n\n".join([d.page_content for d in docs])
     context_md = _context_as_markdown_fenced(context_text)
 
-    # 關聯識別 Markdown（格式須與 run_grade_job_transcript_only 一致；供 USER_PROMPT_GRADE_FAISS_COURSE）
+    # 關聯識別 Markdown（格式須與 run_answer_job_transcript_only 一致；供 USER_PROMPT_ANSWER_FAISS_COURSE）
     id_lines: list[str] = []
     if exam_quiz_id is not None and exam_quiz_id > 0:
         id_lines.append(f"- **exam_quiz_id**：`{exam_quiz_id}`")
@@ -422,21 +422,21 @@ def run_grade_job(
         id_lines.append(f"- **rag_quiz_id**：`{rag_quiz_id}`")
     id_block = ("## 關聯識別\n\n" + "\n".join(id_lines) + "\n\n") if id_lines else ""
 
-    prompt = USER_PROMPT_GRADE_FAISS_COURSE.format(
+    prompt = USER_PROMPT_ANSWER_FAISS_COURSE.format(
         id_block=id_block,
-        quiz_user_prompt_text=_grade_field_display(quiz_user_prompt_text),
-        answer_user_prompt_text=_grade_field_display(answer_user_prompt_text),
-        quiz_content=_grade_field_display(quiz_content),
-        quiz_answer=_grade_field_display(quiz_answer),
+        quiz_user_prompt_text=_answer_field_display(quiz_user_prompt_text),
+        answer_user_prompt_text=_answer_field_display(answer_user_prompt_text),
+        quiz_content=_answer_field_display(quiz_content),
+        quiz_answer=_answer_field_display(quiz_answer),
         context_md=context_md,
     )
 
     client = OpenAI(api_key=api_key)
     try:
         response = client.chat.completions.create(
-            model=llm_model or GRADE_LLM_MODEL,
+            model=llm_model or ANSWER_LLM_MODEL,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT_GRADE},
+                {"role": "system", "content": SYSTEM_PROMPT_ANSWER},
                 {"role": "user", "content": prompt},
             ],
             response_format={"type": "json_object"},
@@ -464,7 +464,7 @@ def run_grade_job(
 # 由路由註冊 BackgroundTasks 呼叫；不直接對外暴露 HTTP。
 # results_store：記憶體 dict，鍵為 job_id；供 GET .../answer-result 輪詢。
 
-def run_grade_job_background(
+def run_answer_job_background(
     job_id: str,
     work_dir: Path,
     api_key: str,
@@ -477,21 +477,21 @@ def run_grade_job_background(
     exam_quiz_id: int | None = None,
     rag_quiz_id: int | None = None,
     unit_type: int = 0,
-    transcript_grade: str | None = None,
+    transcript_answer: str | None = None,
     quiz_user_prompt_text: str = "",
     llm_model: str | None = None,
 ) -> None:
     """
     通用背景評分：執行評分、可選寫入 DB、結果存 results_store。
     insert_answer_fn(result_dict, quiz_answer) 寫入 DB 並回傳 (id_key, id_val) 或 None。
-    transcript_grade 非空時改走逐字稿純 LLM 批改（不讀 RAG ZIP）。
+    transcript_answer 非空時改走逐字稿純 LLM 批改（不讀 RAG ZIP）。
     """
     try:
         # 與 unit_type 2/3/4 批改一致：有逐字稿字串則不開 ref.zip 向量流程（避免重複讀 ZIP）。
-        if (transcript_grade or "").strip():
-            _, llm_json = run_grade_job_transcript_only(
+        if (transcript_answer or "").strip():
+            _, llm_json = run_answer_job_transcript_only(
                 api_key,
-                transcript_grade.strip(),
+                transcript_answer.strip(),
                 quiz_content,
                 quiz_answer,
                 quiz_user_prompt_text=quiz_user_prompt_text,
@@ -501,7 +501,7 @@ def run_grade_job_background(
                 llm_model=llm_model,
             )
         else:
-            _, llm_json = run_grade_job(
+            _, llm_json = run_answer_job(
                 work_dir,
                 api_key,
                 quiz_content,
@@ -554,7 +554,7 @@ def run_grade_job_background(
         results_store[job_id] = {"status": "error", "result": None, "error": str(e), "llm_error": None}
         _logger.error("批改失敗 job_id=%s: %s", job_id, e, exc_info=True)
     finally:
-        cleanup_grade_workspace(work_dir)
+        cleanup_answer_workspace(work_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -605,14 +605,14 @@ def _append_rag_quiz_history(
     return serialize_rag_quiz_history_list(history)
 
 
-def update_rag_quiz_with_grade(
+def update_rag_quiz_with_answer(
     result_dict: dict,
     quiz_answer: str,
     *,
     rag_quiz_id: int,
     answer_user_prompt_text: str = "",
     quiz_content: str = "",
-    grade_llm_model: str = "",
+    answer_llm_model: str = "",
 ) -> tuple[str, int] | None:
     """更新 public.Rag_Quiz；`answer_critique` 存評語純文字（與 Exam_Quiz 一致）；成功後讀回驗證（舊表無該欄時走降級路徑）。"""
     if rag_quiz_id <= 0:
@@ -626,8 +626,8 @@ def update_rag_quiz_with_grade(
         "answer_critique": critique_text,
         "updated_at": ts,
     }
-    if (grade_llm_model or "").strip():
-        row["grade_llm_model"] = (grade_llm_model or "").strip()
+    if (answer_llm_model or "").strip():
+        row["answer_llm_model"] = (answer_llm_model or "").strip()
     # 僅在呼叫端傳入非空 quiz_content 時一併更新題幹（避免空字串蓋掉既有題目）。
     if qc_persist:
         row = {"quiz_content": qc_persist, **row}
@@ -693,8 +693,8 @@ def update_rag_quiz_with_grade(
                     update_payload.pop("answer_critique")
                     skipped_critique = True
                     continue
-                if _rag_quiz_missing_column_error(upd_err, "grade_llm_model") and "grade_llm_model" in update_payload:
-                    update_payload.pop("grade_llm_model")
+                if _rag_quiz_missing_column_error(upd_err, "answer_llm_model") and "answer_llm_model" in update_payload:
+                    update_payload.pop("answer_llm_model")
                     continue
                 raise
         if skipped_critique:
@@ -740,7 +740,7 @@ def update_rag_quiz_with_grade(
             )
             return None
         cr0 = chk.data[0]
-        if not critique_stored_grade_matches(cr0.get("answer_critique"), 0):
+        if not critique_stored_answer_matches(cr0.get("answer_critique"), 0):
             _logger.warning(
                 "Rag_Quiz 讀回 answer_critique 為空（rag_quiz_id=%s）",
                 rag_quiz_id,
@@ -758,12 +758,12 @@ def update_rag_quiz_with_grade(
     return None
 
 
-def update_exam_quiz_with_grade(
+def update_exam_quiz_with_answer(
     result_dict: dict,
     quiz_answer: str,
     *,
     exam_quiz_id: int,
-    grade_llm_model: str = "",
+    answer_llm_model: str = "",
 ) -> tuple[str, int] | None:
     """更新 public.Exam_Quiz；answer_critique 存評語純文字；成功後讀回驗證。"""
     if exam_quiz_id <= 0:
@@ -775,8 +775,8 @@ def update_exam_quiz_with_grade(
         "answer_critique": critique,
         "updated_at": ts,
     }
-    if (grade_llm_model or "").strip():
-        row["grade_llm_model"] = (grade_llm_model or "").strip()
+    if (answer_llm_model or "").strip():
+        row["answer_llm_model"] = (answer_llm_model or "").strip()
     try:
         supabase = get_supabase()
         history_qc = ""
@@ -836,8 +836,8 @@ def update_exam_quiz_with_grade(
                 if _rag_quiz_missing_column_error(upd_err, "quiz_history_list") and "quiz_history_list" in update_payload:
                     update_payload.pop("quiz_history_list")
                     continue
-                if _rag_quiz_missing_column_error(upd_err, "grade_llm_model") and "grade_llm_model" in update_payload:
-                    update_payload.pop("grade_llm_model")
+                if _rag_quiz_missing_column_error(upd_err, "answer_llm_model") and "answer_llm_model" in update_payload:
+                    update_payload.pop("answer_llm_model")
                     continue
                 raise
         chk = (
@@ -853,7 +853,7 @@ def update_exam_quiz_with_grade(
                 exam_quiz_id,
             )
             return None
-        if not critique_stored_grade_matches(chk.data[0].get("answer_critique"), 0):
+        if not critique_stored_answer_matches(chk.data[0].get("answer_critique"), 0):
             _logger.warning(
                 "Exam_Quiz 讀回 answer_critique 為空（exam_quiz_id=%s）",
                 exam_quiz_id,
@@ -861,5 +861,5 @@ def update_exam_quiz_with_grade(
             return None
         return ("exam_quiz_id", exam_quiz_id)
     except Exception as e:
-        _logger.warning("Exam_Quiz grade update 失敗: %s", e, exc_info=True)
+        _logger.warning("Exam_Quiz answer update 失敗: %s", e, exc_info=True)
     return None
