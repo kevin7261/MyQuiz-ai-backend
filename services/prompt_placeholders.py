@@ -8,7 +8,7 @@ def prompt_placeholder_descriptions() -> dict[str, dict[str, str]]:
     return {
         "rag": {
             "quiz_content": (
-                "僅 llm_grade 向量檢索：以本題題幹（Rag_Quiz.quiz_content 或請求 body）"
+                "僅 llm_answer 向量檢索：以本題題幹（Rag_Quiz.quiz_content 或請求 body）"
                 "作為 retriever 查詢句，非 Chat user 模板占位。"
             ),
         },
@@ -31,7 +31,7 @@ def prompt_placeholder_descriptions() -> dict[str, dict[str, str]]:
                 "經 _context_as_markdown_fenced 包成 ```text …``` fenced block。"
             ),
         },
-        "llm_grade": {
+        "llm_answer": {
             "id_block": (
                 "選填；有 exam_quiz_id 或 rag_quiz_id 時為「## 關聯識別」Markdown 區塊"
                 "（含兩 id 列點），否則空字串。"

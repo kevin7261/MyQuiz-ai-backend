@@ -49,7 +49,7 @@ from .schemas import (
     RagQuizForExamRequest,
 )
 from .helpers import (
-    _enqueue_rag_llm_grade_job,
+    _enqueue_rag_llm_answer_job,
     _grade_job_results,
     _quiz_history_prompt_dicts,
     _rag_llm_generate_quiz_impl,
@@ -324,7 +324,7 @@ def rag_llm_generate_quiz_followup_db_prompt(
     )
 
 
-@router.post("/quizzes/llm-grade", summary="Rag Grade Quiz")
+@router.post("/quizzes/llm-answer", summary="Rag Grade Quiz")
 async def grade_submission(
     background_tasks: BackgroundTasks,
     body: openapi_body(
@@ -345,9 +345,9 @@ async def grade_submission(
     非同步評分：Body 以 rag_id、rag_quiz_id 為核心；quiz_content 可省略（自 Rag_Quiz 讀）。
     `answer_user_prompt_text` 以請求為準（可空；空字串會寫入並覆蓋 Rag_Quiz 該列）。
     unit_type 2／3／4 時以 transcript 純 LLM 批改；其餘依 rag_id 載入 RAG ZIP。
-    回傳 202 + job_id；輪詢 GET /rag/quizzes/grade-result/{job_id}。
+    回傳 202 + job_id；輪詢 GET /rag/quizzes/answer-result/{job_id}。
     """
-    return await _enqueue_rag_llm_grade_job(
+    return await _enqueue_rag_llm_answer_job(
         background_tasks,
         caller_person_id,
         course_id,
@@ -361,9 +361,9 @@ async def grade_submission(
 
 
 @router.post(
-    "/quizzes/llm-grade-db",
+    "/quizzes/llm-answer-db",
     summary="Rag Grade Quiz (stored answer_user_prompt_text)",
-    operation_id="rag_llm_grade_quiz_db_prompt",
+    operation_id="rag_llm_answer_quiz_db_prompt",
 )
 async def grade_submission_stored_answer_prompt(
     background_tasks: BackgroundTasks,
@@ -381,10 +381,10 @@ async def grade_submission_stored_answer_prompt(
     course_id: CourseId,
 ):
     """
-    與 `llm-grade` 相同，但請求不含 `answer_user_prompt_text`；
+    與 `llm-answer` 相同，但請求不含 `answer_user_prompt_text`；
     評分時與寫回皆以 Rag_Quiz 該列既有之 `answer_user_prompt_text` 為準。
     """
-    return await _enqueue_rag_llm_grade_job(
+    return await _enqueue_rag_llm_answer_job(
         background_tasks,
         caller_person_id,
         course_id,
@@ -478,11 +478,11 @@ def mark_rag_quiz_for_exam(
 
 
 # ---------------------------------------------------------------------------
-# GET /rag/quizzes/grade-result/{job_id}
+# GET /rag/quizzes/answer-result/{job_id}
 # ---------------------------------------------------------------------------
 
-@router.get("/quizzes/grade-result/{job_id}", summary="Get Grade Result", tags=["rag"])
-async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseId):
+@router.get("/quizzes/answer-result/{job_id}", summary="Get Grade Result", tags=["rag"])
+async def get_answer_result(job_id: str, _person_id: PersonId, course_id: CourseId):
     """
     輪詢評分結果。status: pending | ready | error；
     ready 時 result 為 quiz_comments、rag_quiz_id（另含 rag_answer_id），並自資料庫讀取 rag_quiz 整列。
@@ -514,7 +514,7 @@ async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseI
                     if rid_int > 0:
                         supabase = get_supabase()
 
-                        def build_grade_result_sel(with_course_filter: bool):
+                        def build_answer_result_sel(with_course_filter: bool):
                             q = (
                                 supabase.table("Rag_Quiz")
                                 .select("*")
@@ -526,7 +526,7 @@ async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseI
                             return q.limit(1)
 
                         q = execute_with_course_id_fallback(
-                            "Rag_Quiz", build_grade_result_sel, course_id
+                            "Rag_Quiz", build_answer_result_sel, course_id
                         )
                         if q.data:
                             rag_quiz_row = to_json_safe(q.data[0])
@@ -535,9 +535,9 @@ async def get_grade_result(job_id: str, _person_id: PersonId, course_id: CourseI
                                     rag_quiz_row.get("quiz_history_list")
                                 )
                 except (TypeError, ValueError) as e:
-                    _logger.debug("grade-result rag_quiz_id 無效 job_id=%s: %s", job_id, e)
+                    _logger.debug("answer-result rag_quiz_id 無效 job_id=%s: %s", job_id, e)
                 except Exception as e:
-                    _logger.warning("grade-result 讀取 Rag_Quiz 失敗 job_id=%s: %s", job_id, e)
+                    _logger.warning("answer-result 讀取 Rag_Quiz 失敗 job_id=%s: %s", job_id, e)
         out["rag_quiz"] = rag_quiz_row
     return out
 

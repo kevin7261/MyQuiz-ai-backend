@@ -142,7 +142,7 @@ class GenerateQuizRequest(BaseModel):
 
 class QuizGradeRequest(BaseModel):
     """
-    POST /rag/quizzes/llm-grade 請求 body。
+    POST /rag/quizzes/llm-answer 請求 body。
     欄位順序：Rag.rag_id → public.Rag_Quiz（rag_page_id, rag_quiz_id, quiz_content, answer_user_prompt_text, answer_content／quiz_answer）。
     """
 
@@ -243,7 +243,7 @@ class GenerateQuizFollowupDbOnlyRequest(BaseModel):
 
 class QuizGradeDbOnlyRequest(BaseModel):
     """
-    POST /rag/quizzes/llm-grade-db。
+    POST /rag/quizzes/llm-answer-db。
     欄位順序：Rag.rag_id → Rag_Quiz（rag_page_id, rag_quiz_id, quiz_content, answer_content／quiz_answer）；不含 answer_user_prompt_text。
     """
 

@@ -467,11 +467,11 @@ def _rag_llm_generate_quiz_impl(
 
 
 # ---------------------------------------------------------------------------
-# POST /v1/rag/quizzes/llm-grade
+# POST /v1/rag/quizzes/llm-answer
 # ---------------------------------------------------------------------------
 
 
-async def _enqueue_rag_llm_grade_job(
+async def _enqueue_rag_llm_answer_job(
     background_tasks: BackgroundTasks,
     caller_person_id: str,
     course_id: int,
@@ -483,7 +483,7 @@ async def _enqueue_rag_llm_grade_job(
     answer_user_prompt_mode: Literal["from_request", "from_rag_quiz_row"],
     answer_user_prompt_from_request: str = "",
 ) -> JSONResponse:
-    """將 RAG llm-grade 工作排入 BackgroundTasks；`grade-result` 輪詢鍵為記憶體 job_id。"""
+    """將 RAG llm-answer 工作排入 BackgroundTasks；`answer-result` 輪詢鍵為記憶體 job_id。"""
     rag_id_str = (rag_id_str or "").strip()
     if not rag_id_str:
         return JSONResponse(status_code=400, content={"error": "請傳入 rag_id"})

@@ -184,10 +184,10 @@ def _select_exam_quiz_rows(
     return [exam_quiz_list_row(r) for r in rows]
 
 
-def _strip_grade_rate_from_columns(columns: str) -> str:
-    """移除 select 欄位中的 grade_rate（舊版 Exam_Quiz 無此欄時 fallback）。"""
+def _strip_answer_rate_from_columns(columns: str) -> str:
+    """移除 select 欄位中的 answer_rate（舊版 Exam_Quiz 無此欄時 fallback）。"""
     return ", ".join(
-        p.strip() for p in columns.split(",") if p.strip() and p.strip() != "grade_rate"
+        p.strip() for p in columns.split(",") if p.strip() and p.strip() != "answer_rate"
     )
 
 
@@ -208,8 +208,8 @@ def _select_exam_quiz_rows_with_follow_up_fallback(**kwargs: Any) -> list[dict]:
             return _select_exam_quiz_rows(columns=cols, **kwargs)
         except APIError as e:
             msg = (e.message or "").lower()
-            if e.code == "42703" and "grade_rate" in msg:
-                stripped = _strip_grade_rate_from_columns(cols)
+            if e.code == "42703" and "answer_rate" in msg:
+                stripped = _strip_answer_rate_from_columns(cols)
                 if stripped != cols:
                     try:
                         return _select_exam_quiz_rows(columns=stripped, **kwargs)

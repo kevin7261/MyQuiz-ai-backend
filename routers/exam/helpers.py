@@ -168,7 +168,7 @@ def _create_exam_quiz_record(
         "answer_user_prompt_text": None,
         "answer_content": None,
         "answer_critique": None,
-        "grade_rate": 0,
+        "answer_rate": 0,
         "deleted": False,
         "created_at": qts,
         "updated_at": qts,

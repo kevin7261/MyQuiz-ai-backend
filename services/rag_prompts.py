@@ -1,5 +1,5 @@
 """
-RAG 向量檢索設定（POST /v1/rag/pages/{rag_page_id}/build-zip 建 FAISS 後，llm-generate／llm-grade unit_type=1 使用）。
+RAG 向量檢索設定（POST /v1/rag/pages/{rag_page_id}/build-zip 建 FAISS 後，llm-generate／llm-answer unit_type=1 使用）。
 建庫本身僅 embedding／切分，無 Chat LLM prompt；此模組僅描述 retriever 查詢句與相關常數。
 """
 
@@ -21,7 +21,7 @@ def rag_retrieval_config() -> dict[str, dict[str, int | str]]:
             "retrieval_query": DEFAULT_RETRIEVAL_QUERY,
             "retrieval_k": RETRIEVAL_K,
         },
-        "llm_grade": {
+        "llm_answer": {
             "retrieval_query": LLM_GRADE_RAG_RETRIEVAL_QUERY_TEMPLATE,
             "retrieval_k": GRADE_RETRIEVAL_K,
         },

@@ -39,9 +39,9 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/rag/quizzes/llm-generate-db",
     "/v1/rag/quizzes/llm-generate-followup",
     "/v1/rag/quizzes/llm-generate-followup-db",
-    "/v1/rag/quizzes/llm-grade",
-    "/v1/rag/quizzes/llm-grade-db",
-    "/v1/rag/quizzes/grade-result/{job_id}",
+    "/v1/rag/quizzes/llm-answer",
+    "/v1/rag/quizzes/llm-answer-db",
+    "/v1/rag/quizzes/answer-result/{job_id}",
     # --- RAG：課程設定 ---
     "/v1/rag/course-members",
     "/v1/rag/course-members/batch",
@@ -58,14 +58,14 @@ _API_PATH_ORDER: tuple[str, ...] = (
     # --- Exam：題目 CRUD ---
     "/v1/exam/quizzes/{exam_quiz_id}",
     "/v1/exam/quizzes/{exam_quiz_id}/quiz-rate",
-    "/v1/exam/quizzes/{exam_quiz_id}/grade-rate",
+    "/v1/exam/quizzes/{exam_quiz_id}/answer-rate",
     # --- Exam：題目 LLM ---
     "/v1/exam/quizzes/llm-generate",
     "/v1/exam/quizzes/llm-generate-followup",
     "/v1/exam/quizzes/create-llm-generate",
     "/v1/exam/quizzes/create-llm-generate-followup",
-    "/v1/exam/quizzes/llm-grade",
-    "/v1/exam/quizzes/grade-result/{job_id}",
+    "/v1/exam/quizzes/llm-answer",
+    "/v1/exam/quizzes/answer-result/{job_id}",
     # --- Exam：課程設定 ---
     "/v1/exam/llm-api-key",
     "/v1/exam/llm-api-key/exists",

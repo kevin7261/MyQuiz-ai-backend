@@ -7,7 +7,7 @@ RAG 出題、評分、題目標記與課程設定 API（路徑順序見 utils.op
 
 **出題**：POST …/llm-generate(-db) → POST …/llm-generate-followup(-db)
 
-**評分**：POST …/llm-grade(-db) → GET …/grade-result/{job_id}
+**評分**：POST …/llm-answer(-db) → GET …/answer-result/{job_id}
 
 **設定**：GET/PUT /v1/rag/llm-api-key、/v1/rag/llm-model；個人／課程分析 prompt 見 course_settings 路由。
 """

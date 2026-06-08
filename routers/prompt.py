@@ -1,6 +1,6 @@
 """
 LLM Prompt 模板查詢 API。
-- GET /v1/prompt-templates：回傳抓 RAG、llm-generate、llm-grade、個人分析、課程分析之 prompt 全文（程式內建模板，非 Course_Setting 或 DB 動態值）。
+- GET /v1/prompt-templates：回傳抓 RAG、llm-generate、llm-answer、個人分析、課程分析之 prompt 全文（程式內建模板，非 Course_Setting 或 DB 動態值）。
 """
 
 from fastapi import APIRouter
@@ -46,7 +46,7 @@ class RagPrompts(BaseModel):
     """unit_type=1 自 FAISS 抓 RAG 片段之設定（非 Chat LLM system／user 模板）。"""
 
     llm_generate: RagRetrieval
-    llm_grade: RagRetrieval
+    llm_answer: RagRetrieval
     build_defaults: dict[str, int | str] = Field(
         ...,
         description="build-rag-zip 建 FAISS 預設 embedding／chunk",
@@ -66,8 +66,8 @@ class LlmGeneratePrompts(BaseModel):
     )
 
 
-class LlmGradePrompts(BaseModel):
-    """POST .../llm-grade 所用 prompt 模板。"""
+class LlmAnswerPrompts(BaseModel):
+    """POST .../llm-answer 所用 prompt 模板。"""
 
     system: str = Field(..., description="批改 system prompt（SYSTEM_PROMPT_GRADE）")
     user_transcript_course: str = Field(
@@ -93,7 +93,7 @@ class AllPromptTemplatesResponse(BaseModel):
     )
     rag: RagPrompts
     llm_generate: LlmGeneratePrompts
-    llm_grade: LlmGradePrompts
+    llm_answer: LlmAnswerPrompts
     person_analysis: AnalysisPrompts
     course_analysis: AnalysisPrompts
 
@@ -112,7 +112,7 @@ def get_all_prompt_templates(_person_id: PersonId):
         placeholders=prompt_placeholder_descriptions(),
         rag=RagPrompts(
             llm_generate=RagRetrieval(**rag_cfg["llm_generate"]),
-            llm_grade=RagRetrieval(**rag_cfg["llm_grade"]),
+            llm_answer=RagRetrieval(**rag_cfg["llm_answer"]),
             build_defaults=rag_build_defaults(),
         ),
         llm_generate=LlmGeneratePrompts(
@@ -121,7 +121,7 @@ def get_all_prompt_templates(_person_id: PersonId):
             system_followup=SYSTEM_PROMPT_QUIZ_FOLLOWUP,
             user_followup=USER_PROMPT_COURSE_FOLLOWUP,
         ),
-        llm_grade=LlmGradePrompts(
+        llm_answer=LlmAnswerPrompts(
             system=SYSTEM_PROMPT_GRADE,
             user_transcript_course=USER_PROMPT_GRADE_TRANSCRIPT_COURSE,
             user_faiss_course=USER_PROMPT_GRADE_FAISS_COURSE,

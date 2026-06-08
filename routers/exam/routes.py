@@ -69,7 +69,7 @@ from .schemas import (
     ExamCreateLlmGenerateQuizRequest,
     ExamLlmGenerateQuizFollowupRequest,
     ExamLlmGenerateQuizRequest,
-    ExamQuizGradeRateRequest,
+    ExamQuizAnswerRateRequest,
     ExamQuizGradeRequest,
     ExamQuizRateRequest,
     ListExamResponse,
@@ -676,10 +676,10 @@ def exam_create_llm_generate_quiz_followup(
 
 
 # ---------------------------------------------------------------------------
-# POST /exam/quizzes/llm-grade
+# POST /exam/quizzes/llm-answer
 # ---------------------------------------------------------------------------
 
-@router.post("/quizzes/llm-grade", summary="Exam Grade Quiz", operation_id="exam_llm_grade_quiz")
+@router.post("/quizzes/llm-answer", summary="Exam Grade Quiz", operation_id="exam_llm_answer_quiz")
 @router.post("/quizzes/grade", summary="Exam Grade Quiz", include_in_schema=False)
 async def exam_grade_submission(
     request: Request,
@@ -696,7 +696,7 @@ async def exam_grade_submission(
     unit_type 2／3／4 時改以 transcript 純 LLM 批改。
     評分 prompt 模板優先用 Exam_Quiz.quiz_user_prompt_text／answer_user_prompt_text（與 POST …/llm-generate 寫入一致），欄位為空時再讀 Rag_Quiz。
     評分完成後直接更新 Exam_Quiz.answer_content / answer_critique。
-    回傳 202 + job_id；輪詢 GET /exam/quizzes/grade-result/{job_id}。
+    回傳 202 + job_id；輪詢 GET /exam/quizzes/answer-result/{job_id}。
     """
     supabase = get_supabase()
 
@@ -979,13 +979,13 @@ async def exam_grade_submission(
 
 
 # ---------------------------------------------------------------------------
-# GET /exam/quizzes/grade-result/{job_id}
+# GET /exam/quizzes/answer-result/{job_id}
 # ---------------------------------------------------------------------------
 
-@router.get("/quizzes/grade-result/{job_id}", tags=["exam"])
-async def get_exam_grade_result(job_id: str, _person_id: PersonId, course_id: CourseId):
+@router.get("/quizzes/answer-result/{job_id}", tags=["exam"])
+async def get_exam_answer_result(job_id: str, _person_id: PersonId, course_id: CourseId):
     """
-    輪詢 Exam 評分結果（搭配 POST /exam/quizzes/llm-grade）。
+    輪詢 Exam 評分結果（搭配 POST /exam/quizzes/llm-answer）。
     status: pending | ready | error；ready 時 result 含 quiz_comments、exam_quiz_id。
     """
     if job_id not in _exam_grade_job_results:
@@ -1080,18 +1080,18 @@ def update_exam_quiz_rate(
 
 
 # ---------------------------------------------------------------------------
-# PUT /exam/quizzes/{exam_quiz_id}/grade-rate
+# PUT /exam/quizzes/{exam_quiz_id}/answer-rate
 # ---------------------------------------------------------------------------
 
-@router.put("/quizzes/{exam_quiz_id}/grade-rate", summary="Exam Rate Grade", status_code=200)
-def update_exam_quiz_grade_rate(
-    body: openapi_body(ExamQuizGradeRateRequest, {"grade_rate": 0}),
+@router.put("/quizzes/{exam_quiz_id}/answer-rate", summary="Exam Rate Grade", status_code=200)
+def update_exam_quiz_answer_rate(
+    body: openapi_body(ExamQuizAnswerRateRequest, {"answer_rate": 0}),
     caller_person_id: PersonId,
     course_id: CourseId,
     exam_quiz_id: int = PathParam(..., ge=1, description="Exam_Quiz 主鍵"),
 ):
-    """依 exam_quiz_id 更新 Exam_Quiz.grade_rate（僅 -1、0、1）。"""
-    grade_rate = int(body.grade_rate)
+    """依 exam_quiz_id 更新 Exam_Quiz.answer_rate（僅 -1、0、1）。"""
+    answer_rate = int(body.answer_rate)
     supabase = get_supabase()
     r = apply_exam_quiz_not_deleted(
         supabase.table("Exam_Quiz")
@@ -1103,21 +1103,21 @@ def update_exam_quiz_grade_rate(
         raise HTTPException(status_code=404, detail=f"找不到 exam_quiz_id={exam_quiz_id} 的 Exam_Quiz，或已刪除")
     qpid = (r.data[0].get("person_id") or "").strip()
     if qpid != caller_person_id:
-        raise HTTPException(status_code=403, detail="無權更新該題 grade_rate")
+        raise HTTPException(status_code=403, detail="無權更新該題 answer_rate")
     supabase.table("Exam_Quiz").update(
-        {"grade_rate": grade_rate, "updated_at": now_taipei_iso()}
+        {"answer_rate": answer_rate, "updated_at": now_taipei_iso()}
     ).eq("exam_quiz_id", exam_quiz_id).execute()
     after = (
         supabase.table("Exam_Quiz")
-        .select("exam_quiz_id, grade_rate, updated_at, created_at")
+        .select("exam_quiz_id, answer_rate, updated_at, created_at")
         .eq("exam_quiz_id", exam_quiz_id)
         .limit(1)
         .execute()
     )
     if not after.data or len(after.data) == 0:
-        raise HTTPException(status_code=500, detail="更新 grade_rate 後讀取失敗")
+        raise HTTPException(status_code=500, detail="更新 answer_rate 後讀取失敗")
     out = dict(after.data[0])
-    out["message"] = "已更新 grade_rate"
+    out["message"] = "已更新 answer_rate"
     return to_json_safe(out)
 
 

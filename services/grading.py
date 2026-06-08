@@ -177,7 +177,7 @@ def normalize_grading_llm_json(llm_json: dict[str, Any]) -> None:
         llm_json["quiz_comments"] = llm_json.pop("comments")
 
 
-def ingest_llm_grade_response(llm_json: dict[str, Any]) -> None:
+def ingest_llm_answer_response(llm_json: dict[str, Any]) -> None:
     """
     將頂層 `answer_critique`（評語物件或字串）展平為 `quiz_comments`；**不依賴、不保留**任何數值評分鍵。
     仍相容頂層僅含 `quiz_comments` 之舊回傳（忽略其中之 quiz_grade／score）。
@@ -341,7 +341,7 @@ def run_grade_job_transcript_only(
         llm_json = {}
     if not isinstance(llm_json, dict):
         llm_json = {}
-    ingest_llm_grade_response(llm_json)
+    ingest_llm_answer_response(llm_json)
     return llm_raw, llm_json
 
 
@@ -454,7 +454,7 @@ def run_grade_job(
         llm_json = {}
     if not isinstance(llm_json, dict):
         llm_json = {}
-    ingest_llm_grade_response(llm_json)
+    ingest_llm_answer_response(llm_json)
     return llm_raw, llm_json
 
 
@@ -462,7 +462,7 @@ def run_grade_job(
 # 通用背景評分入口
 # ---------------------------------------------------------------------------
 # 由路由註冊 BackgroundTasks 呼叫；不直接對外暴露 HTTP。
-# results_store：記憶體 dict，鍵為 job_id；供 GET .../grade-result 輪詢。
+# results_store：記憶體 dict，鍵為 job_id；供 GET .../answer-result 輪詢。
 
 def run_grade_job_background(
     job_id: str,

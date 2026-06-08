@@ -47,8 +47,8 @@ app = FastAPI(title="MyQuiz.ai_backend")
 # 前端若跑在未列舉的 origin（如自訂埠、區網 IP、Vercel 改名後），
 # 可於 .env 或部署平台設定 CORS_EXTRA_ORIGINS（逗號分隔）追加，無需修改程式。
 #
-# 注意：評分已改為非同步，POST .../llm-grade 回傳 202 + job_id，
-# 請用對應的 GET .../grade-result/{job_id} 輪詢結果；
+# 注意：評分已改為非同步，POST .../llm-answer 回傳 202 + job_id，
+# 請用對應的 GET .../answer-result/{job_id} 輪詢結果；
 # 若出現 502 表示 Render 代理逾時（約 30 秒），回應不帶 CORS 標頭。
 
 # localhost／127.0.0.1 的 8080–8086（Vue CLI／webpack 等常見本機埠）
