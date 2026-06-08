@@ -356,6 +356,50 @@ class ExamQuizAnswerRequest(BaseModel):
     )
 
 
+class ExamQuizAskRequest(BaseModel):
+    """POST /exam/quizzes/llm-ask：學生作答後對該題追問課程內容。
+    以 exam_quiz_id 定位題目（題幹／RAG 綁定／學生作答與批改評語皆自 Exam_Quiz 讀），
+    ask_user_prompt_text 為學生的追問內容；每次呼叫於 public.Exam_Ask 新增一列。"""
+    exam_quiz_id: int = Field(..., gt=0, description="Exam_Quiz 主鍵（必填，>0）；定位追問之題目與其 RAG 綁定")
+    ask_user_prompt_text: str = Field(
+        ...,
+        description="學生的追問內容；置入回答 prompt 並寫入 Exam_Ask.ask_user_prompt_text",
+        validation_alias=AliasChoices("ask_user_prompt_text", "ask", "question"),
+    )
+
+
+class ExamAskResponse(BaseModel):
+    """POST /exam/quizzes/llm-ask 回應：新增之 public.Exam_Ask 列（含 LLM 回答 answer_content）。"""
+
+    exam_ask_id: Optional[int] = None
+    exam_quiz_id: Optional[int] = None
+    exam_page_id: Optional[str] = None
+    rag_page_id: Optional[str] = None
+    rag_unit_id: Optional[int] = None
+    rag_quiz_id: Optional[int] = None
+    person_id: Optional[str] = None
+    course_id: Optional[int] = None
+    unit_name: Optional[str] = None
+    quiz_name: Optional[str] = None
+    ask_user_prompt_text: Optional[str] = None
+    answer_content: Optional[str] = None
+    answer_rate: Optional[int] = None
+    updated_at: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class ListExamAskResponse(BaseModel):
+    """GET /exam/quizzes/{exam_quiz_id}/asks 回應：該題歷次追問（Exam_Ask 列，依 created_at 由舊到新）。"""
+
+    asks: list[dict] = Field(..., description="Exam_Ask 列（含 ask_user_prompt_text、answer_content、answer_rate）")
+    count: int
+
+
+class ExamAskAnswerRateRequest(BaseModel):
+    """PUT /exam/asks/{exam_ask_id}/answer-rate：更新 Exam_Ask.answer_rate（exam_ask_id 由 path 帶入）。"""
+    answer_rate: ExamQuizRateValue = Field(0, description="僅 -1、0、1")
+
+
 # ---------------------------------------------------------------------------
 # GET / PUT /exam/llm-api-key
 # ---------------------------------------------------------------------------

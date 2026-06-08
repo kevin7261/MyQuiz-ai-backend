@@ -13,6 +13,11 @@ from services.answering import (
     USER_PROMPT_ANSWER_FAISS_COURSE,
     USER_PROMPT_ANSWER_TRANSCRIPT_COURSE,
 )
+from services.asking import (
+    SYSTEM_PROMPT_ASK,
+    USER_PROMPT_ASK_FAISS_COURSE,
+    USER_PROMPT_ASK_TRANSCRIPT_COURSE,
+)
 from services.quiz_generation import (
     SYSTEM_PROMPT_QUIZ,
     SYSTEM_PROMPT_QUIZ_FOLLOWUP,
@@ -80,6 +85,20 @@ class LlmAnswerPrompts(BaseModel):
     )
 
 
+class LlmAskPrompts(BaseModel):
+    """POST .../llm-ask 所用 prompt 模板（學生答題後追問課程內容）。"""
+
+    system: str = Field(..., description="追問回答 system prompt（SYSTEM_PROMPT_ASK）")
+    user_transcript_course: str = Field(
+        ...,
+        description="逐字稿路徑 user prompt（USER_PROMPT_ASK_TRANSCRIPT_COURSE）",
+    )
+    user_faiss_course: str = Field(
+        ...,
+        description="FAISS 檢索路徑 user prompt（USER_PROMPT_ASK_FAISS_COURSE）",
+    )
+
+
 class AnalysisPrompts(PromptPair):
     """個人／課程弱點分析 LLM prompt 模板。"""
 
@@ -94,6 +113,7 @@ class AllPromptTemplatesResponse(BaseModel):
     rag: RagPrompts
     llm_generate: LlmGeneratePrompts
     llm_answer: LlmAnswerPrompts
+    llm_ask: LlmAskPrompts
     person_analysis: AnalysisPrompts
     course_analysis: AnalysisPrompts
 
@@ -125,6 +145,11 @@ def get_all_prompt_templates(_person_id: PersonId):
             system=SYSTEM_PROMPT_ANSWER,
             user_transcript_course=USER_PROMPT_ANSWER_TRANSCRIPT_COURSE,
             user_faiss_course=USER_PROMPT_ANSWER_FAISS_COURSE,
+        ),
+        llm_ask=LlmAskPrompts(
+            system=SYSTEM_PROMPT_ASK,
+            user_transcript_course=USER_PROMPT_ASK_TRANSCRIPT_COURSE,
+            user_faiss_course=USER_PROMPT_ASK_FAISS_COURSE,
         ),
         person_analysis=AnalysisPrompts(**person_tpl),
         course_analysis=AnalysisPrompts(**course_tpl),
