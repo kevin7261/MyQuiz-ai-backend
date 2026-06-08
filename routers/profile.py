@@ -297,6 +297,48 @@ def list_users(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class ProfileResponse(BaseModel):
+    """GET /users/me 回應：呼叫者自己的 profile（不含 password）。"""
+    user_id: int
+    person_id: Optional[str] = None
+    college_id: Optional[str] = None
+    college_name: Optional[str] = None
+    name: Optional[str] = None
+    courses: list[UserCourseItem] = Field(default_factory=list)
+    user_metadata: Optional[Any] = None
+    updated_at: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+@router.get("/users/me", response_model=ProfileResponse)
+def get_my_profile(person_id: PersonId):
+    """
+    回傳呼叫者自己的 profile（呼叫者由 Authorization token 解析），不含 password。
+    欄位與 login 回傳的 user 相同；登入後若需重新取得最新使用者／選課資料時使用。
+    """
+    try:
+        supabase = get_supabase()
+        resp = (
+            supabase.table(USER_TABLE)
+            .select(USER_TABLE_COLUMNS)
+            .eq("person_id", person_id)
+            .or_(ACTIVE_DELETED_FILTER)
+            .execute()
+        )
+        if not resp.data:
+            raise HTTPException(status_code=404, detail=f"找不到使用者 person_id={person_id}")
+        row = resp.data[0]
+        uid = row.get("user_id")
+        courses = _courses_for_users(supabase, [int(uid)]).get(int(uid), []) if uid is not None else []
+        college_map = _fetch_colleges_by_ids(supabase, [_normalize_college_id(row.get("college_id"))])
+        pub = _user_public_dict(row, college_map, [c.model_dump() for c in courses])
+        return ProfileResponse(**pub)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class UpdateMyPasswordRequest(BaseModel):
     """PUT /users/me/password 請求；呼叫者由 token 解析。"""
     password: str = Field(..., min_length=1, description="新密碼")
