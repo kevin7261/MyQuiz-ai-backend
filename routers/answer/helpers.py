@@ -144,6 +144,9 @@ def _persist_and_verify_rag_quiz(
                 if _rag_quiz_missing_column_error(upd_err, "quiz_llm_model") and "quiz_llm_model" in update_payload:
                     update_payload.pop("quiz_llm_model")
                     continue
+                if _rag_quiz_missing_column_error(upd_err, "quiz_system_prompt_text") and "quiz_system_prompt_text" in update_payload:
+                    update_payload.pop("quiz_system_prompt_text")
+                    continue
                 raise
     except Exception as e:
         _logger.error(
@@ -196,13 +199,14 @@ def _rag_llm_generate_quiz_impl(
     followup: bool,
     quiz_history: list[QuizHistoryPair] | None = None,
     quiz_history_list_prompt_items: list[dict[str, Any]] | None = None,
+    quiz_system_prompt_text: str = "",
 ):
     supabase = get_supabase()
 
     def build_quiz_sel(with_course_filter: bool):
         cols = select_without_course_id_if_needed(
             "Rag_Quiz",
-            "rag_quiz_id, rag_page_id, rag_unit_id, quiz_user_prompt_text, quiz_history_list, course_id",
+            "rag_quiz_id, rag_page_id, rag_unit_id, quiz_user_prompt_text, quiz_system_prompt_text, quiz_history_list, course_id",
             with_course_filter,
         )
         q = (
@@ -219,7 +223,8 @@ def _rag_llm_generate_quiz_impl(
         q_sel = execute_with_course_id_fallback("Rag_Quiz", build_quiz_sel, course_id)
     except APIError as e:
         msg = (e.message or "").lower()
-        if e.code == "42703" and "quiz_history_list" in msg:
+        if e.code == "42703" and ("quiz_history_list" in msg or "quiz_system_prompt_text" in msg):
+            # 舊表可能無 quiz_history_list 或新欄 quiz_system_prompt_text；皆改選不含此兩欄。
             def build_quiz_sel_no_history(with_course_filter: bool):
                 cols = select_without_course_id_if_needed(
                     "Rag_Quiz",
@@ -245,6 +250,10 @@ def _rag_llm_generate_quiz_impl(
     qup_body = (quiz_user_prompt_text or "").strip()
     qup_db = (q_row.get("quiz_user_prompt_text") or "").strip()
     qup_for_llm = qup_body or qup_db
+    qsp_body = (quiz_system_prompt_text or "").strip()
+    qsp_db = (q_row.get("quiz_system_prompt_text") or "").strip()
+    # 僅 followup（接續出題）採用 quiz_system_prompt_text；一般出題不套用、不寫入（連 DB 既存值也不繼承）。
+    qsp_for_llm = (qsp_body or qsp_db) if followup else ""
     source_rag_unit_id = int(q_row.get("rag_unit_id") or 0)
     if source_rag_unit_id <= 0:
         raise HTTPException(status_code=400, detail="該 rag_quiz_id 對應的 rag_unit_id 無效")
@@ -364,6 +373,7 @@ def _rag_llm_generate_quiz_impl(
                     quiz_user_prompt_text=qup_for_llm,
                     quiz_history_list_prompt_text=prompt_for_llm,
                     llm_model=llm_model,
+                    quiz_system_prompt_text=qsp_for_llm,
                 )
             else:
                 result = generate_quiz_transcript_only(
@@ -372,6 +382,7 @@ def _rag_llm_generate_quiz_impl(
                     quiz_user_prompt_text=qup_for_llm,
                     quiz_history_list_prompt_text=prompt_for_llm,
                     llm_model=llm_model,
+                    quiz_system_prompt_text=qsp_for_llm,
                 )
         else:
             path = get_zip_path(rag_zip_page_id)
@@ -387,6 +398,7 @@ def _rag_llm_generate_quiz_impl(
                     quiz_user_prompt_text=qup_for_llm,
                     quiz_history_list_prompt_text=prompt_for_llm,
                     llm_model=llm_model,
+                    quiz_system_prompt_text=qsp_for_llm,
                 )
             else:
                 result = generate_quiz(
@@ -395,6 +407,7 @@ def _rag_llm_generate_quiz_impl(
                     quiz_user_prompt_text=qup_for_llm,
                     quiz_history_list_prompt_text=prompt_for_llm,
                     llm_model=llm_model,
+                    quiz_system_prompt_text=qsp_for_llm,
                 )
         result["transcript"] = "" if unit_type_val == 1 else transcript_text
         result["rag_output"] = {
@@ -418,6 +431,7 @@ def _rag_llm_generate_quiz_impl(
         result["quiz_name"] = resolved_quiz_name
         result["follow_up"] = followup
         result["quiz_llm_model"] = llm_model
+        result["quiz_system_prompt_text"] = qsp_for_llm
         if qa_dicts:
             result["quiz_history_list"] = qa_dicts
         result["quiz_history_list_prompt_text"] = prompt_dicts
@@ -436,6 +450,9 @@ def _rag_llm_generate_quiz_impl(
             "quiz_llm_model": llm_model,
             "updated_at": qts,
         }
+        # 僅 followup 出題寫入 quiz_system_prompt_text；一般出題不更動該欄。
+        if followup:
+            quiz_update["quiz_system_prompt_text"] = qsp_for_llm
         _persist_and_verify_rag_quiz(
             supabase, rag_quiz_id=rag_quiz_id, quiz_update=quiz_update, qc=qc
         )

@@ -460,6 +460,7 @@ def rag_quiz_for_exam_response_row(row: dict[str, Any]) -> dict[str, Any]:
         "follow_up": bool(row.get("follow_up")),
         "quiz_name": str(row.get("quiz_name") or ""),
         "quiz_user_prompt_text": str(row.get("quiz_user_prompt_text") or ""),
+        "quiz_system_prompt_text": str(row.get("quiz_system_prompt_text") or ""),
         "quiz_content": str(row.get("quiz_content") or ""),
         "quiz_hint": str(row.get("quiz_hint") or ""),
         "quiz_answer_reference": str(row.get("quiz_answer_reference") or ""),

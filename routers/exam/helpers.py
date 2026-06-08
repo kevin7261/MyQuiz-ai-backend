@@ -383,6 +383,7 @@ def _exam_llm_generate_quiz_impl(
     quiz_history_list_prompt_items: list[dict[str, Any]] | None = None,
     follow_up_exam_quiz_id: int = 0,
     always_mark_follow_up: bool = False,
+    quiz_system_prompt_text: str = "",
 ):
     supabase = get_supabase()
     try:
@@ -545,7 +546,7 @@ def _exam_llm_generate_quiz_impl(
         cols = select_without_course_id_if_needed(
             "Rag_Quiz",
             "rag_quiz_id, rag_page_id, rag_unit_id, person_id, course_id, quiz_name, quiz_user_prompt_text, "
-            "quiz_content, quiz_hint, quiz_answer_reference, answer_user_prompt_text",
+            "quiz_system_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, answer_user_prompt_text",
             with_course_filter,
         )
         q = (
@@ -581,6 +582,15 @@ def _exam_llm_generate_quiz_impl(
 
     quiz_user_prompt_resolved = (rq_row0.get("quiz_user_prompt_text") or "").strip()
     answer_user_prompt_resolved = (rq_row0.get("answer_user_prompt_text") or "").strip()
+    # 僅 followup（接續出題）採用 quiz_system_prompt_text；一般出題不套用、不寫入（連來源 Rag_Quiz 既存值也不繼承）。
+    quiz_system_prompt_resolved = (
+        (
+            (quiz_system_prompt_text or "").strip()
+            or (rq_row0.get("quiz_system_prompt_text") or "").strip()
+        )
+        if followup
+        else ""
+    )
 
     _ru0 = ru_one.data[0]
     _ru_display = (_ru0.get("unit_name") or "").strip()
@@ -662,6 +672,7 @@ def _exam_llm_generate_quiz_impl(
                     quiz_user_prompt_text=api_instr,
                     quiz_history_list_prompt_text=prompt_for_llm,
                     llm_model=llm_model,
+                    quiz_system_prompt_text=quiz_system_prompt_resolved,
                 )
             else:
                 result = generate_quiz_transcript_only(
@@ -670,6 +681,7 @@ def _exam_llm_generate_quiz_impl(
                     quiz_user_prompt_text=api_instr,
                     quiz_history_list_prompt_text=prompt_for_llm,
                     llm_model=llm_model,
+                    quiz_system_prompt_text=quiz_system_prompt_resolved,
                 )
         else:
             path = get_zip_path(rag_zip_page_id)
@@ -682,6 +694,7 @@ def _exam_llm_generate_quiz_impl(
                     quiz_user_prompt_text=api_instr,
                     quiz_history_list_prompt_text=prompt_for_llm,
                     llm_model=llm_model,
+                    quiz_system_prompt_text=quiz_system_prompt_resolved,
                 )
             else:
                 result = generate_quiz(
@@ -690,6 +703,7 @@ def _exam_llm_generate_quiz_impl(
                     quiz_user_prompt_text=api_instr,
                     quiz_history_list_prompt_text=prompt_for_llm,
                     llm_model=llm_model,
+                    quiz_system_prompt_text=quiz_system_prompt_resolved,
                 )
         result["transcript"] = "" if unit_type_val == 1 else transcript_text
         result["rag_output"] = {"rag_page_id": stem, "unit_name": stem, "filename": f"{stem}.zip"}
@@ -714,6 +728,7 @@ def _exam_llm_generate_quiz_impl(
         )
         result["quiz_name"] = quiz_name
         result["quiz_user_prompt_text"] = quiz_user_prompt_resolved
+        result["quiz_system_prompt_text"] = quiz_system_prompt_resolved
         result["answer_user_prompt_text"] = answer_user_prompt_resolved
         result["unit_name"] = unit_name_for_display
         quiz_update: dict[str, Any] = {
@@ -734,6 +749,9 @@ def _exam_llm_generate_quiz_impl(
             "quiz_llm_model": llm_model,
             "updated_at": qts,
         }
+        # 僅 followup 出題寫入 quiz_system_prompt_text；一般出題不更動該欄。
+        if followup:
+            quiz_update["quiz_system_prompt_text"] = quiz_system_prompt_resolved
         if mark_follow_up:
             quiz_update["follow_up"] = True
             quiz_update["follow_up_exam_quiz_id"] = resolved_follow_up_id
@@ -770,6 +788,9 @@ def _exam_llm_generate_quiz_impl(
                         continue
                     if _rag_quiz_missing_column_error(upd_err, "quiz_llm_model") and "quiz_llm_model" in update_payload:
                         update_payload.pop("quiz_llm_model")
+                        continue
+                    if _rag_quiz_missing_column_error(upd_err, "quiz_system_prompt_text") and "quiz_system_prompt_text" in update_payload:
+                        update_payload.pop("quiz_system_prompt_text")
                         continue
                     raise
         except Exception as e:

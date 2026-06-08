@@ -190,7 +190,7 @@ def list_rag_for_exams(
             cols = select_without_course_id_if_needed(
                 "Rag_Quiz",
                 "rag_quiz_id, rag_page_id, rag_unit_id, person_id, course_id, follow_up, quiz_name, quiz_user_prompt_text, "
-                "quiz_content, quiz_hint, quiz_answer_reference, answer_user_prompt_text",
+                "quiz_system_prompt_text, quiz_content, quiz_hint, quiz_answer_reference, answer_user_prompt_text",
                 with_course_filter,
             )
             q = (
@@ -463,6 +463,7 @@ _EXAM_LLM_GENERATE_FOLLOWUP_OPENAPI_EXAMPLES = {
     "rag_page_id": "string",
     "rag_unit_id": 1,
     "rag_quiz_id": 1,
+    "quiz_system_prompt_text": "請依先前問答，連續出題逐步加深難度（越來越難、越來越深入）。",
     "follow_up_exam_quiz_id": 1,
     "quiz_history_list": [
         {**QUIZ_HISTORY_OPENAPI_ITEM, "answer_critique": "批改評語（指出答不好之處）"},
@@ -476,6 +477,7 @@ _EXAM_CREATE_LLM_GENERATE_FOLLOWUP_OPENAPI_EXAMPLES = {
     "rag_page_id": "string",
     "rag_unit_id": 1,
     "rag_quiz_id": 1,
+    "quiz_system_prompt_text": "請依先前問答，連續出題逐步加深難度（越來越難、越來越深入）。",
     "follow_up_exam_quiz_id": 1,
     "quiz_history_list": [
         {**QUIZ_HISTORY_OPENAPI_ITEM, "answer_critique": "批改評語（指出答不好之處）"},
@@ -554,6 +556,7 @@ def exam_llm_generate_quiz_followup(
         caller_person_id=caller_person_id,
         course_id=course_id,
         followup=True,
+        quiz_system_prompt_text=body.quiz_system_prompt_text,
         quiz_history=body.quiz_history_list,
         quiz_history_list_prompt_items=_exam_quiz_history_prompt_dicts(
             body.quiz_history_list_prompt_text,
@@ -670,6 +673,7 @@ def exam_create_llm_generate_quiz_followup(
         caller_person_id=caller_person_id,
         course_id=course_id,
         followup=True,
+        quiz_system_prompt_text=body.quiz_system_prompt_text,
         quiz_history=body.quiz_history_list,
         quiz_history_list_prompt_items=_exam_quiz_history_prompt_dicts(
             body.quiz_history_list_prompt_text,

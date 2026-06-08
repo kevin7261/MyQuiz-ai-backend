@@ -201,6 +201,10 @@ class GenerateQuizFollowupRequest(BaseModel):
         "",
         description="出題 user prompt（可空）；非空時優先並寫入 Rag_Quiz；空則自該列 Rag_Quiz.quiz_user_prompt_text 帶入 LLM",
     )
+    quiz_system_prompt_text: str = Field(
+        "",
+        description="出題 system prompt 附加區塊（可空）；非空時以「使用者要求」區塊附加於系統 prompt 之後並寫入 Rag_Quiz；空則自該列 Rag_Quiz.quiz_system_prompt_text 帶入 LLM",
+    )
     quiz_history_list: list[QuizHistoryPair] = _QUIZ_HISTORY_LIST_FIELD
     quiz_history_list_prompt_text: list[QuizHistoryPromptFollowup] = (
         _QUIZ_HISTORY_LIST_PROMPT_FOLLOWUP_FIELD

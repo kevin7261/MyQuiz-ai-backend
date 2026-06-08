@@ -116,6 +116,14 @@ def _coerce_exam_quiz_history_prompt_followup_validator(v: Any) -> Any:
     return coerce_quiz_history_prompt_text_request(v, followup=True)
 
 
+_EXAM_QUIZ_SYSTEM_PROMPT_FIELD = Field(
+    "",
+    description=(
+        "出題 system prompt 附加區塊（可空）；非空時以「使用者要求」區塊附加於系統 prompt 之後，"
+        "並寫入 Exam_Quiz；空則沿用來源 Rag_Quiz.quiz_system_prompt_text。常用於連續出題方向（越來越難、越來越深入）"
+    ),
+)
+
 _EXAM_QUIZ_HISTORY_LIST_FIELD = Field(
     default_factory=list,
     description="先前問答（八欄位 JSON 物件陣列）；僅寫入 DB",
@@ -244,6 +252,7 @@ class ExamCreateLlmGenerateQuizFollowupRequest(BaseModel):
         gt=0,
         description="Rag_Quiz 主鍵（>0）；出題／作答模板 prompt 由此列讀取並於成功後寫入 Exam_Quiz",
     )
+    quiz_system_prompt_text: str = _EXAM_QUIZ_SYSTEM_PROMPT_FIELD
     follow_up_exam_quiz_id: int = Field(
         0,
         ge=0,
@@ -297,6 +306,7 @@ class ExamLlmGenerateQuizFollowupRequest(BaseModel):
         gt=0,
         description="Rag_Quiz 主鍵（>0）；出題／作答模板 prompt 由此列讀取並於成功後寫入 Exam_Quiz",
     )
+    quiz_system_prompt_text: str = _EXAM_QUIZ_SYSTEM_PROMPT_FIELD
     follow_up_exam_quiz_id: int = Field(
         0,
         ge=0,

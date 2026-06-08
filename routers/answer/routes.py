@@ -126,6 +126,7 @@ def mark_rag_quiz_followup(
             "person_id": row.get("person_id"),
             "quiz_name": row.get("quiz_name"),
             "quiz_user_prompt_text": row.get("quiz_user_prompt_text"),
+            "quiz_system_prompt_text": row.get("quiz_system_prompt_text"),
             "quiz_content": row.get("quiz_content"),
             "quiz_hint": row.get("quiz_hint"),
             "quiz_answer_reference": row.get("quiz_answer_reference"),
@@ -165,6 +166,7 @@ _RAG_LLM_GENERATE_FOLLOWUP_OPENAPI_EXAMPLE = {
     "rag_quiz_id": 1,
     "quiz_name": "",
     "quiz_user_prompt_text": "",
+    "quiz_system_prompt_text": "請依先前問答，連續出題逐步加深難度（越來越難、越來越深入）。",
     "quiz_history_list": [
         {**QUIZ_HISTORY_OPENAPI_ITEM, "answer_critique": "批改評語（指出答不好之處）"},
     ],
@@ -251,6 +253,7 @@ def rag_llm_generate_quiz_followup(
             body.quiz_history_list_prompt_text,
             followup=True,
         ),
+        quiz_system_prompt_text=body.quiz_system_prompt_text,
     )
 
 
@@ -457,6 +460,7 @@ def mark_rag_quiz_for_exam(
             "person_id": row.get("person_id"),
             "quiz_name": row.get("quiz_name"),
             "quiz_user_prompt_text": row.get("quiz_user_prompt_text"),
+            "quiz_system_prompt_text": row.get("quiz_system_prompt_text"),
             "quiz_content": row.get("quiz_content"),
             "quiz_hint": row.get("quiz_hint"),
             "quiz_answer_reference": row.get("quiz_answer_reference"),
