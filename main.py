@@ -27,6 +27,7 @@ from routers.course import router as course_router
 from routers.course_analysis import router as course_analysis_router
 from routers.exam import router as exam_router
 from routers.answer import router as answer_router
+from routers.bank import router as bank_router
 from routers.log import router as log_router
 from routers.person_analysis import router as person_analysis_router
 from routers.prompt import router as prompt_router
@@ -98,6 +99,7 @@ API_PREFIX = "/v1"
 
 app.include_router(zip_router, prefix=API_PREFIX)
 app.include_router(answer_router, prefix=API_PREFIX)
+app.include_router(bank_router, prefix=API_PREFIX)
 app.include_router(exam_router, prefix=API_PREFIX)
 app.include_router(person_analysis_router, prefix=API_PREFIX)
 app.include_router(course_analysis_router, prefix=API_PREFIX)

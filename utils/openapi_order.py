@@ -51,6 +51,33 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/rag/llm-model",
     "/v1/rag/person-analysis-user-prompt-text",
     "/v1/rag/course-analysis-user-prompt-text",
+    # --- Bank（測試題庫，複製自 RAG；僅檔案／單元管理）：分頁 ---
+    "/v1/bank/pages",
+    "/v1/bank/pages/upload-zip",
+    "/v1/bank/pages/{bank_page_id}",
+    "/v1/bank/pages/{bank_page_id}/units",
+    "/v1/bank/pages/{bank_page_id}/build-zip",
+    "/v1/bank/pages/{bank_page_id}/build-zip-stream",
+    # --- Bank：單元（建置前預覽 → 已建置單元）---
+    "/v1/bank/pages/{bank_page_id}/unit-preview/text",
+    "/v1/bank/pages/{bank_page_id}/unit-preview/mp3-file",
+    "/v1/bank/pages/{bank_page_id}/unit-preview/youtube-url",
+    "/v1/bank/units/{bank_unit_id}/text",
+    "/v1/bank/units/{bank_unit_id}/mp3-file",
+    "/v1/bank/units/{bank_unit_id}/youtube-url",
+    # --- Bank：題組（建立／列表巢狀於 unit；單項以主鍵淺路徑）---
+    "/v1/bank/pages/{bank_page_id}/units/{bank_unit_id}/groups",
+    "/v1/bank/groups/{bank_group_id}",
+    "/v1/bank/groups/{bank_group_id}/for-exam",
+    # --- Bank：題目 LLM（出題／批改）---
+    "/v1/bank/groups/{bank_group_id}/qa/llm-generate",
+    "/v1/bank/qa/{bank_qa_id}/llm-answer",
+    "/v1/bank/qa/answer-result/{job_id}",
+    "/v1/bank/qa/{bank_qa_id}",
+    # --- Bank：LLM 設定（bank 專屬，與 rag 分開）---
+    "/v1/bank/llm-api-key",
+    "/v1/bank/llm-api-key/exists",
+    "/v1/bank/llm-model",
     # --- Exam：分頁 ---
     "/v1/exam/pages",
     "/v1/exam/rag-for-exams",

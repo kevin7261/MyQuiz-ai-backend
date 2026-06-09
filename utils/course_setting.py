@@ -15,6 +15,9 @@ COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY = "course_analysis_user_prom
 COURSE_SETTING_RAG_API_KEY = "rag-api-key"
 COURSE_SETTING_LLM_MODEL = "llm-model"
 COURSE_SETTING_EXAM_API_KEY = "exam-api-key"
+# Bank（測試題庫）專屬金鑰與模型（與 rag-api-key／llm-model 完全分開）
+COURSE_SETTING_BANK_API_KEY = "bank-api-key"
+COURSE_SETTING_BANK_LLM_MODEL = "bank-llm-model"
 
 
 def fetch_course_setting_text(key: str, course_id: int) -> str:

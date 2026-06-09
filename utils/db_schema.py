@@ -26,6 +26,40 @@ RAG_QUIZ_TABLE = "Rag_Quiz"
 # 三表共用 course_id（bigint null default 0）
 RAG_COURSE_ID_DEFAULT = 0
 
+# Bank 相關表名（自 Rag/Rag_Unit 複製之獨立題庫；程式不與 rag 共用）
+BANK_TABLE = "Bank"
+BANK_UNIT_TABLE = "Bank_Unit"
+
+# Bank／Bank_Unit 共用 course_id（bigint null default 0）
+BANK_COURSE_ID_DEFAULT = 0
+
+BANK_SELECT_COLUMNS = (
+    "bank_id, bank_page_id, person_id, course_id, tab_name, file_size, file_metadata, "
+    "local, deleted, updated_at, created_at"
+)
+
+BANK_UNIT_SELECT_COLUMNS = (
+    "bank_unit_id, bank_page_id, person_id, course_id, unit_name, folder_combination, unit_type, "
+    "repack_file_name, upload_file_name, upload_file_size, rag_chunk_size, rag_chunk_overlap, "
+    "transcript, text_file_name, mp3_file_name, youtube_url, deleted, updated_at, created_at"
+)
+
+# Bank_Group（測試題組）／Bank_QA（測試問答）：對應 rag 的 Rag_Quiz LLM 出題／批改，但以「題組」為單位、無追問
+BANK_GROUP_TABLE = "Bank_Group"
+BANK_QA_TABLE = "Bank_QA"
+
+BANK_GROUP_SELECT_COLUMNS = (
+    "bank_group_id, bank_page_id, bank_unit_id, person_id, course_id, group_name, "
+    "question_system_prompt_text, question_user_prompt_text, qa_count, question_llm_model, "
+    "answer_user_prompt_text, answer_llm_model, for_exam, deleted, updated_at, created_at"
+)
+
+BANK_QA_SELECT_COLUMNS = (
+    "bank_qa_id, bank_page_id, bank_unit_id, bank_group_id, person_id, course_id, "
+    "question_series_index, question_content, question_hint, question_answer_reference, "
+    "question_reason, answer_content, answer_critique, deleted, updated_at, created_at"
+)
+
 # SELECT 欄位順序同 public DDL（rag_page_id → person_id → course_id → …）
 RAG_SELECT_COLUMNS = (
     "rag_id, rag_page_id, person_id, course_id, tab_name, file_size, file_metadata, "
