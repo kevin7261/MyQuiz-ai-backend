@@ -52,7 +52,7 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 
 回傳該 `course_id`、該登入者、`deleted=false` 的所有 Bank，**巢狀**帶出 units → groups → qas。
 
-**Query**：`course_id`（必）、`local`（選，bool；未傳依連線判定）
+**Query**：`course_id`（必）
 
 **Response 200**
 ```json
@@ -67,7 +67,6 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
       "file_size": 1.2,
       "file_metadata": { "...": "..." },
       "rag_metadata": { "...": "..." },
-      "local": false,
       "deleted": false,
       "updated_at": "2026-06-09T12:00:00",
       "created_at": "2026-06-09T11:00:00",
@@ -106,7 +105,7 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 `multipart/form-data`。
 
 **Query**：`course_id`（必）
-**Form 欄位**：`file`（.zip，必）、`bank_page_id`（必）、`tab_name`（必）、`local`（選，預設 false）、`person_id`（選，未傳用 token）
+**Form 欄位**：`file`（.zip，必）、`bank_page_id`（必）、`tab_name`（必）、`person_id`（選，未傳用 token）
 
 **Response 201**
 ```json

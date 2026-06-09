@@ -35,7 +35,7 @@ BANK_COURSE_ID_DEFAULT = 0
 
 BANK_SELECT_COLUMNS = (
     "bank_id, bank_page_id, person_id, course_id, tab_name, file_size, file_metadata, "
-    "local, deleted, updated_at, created_at"
+    "deleted, updated_at, created_at"
 )
 
 BANK_UNIT_SELECT_COLUMNS = (

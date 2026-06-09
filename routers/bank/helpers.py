@@ -184,7 +184,6 @@ def _bank_default_row(
     person_id: str | None = None,
     course_id: int = BANK_COURSE_ID_DEFAULT,
     file_metadata: Any = None,
-    local: bool = False,
 ) -> dict[str, Any]:
     """Bank 表一筆新增時的預設欄位；鍵順序同 public.Bank（bank_page_id→person_id→course_id→…；不含 bank_id；created_at／updated_at 為台北時間）。"""
     ts = now_taipei_iso()
@@ -196,7 +195,6 @@ def _bank_default_row(
         "file_metadata": file_metadata,
     }
     # rag_metadata／rag_chunk_size 等欄位在 Bank_Unit 層管理，建立時不主動寫入以避免 schema 未同步時 500
-    row["local"] = local
     row["deleted"] = False
     row["created_at"] = ts
     row["updated_at"] = ts
@@ -249,16 +247,13 @@ def _bank_table_select(
     select_columns: str = "*",
     exclude_deleted: bool = False,
     *,
-    local_match: bool | None = None,
     course_id: int | None = None,
 ) -> list[dict]:
-    """查詢 Bank 表全部列。回傳 list of dict。exclude_deleted=True 時僅回傳 deleted=False。local_match 若指定則僅回傳 Bank.local 與其相符的列。course_id 若指定則僅回傳該課程。依 created_at 升序（舊→新）。"""
+    """查詢 Bank 表全部列。回傳 list of dict。exclude_deleted=True 時僅回傳 deleted=False。course_id 若指定則僅回傳該課程。依 created_at 升序（舊→新）。"""
     supabase = get_supabase()
     q = supabase.table("Bank").select(select_columns)
     if exclude_deleted:
         q = q.eq("deleted", False)
-    if local_match is not None:
-        q = q.eq("local", local_match)
     if course_id is not None:
         q = q.eq("course_id", course_id)
     q = q.order("created_at", desc=False)
@@ -703,7 +698,6 @@ def _create_bank_record(
     person_id: str,
     tab_name: str,
     course_id: int,
-    local: bool = False,
 ) -> dict[str, Any]:
     """建立一筆 Bank；回傳 create 回應欄位。"""
     supabase = get_supabase()
@@ -716,7 +710,6 @@ def _create_bank_record(
                 person_id=person_id,
                 course_id=course_id,
                 file_metadata=None,
-                local=local,
             )
         )
         .execute()
@@ -730,7 +723,6 @@ def _create_bank_record(
         "tab_name": row.get("tab_name"),
         "person_id": row.get("person_id"),
         "course_id": row.get("course_id"),
-        "local": row.get("local"),
         "created_at": to_taipei_iso(row.get("created_at")),
     }
 

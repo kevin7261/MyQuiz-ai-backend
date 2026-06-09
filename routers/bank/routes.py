@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, File, Form, HTTPException, Path as PathParam, Query, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Path as PathParam, Query, UploadFile
 from postgrest.exceptions import APIError
 from fastapi.responses import StreamingResponse
 
@@ -30,7 +30,6 @@ from utils.bank_course import (
     select_without_course_id_if_needed,
 )
 from utils.bank_stem import transcript_from_row
-from utils.bank_request import is_localhost_request
 from utils.bank_media import audio_media_type_for_suffix
 from utils.bank_transcript import (
     pick_audio_from_upload_zip,
@@ -88,28 +87,21 @@ BANK_SELECT_ALL = "*"
 
 @router.get("/pages", response_model=ListBankResponse)
 def list_bank(
-    request: Request,
     person_id: PersonId,
     course_id: CourseId,
-    local: bool | None = Query(
-        None,
-        description="僅回傳 Bank.local 與此值相同的列。未傳時：連線來源為 127.0.0.1、localhost、::1 視為 true，否則 false",
-    ),
 ):
     """
     列出 Bank 表內容（deleted=False），須傳 course_id，僅回傳該課程的 Bank／Bank_Unit；
-    且僅回傳與 query person_id 相符之列，Bank.local 須與 query local 相符（未傳 local 時依連線自動判定）。
+    且僅回傳與 query person_id 相符之列。
     回傳列依 created_at 由舊到新排序。
     每筆 Bank 含 units（Bank_Unit 列表）。
     音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /bank/units/{bank_unit_id}/mp3-file 查詢字串（`bank_page_id`，不需 person_id），可接在後端 origin 後作為 `<audio src>`。
     YouTube 單元（unit_type=4）且 youtube_url 非空時，另含 youtube_url_api：相對於 API 根路徑的 GET /bank/units/{bank_unit_id}/youtube-url 查詢字串（`bank_page_id`，不需 person_id）。
     """
     try:
-        local_filter = local if local is not None else is_localhost_request(request)
         data = _bank_table_select(
             BANK_SELECT_ALL,
             exclude_deleted=True,
-            local_match=local_filter,
             course_id=course_id,
         )
         pid = person_id.strip()
@@ -266,11 +258,10 @@ async def create_upload_zip(
     bank_page_id: str = Form(..., description="Bank 的 tab 識別，對應 Bank 表 bank_page_id 欄位"),
     person_id: str | None = Form(None, description="選填；未傳以 token 解析的呼叫者為準；有傳須與呼叫者一致"),
     tab_name: str = Form(..., description="Bank 顯示名稱，寫入 Bank 表 tab_name 欄位"),
-    local: bool = Form(False, description="是否為本機 Bank，寫入 Bank 表 local 欄位"),
 ):
     """
     建立 Bank 並上傳 ZIP。
-    multipart/form-data：file、bank_page_id、tab_name、local（選填，預設 false）；person_id 選填（未傳以 token 呼叫者為準）。
+    multipart/form-data：file、bank_page_id、tab_name；person_id 選填（未傳以 token 呼叫者為準）。
     須傳 query course_id。
     回傳 create 欄位與 file_metadata。
     """
@@ -295,7 +286,6 @@ async def create_upload_zip(
             person_id=pid,
             tab_name=name,
             course_id=course_id,
-            local=local,
         )
         file_metadata = _upload_bank_zip_contents(
             contents=contents,
