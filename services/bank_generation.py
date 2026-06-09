@@ -48,16 +48,23 @@ SYSTEM_PROMPT_BANK_QUIZ = textwrap.dedent("""
     - 該節有**實質文字**時（非僅空白或占位），**必須完整遵守**（題型、難度、焦點、格式、用語等），不得因課程片段較易取材而偏離該節要求。
     - 僅當該節無實質文字時，始依 **課程內容** 與本訊息其餘規範出題。{quiz_system_prompt_text}
 
+    ## 出題歷史（接續出題依據，必須遵守）
+
+    下列為本題組**已出過的題目**（出題歷史），為**權威依據**：
+
+    {quiz_history_body}
+
+    - 請在上述出題歷史的基礎上，**接續出下一題**：延續本題組的主題與脈絡，並依「指令優先級」之使用者本次出題要求（若有）決定遞進方向（例如越來越深入、換考查點）。
+    - **不得重複**：出題前**逐題比對**上述歷史，你產生的新題不可與其中任一題相同、近乎相同，或僅改寫措辭／調整順序／替換同義詞；須改變考查點、情境或問法，使學生能辨識為**另一道新題**。
+    - 若上方標示未提供出題歷史，則視為本題組第一題，直接依出題 user prompt 與課程內容出題。
+
     ## 訊息格式
 
     - 系統與使用者訊息皆為 **Markdown**（標題、清單、粗體、水平線、`---`、課程原文之 fenced code block 等）。
     - **課程內容** 以 code fence（```text …```）包住逐字／檢索原文；區段內唯純引用，勿將標記語法本身當成教學內容。
     - 將 `---` 視為區段分隔。
-    - **出題 user prompt** 區塊（`## 出題 user prompt`）以下若無實質文字（僅留白或空字串），請**完全忽略**該節，僅依 **課程內容** 出題。
-    - 若出題 user prompt 有文字，則須**先滿足該節指令**，再於課程引用範圍內取材。
-    - 使用者訊息中 **`## 出題 user prompt`** 與 **`## 已出過題目（勿重複出題）`** 為**兩個獨立區塊**（中間以空行或 `---` 分隔）；勿將已出過列表當成教師出題指令的一部分。
-    - **`## 已出過題目（勿重複出題）`** 若列有題幹，表示這些題目**已出過**；你**不得重複出題**——新題不可與任一所列題幹相同、近乎相同，或僅改寫措辭／調整順序／替換同義詞；須改變考查點、情境或問法，使學生能辨識為**另一道新題**。該節與出題 user prompt 同屬高優先指令。
-    - 使用者訊息中 **`## 已出過題目（勿重複出題）`** 所列清單為**權威依據**：出題前請**逐題比對**該清單，確認你產生的新題與其中**每一題**皆不相同後，務必輸出一道**全新題目**。
+    - **出題 user prompt** 區塊（`## 出題 user prompt`）以下若無實質文字（僅留白或空字串），請**完全忽略**該節，僅依 **課程內容** 與上方出題歷史出題；有文字時須**先滿足該節指令**，再於課程引用範圍內取材。
+    - 出題歷史（已出過題目）見本 system 之 **`## 出題歷史`** 區塊，**不在**使用者訊息中。
 
     ## 題數限制（必須遵守）
 
@@ -80,7 +87,7 @@ SYSTEM_PROMPT_BANK_QUIZ = textwrap.dedent("""
     ## 出題規範
 
     - `quiz_content`、`quiz_hint`、`quiz_answer_reference` 之字串值皆為 **Markdown**（段落、清單、`**強調**` 等）；用語與語種請依 **出題 user prompt**（有實質文字時）與課程內容。
-    - 有 **已出過題目** 列表時：`quiz_content` **不得**重複或實質重複列表中任一題；`quiz_hint` 與 `quiz_answer_reference` 亦須對應這道**新題**，勿沿用舊題答案結構敷衍。
+    - 依上方 **出題歷史** 接續出題時：`quiz_content` **不得**重複或實質重複歷史中任一題；`quiz_hint` 與 `quiz_answer_reference` 亦須對應這道**新題**，勿沿用舊題答案結構敷衍。
 
     ## 回傳格式（JSON）
 
@@ -92,29 +99,28 @@ SYSTEM_PROMPT_BANK_QUIZ = textwrap.dedent("""
     """).strip()
 
 
-def _compose_bank_quiz_system_prompt(base_system: str, quiz_system_prompt_text: str = "") -> str:
-    """將題組 question_system_prompt_text 織入 system prompt 的「指令優先級」區塊（最高優先）；空則不出現。"""
+def _compose_bank_quiz_system_prompt(
+    base_system: str, quiz_system_prompt_text: str = "", quiz_history_body: str = ""
+) -> str:
+    """將題組 question_system_prompt_text 織入「指令優先級」、出題歷史織入「出題歷史」區塊；皆於 system。"""
     extra = (quiz_system_prompt_text or "").strip()
     user_requirement = (
         f"\n- **使用者本次出題要求（最高優先，必須遵守）**：{extra}" if extra else ""
     )
-    return base_system.format(quiz_system_prompt_text=user_requirement)
+    body = (quiz_history_body or "").strip() or "（本次未提供出題歷史；視為本題組第一題。）"
+    return base_system.format(quiz_system_prompt_text=user_requirement, quiz_history_body=body)
 
 
 USER_PROMPT_BANK_COURSE = textwrap.dedent("""
     ## 必須遵守（最高優先）
 
     下節 **出題 user prompt** 為教師直接指令，必須一定遵守。
-    若另有獨立區塊 **已出過題目（勿重複出題）**（在「出題 user prompt」之後），所列題目**不可再出一次**；請另出與列表**皆不相同**的新題。
+    **出題歷史（已出過題目）見 system 之「## 出題歷史」**；請在該歷史基礎上**接續出下一題**，且不與其中任一題重複。
     **`quiz_content` 請直接寫題幹**（學生可立即作答的一句／一段發問），勿加「題目」標題、「根據課程…」前言或多問列點。
 
     ## 出題 user prompt
 
     {quiz_user_prompt_text}
-
-    ## 已出過題目（勿重複出題）
-
-    {quiz_history_body}
 
     ---
 
@@ -167,15 +173,9 @@ def _quiz_history_body_for_prompt(*, quiz_history_list_prompt_text: str = "", qu
     return _format_bank_quiz_history_body(quiz_history_list)
 
 
-def _format_bank_quiz_user_message(
-    *, quiz_user_prompt_text: str, context_md: str, quiz_history_list: list[str] | None = None, quiz_history_list_prompt_text: str = ""
-) -> str:
+def _format_bank_quiz_user_message(*, quiz_user_prompt_text: str, context_md: str) -> str:
     return USER_PROMPT_BANK_COURSE.format(
         quiz_user_prompt_text=(quiz_user_prompt_text or "").strip(),
-        quiz_history_body=_quiz_history_body_for_prompt(
-            quiz_history_list_prompt_text=quiz_history_list_prompt_text,
-            quiz_history_list=quiz_history_list,
-        ),
         context_md=context_md,
     )
 
@@ -237,17 +237,22 @@ def _generate_bank_quiz_from_context(
     if not (context_text or "").strip():
         raise ValueError("請傳入課程內容（檢索片段或逐字稿，必填）")
     context_md = context_as_markdown_fenced(context_text)
+    history_body = _quiz_history_body_for_prompt(
+        quiz_history_list_prompt_text=quiz_history_list_prompt_text,
+        quiz_history_list=quiz_history_list,
+    )
+    system_content = _compose_bank_quiz_system_prompt(
+        SYSTEM_PROMPT_BANK_QUIZ, quiz_system_prompt_text, history_body
+    )
     user_prompt = _format_bank_quiz_user_message(
         quiz_user_prompt_text=quiz_user_prompt_text,
         context_md=context_md,
-        quiz_history_list=quiz_history_list,
-        quiz_history_list_prompt_text=quiz_history_list_prompt_text,
     )
     client = OpenAI(api_key=api_key)
     return _invoke_quiz_json_llm(
         client,
         [
-            {"role": "system", "content": _compose_bank_quiz_system_prompt(SYSTEM_PROMPT_BANK_QUIZ, quiz_system_prompt_text)},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt},
         ],
         llm_model=llm_model,
