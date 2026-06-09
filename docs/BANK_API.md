@@ -111,7 +111,7 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 ```json
 {
   "bank_id": 1, "bank_page_id": "abc", "tab_name": "第一章",
-  "person_id": "u_123", "course_id": 10, "local": false,
+  "person_id": "u_123", "course_id": 10,
   "created_at": "2026-06-09T11:00:00",
   "file_metadata": { "bank_page_id": "abc", "filename": "x.zip", "second_folders": ["..."], "file_size": 1.2 }
 }
