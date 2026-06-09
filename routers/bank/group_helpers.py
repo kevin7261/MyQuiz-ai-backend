@@ -211,37 +211,43 @@ def _generate_question_reason(
     return ""
 
 
-def bank_llm_generate_qa_impl(
-    *,
-    bank_group_id: int,
-    caller_person_id: str,
+def _resolve_bank_quiz_llm_params(
+    group: dict,
     course_id: int,
+    *,
     question_user_prompt_override: str = "",
     question_system_prompt_override: str = "",
-):
-    """在題組內產生下一題：依題組 prompt 與既有題目（勿重複）出一題，寫入 Bank_QA。"""
-    supabase = get_supabase()
-    group = _fetch_bank_group_row(supabase, bank_group_id, course_id, cols="*")
-    if not group:
-        raise HTTPException(status_code=404, detail=f"找不到 bank_group_id={bank_group_id} 的 Bank_Group，或已刪除")
-    pid = (group.get("person_id") or "").strip()
-    if pid != caller_person_id:
-        raise HTTPException(status_code=403, detail="無權於該題組出題")
-
-    try:
-        qa_count = int(group.get("qa_count") or 0)
-    except (TypeError, ValueError):
-        qa_count = 0
-
-    existing = _bank_qa_rows_for_group(
-        supabase, bank_group_id, course_id, cols="bank_qa_id, question_series_index, question_content, course_id"
-    )
-    if qa_count > 0 and len(existing) >= qa_count:
+) -> tuple[str, str, str, str]:
+    """解析出題所需 api_key／llm_model／qup／qsp（不呼叫 LLM）。覆寫值非空才生效，不寫回題組。"""
+    api_key = get_bank_api_key(course_id)
+    if not api_key:
         raise HTTPException(
-            status_code=409,
-            detail=f"本題組已達 qa_count 上限（{qa_count} 題），無法再出題",
+            status_code=400,
+            detail="請設定 Bank API Key：PUT /v1/bank/llm-api-key（Course_Setting key=bank-api-key，依 course_id）",
         )
+    llm_model = (group.get("question_llm_model") or "").strip() or get_bank_llm_model(course_id)
+    qup = (question_user_prompt_override or "").strip() or (group.get("question_user_prompt_text") or "").strip()
+    qsp = (question_system_prompt_override or "").strip() or (group.get("question_system_prompt_text") or "").strip()
+    return api_key, llm_model, qup, qsp
 
+
+def _generate_bank_quiz_fields(
+    supabase,
+    group: dict,
+    *,
+    course_id: int,
+    api_key: str,
+    llm_model: str,
+    qup: str,
+    qsp: str,
+    prior_items: list[dict],
+) -> dict:
+    """呼叫 bank 出題 LLM 產生一題（不寫 DB）。
+
+    回傳含 question_content／question_hint／question_answer_reference／question_reason／
+    bank_unit_id／bank_page_id。LLM 失敗時 raise（由呼叫端轉 llm_error_json_response）；
+    驗證錯誤 raise HTTPException。`prior_items` 為「已出過題目（勿重複）」題幹清單。
+    """
     bank_unit_id = int(group.get("bank_unit_id") or 0)
     if bank_unit_id <= 0:
         raise HTTPException(status_code=400, detail="該題組對應的 bank_unit_id 無效")
@@ -250,23 +256,6 @@ def bank_llm_generate_qa_impl(
         raise HTTPException(status_code=404, detail=f"找不到 bank_unit_id={bank_unit_id} 的 Bank_Unit")
     bank_page_id = (unit.get("bank_page_id") or group.get("bank_page_id") or "").strip()
 
-    api_key = get_bank_api_key(course_id)
-    if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="請設定 Bank API Key：PUT /v1/bank/llm-api-key（Course_Setting key=bank-api-key，依 course_id）",
-        )
-    llm_model = (group.get("question_llm_model") or "").strip() or get_bank_llm_model(course_id)
-
-    qup = (question_user_prompt_override or "").strip() or (group.get("question_user_prompt_text") or "").strip()
-    qsp = (question_system_prompt_override or "").strip() or (group.get("question_system_prompt_text") or "").strip()
-
-    # 既有題幹 → 已出過題目（連續出題、勿重複）
-    prior_items = [
-        {"quiz_content": (q.get("question_content") or "").strip()}
-        for q in existing
-        if (q.get("question_content") or "").strip()
-    ]
     prompt_for_llm = format_bank_quiz_history_prompt_for_llm(prior_items)
 
     try:
@@ -319,24 +308,93 @@ def bank_llm_generate_qa_impl(
         question_reason = _generate_question_reason(
             api_key, question_content=qc, quiz_answer_reference=qref, llm_model=llm_model
         )
+        return {
+            "question_content": qc,
+            "question_hint": qh,
+            "question_answer_reference": qref,
+            "question_reason": question_reason,
+            "bank_unit_id": bank_unit_id,
+            "bank_page_id": bank_page_id,
+        }
+    finally:
+        if path is not None:
+            safe_unlink(path)
+
+
+def bank_llm_generate_qa_impl(
+    *,
+    bank_group_id: int,
+    caller_person_id: str,
+    course_id: int,
+    question_user_prompt_override: str = "",
+    question_system_prompt_override: str = "",
+):
+    """在題組內產生下一題：依題組 prompt 與既有題目（勿重複）出一題，寫入 Bank_QA。"""
+    supabase = get_supabase()
+    group = _fetch_bank_group_row(supabase, bank_group_id, course_id, cols="*")
+    if not group:
+        raise HTTPException(status_code=404, detail=f"找不到 bank_group_id={bank_group_id} 的 Bank_Group，或已刪除")
+    pid = (group.get("person_id") or "").strip()
+    if pid != caller_person_id:
+        raise HTTPException(status_code=403, detail="無權於該題組出題")
+
+    try:
+        qa_count = int(group.get("qa_count") or 0)
+    except (TypeError, ValueError):
+        qa_count = 0
+
+    existing = _bank_qa_rows_for_group(
+        supabase, bank_group_id, course_id, cols="bank_qa_id, question_series_index, question_content, course_id"
+    )
+    if qa_count > 0 and len(existing) >= qa_count:
+        raise HTTPException(
+            status_code=409,
+            detail=f"本題組已達 qa_count 上限（{qa_count} 題），無法再出題",
+        )
+
+    api_key, llm_model, qup, qsp = _resolve_bank_quiz_llm_params(
+        group,
+        course_id,
+        question_user_prompt_override=question_user_prompt_override,
+        question_system_prompt_override=question_system_prompt_override,
+    )
+
+    # 既有題幹 → 已出過題目（連續出題、勿重複）
+    prior_items = [
+        {"quiz_content": (q.get("question_content") or "").strip()}
+        for q in existing
+        if (q.get("question_content") or "").strip()
+    ]
+
+    try:
+        fields = _generate_bank_quiz_fields(
+            supabase,
+            group,
+            course_id=course_id,
+            api_key=api_key,
+            llm_model=llm_model,
+            qup=qup,
+            qsp=qsp,
+            prior_items=prior_items,
+        )
         series_index = len(existing) + 1
         ts = now_taipei_iso()
         # prompt 為出題當下自題組複製、凍結（question_*、answer_user_prompt_text）。
         # 模型欄位記「實際呼叫 LLM 用的模型」：question_llm_model 為本次出題所用；
         # answer_llm_model 不在此存，於批改完成時寫入批改實際用的模型。
         qa_row: dict[str, Any] = {
-            "bank_page_id": bank_page_id,
-            "bank_unit_id": bank_unit_id,
+            "bank_page_id": fields["bank_page_id"],
+            "bank_unit_id": fields["bank_unit_id"],
             "bank_group_id": bank_group_id,
             "person_id": pid,
             "course_id": course_id,
             "question_series_index": series_index,
             "question_system_prompt_text": qsp,
             "question_user_prompt_text": qup,
-            "question_content": qc,
-            "question_hint": qh,
-            "question_answer_reference": qref,
-            "question_reason": question_reason,
+            "question_content": fields["question_content"],
+            "question_hint": fields["question_hint"],
+            "question_answer_reference": fields["question_answer_reference"],
+            "question_reason": fields["question_reason"],
             "question_llm_model": llm_model,
             "answer_user_prompt_text": (group.get("answer_user_prompt_text") or ""),
             "answer_content": "",
@@ -376,9 +434,119 @@ def bank_llm_generate_qa_impl(
                 }
             )
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if path is not None:
-            safe_unlink(path)
+
+
+def bank_llm_regenerate_qa_impl(
+    *,
+    bank_qa_id: int,
+    caller_person_id: str,
+    course_id: int,
+    question_user_prompt_override: str = "",
+    question_system_prompt_override: str = "",
+):
+    """重新產生**同一題**（原地覆寫同一 bank_qa_id）。
+
+    與 llm-generate 不同：不刪除、不新增任何 Bank_QA，亦不改動 question_series_index；只把這一題的
+    question_* 內容用 LLM 重新產生並 UPDATE 回原列。「勿重複」清單為題組內**其他**題（排除本題），
+    因此不會與其餘題目重覆。重出後本題舊的作答／批改失效，一併清空。不檢查 qa_count 上限
+    （重出佔用既有名額，非新增）。
+    """
+    supabase = get_supabase()
+    qa = _fetch_bank_qa_row(supabase, bank_qa_id, course_id, cols="*")
+    if not qa:
+        raise HTTPException(status_code=404, detail=f"找不到 bank_qa_id={bank_qa_id} 的 Bank_QA，或已刪除")
+    bank_group_id = int(qa.get("bank_group_id") or 0)
+    if bank_group_id <= 0:
+        raise HTTPException(status_code=400, detail="該題的 bank_group_id 無效")
+    group = _fetch_bank_group_row(supabase, bank_group_id, course_id, cols="*")
+    if not group:
+        raise HTTPException(
+            status_code=404, detail=f"找不到 bank_group_id={bank_group_id} 的 Bank_Group，或已刪除"
+        )
+    pid = (group.get("person_id") or "").strip()
+    if pid != caller_person_id:
+        raise HTTPException(status_code=403, detail="無權重出該題")
+
+    existing = _bank_qa_rows_for_group(
+        supabase, bank_group_id, course_id, cols="bank_qa_id, question_series_index, question_content, course_id"
+    )
+    # 勿重複：題組內其他題（排除本題本身）
+    prior_items = [
+        {"quiz_content": (q.get("question_content") or "").strip()}
+        for q in existing
+        if int(q.get("bank_qa_id") or 0) != bank_qa_id and (q.get("question_content") or "").strip()
+    ]
+    api_key, llm_model, qup, qsp = _resolve_bank_quiz_llm_params(
+        group,
+        course_id,
+        question_user_prompt_override=question_user_prompt_override,
+        question_system_prompt_override=question_system_prompt_override,
+    )
+
+    try:
+        fields = _generate_bank_quiz_fields(
+            supabase,
+            group,
+            course_id=course_id,
+            api_key=api_key,
+            llm_model=llm_model,
+            qup=qup,
+            qsp=qsp,
+            prior_items=prior_items,
+        )
+        ts = now_taipei_iso()
+        update_row: dict[str, Any] = {
+            "question_system_prompt_text": qsp,
+            "question_user_prompt_text": qup,
+            "question_content": fields["question_content"],
+            "question_hint": fields["question_hint"],
+            "question_answer_reference": fields["question_answer_reference"],
+            "question_reason": fields["question_reason"],
+            "question_llm_model": llm_model,
+            # 重出後舊作答／批改失效，一併清空（question_series_index 不變）
+            "answer_content": "",
+            "answer_critique": None,
+            "answer_llm_model": None,
+            "updated_at": ts,
+        }
+        supabase.table("Bank_QA").update(update_row).eq("bank_qa_id", bank_qa_id).eq(
+            "deleted", False
+        ).execute()
+        updated = _fetch_bank_qa_row(supabase, bank_qa_id, course_id, cols="*") or {**qa, **update_row}
+        try:
+            qa_count = int(group.get("qa_count") or 0)
+        except (TypeError, ValueError):
+            qa_count = 0
+        out = {
+            "question_llm_model": llm_model,
+            "qa_count": qa_count,
+            "generated_count": int(
+                updated.get("question_series_index") or qa.get("question_series_index") or 0
+            ),
+            **to_json_safe(updated),
+        }
+        return Response(
+            content=json.dumps(out, ensure_ascii=False).encode("utf-8"),
+            media_type="application/json; charset=utf-8",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        if is_llm_call_error(e):
+            return llm_error_json_response(
+                {
+                    "llm_error": format_llm_error(e),
+                    "bank_group_id": bank_group_id,
+                    "bank_qa_id": bank_qa_id,
+                    "question_content": "",
+                    "question_hint": "",
+                    "question_answer_reference": "",
+                    "question_llm_model": llm_model,
+                }
+            )
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

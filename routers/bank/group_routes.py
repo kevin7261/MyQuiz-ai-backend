@@ -42,6 +42,7 @@ from .group_helpers import (
     _fetch_bank_group_row,
     _fetch_bank_qa_row,
     bank_llm_generate_qa_impl,
+    bank_llm_regenerate_qa_impl,
     enqueue_bank_qa_answer_job,
     fetch_bank_unit_in_page,
     groups_by_bank_unit_ids,
@@ -308,6 +309,31 @@ def bank_llm_generate_qa(
     """
     return bank_llm_generate_qa_impl(
         bank_group_id=bank_group_id,
+        caller_person_id=caller_person_id,
+        course_id=course_id,
+        question_user_prompt_override=body.question_user_prompt_text,
+        question_system_prompt_override=body.question_system_prompt_text,
+    )
+
+
+@router.post("/qa/{bank_qa_id}/llm-regenerate", summary="Bank LLM Regenerate QA (in place)", operation_id="bank_llm_regenerate_qa")
+def bank_llm_regenerate_qa(
+    body: openapi_body(
+        GenerateBankQaRequest,
+        {"question_user_prompt_text": "", "question_system_prompt_text": ""},
+    ),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    bank_qa_id: int = PathParam(..., gt=0, description="Bank_QA 主鍵"),
+):
+    """
+    **原地重出同一題**（LLM，同步）：只重新產生這一題的 question_* 內容並覆寫回**同一個 bank_qa_id**，
+    不刪除、不新增任何 Bank_QA，也不改動 question_series_index。同題組的**其他**題會作為「已出過題目
+    （勿重複）」送入，故不會與其餘題目重覆。重出後本題舊作答／批改會清空。不檢查 qa_count 上限。
+    可選 body 覆寫本次 prompt（非空才覆寫，不寫回題組）。
+    """
+    return bank_llm_regenerate_qa_impl(
+        bank_qa_id=bank_qa_id,
         caller_person_id=caller_person_id,
         course_id=course_id,
         question_user_prompt_override=body.question_user_prompt_text,
