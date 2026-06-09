@@ -269,7 +269,8 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 
 ### 2.7 出下一題 `POST /v1/bank/groups/{bank_group_id}/qa/llm-generate`
 
-**同步**呼叫 LLM 出**一道**新題並寫入 Bank_QA。使用題組既有的 `question_system_prompt_text` + `question_user_prompt_text`；同題組已出過的題幹會作為「勿重複」清單一併送入。出題後另產生 `question_reason`（出題理由）。
+**同步**呼叫 LLM 出**一道**新題並寫入 Bank_QA。使用題組既有的 `question_system_prompt_text` + `question_user_prompt_text`；同題組已出過的題幹（出題歷史）會放進 system 作為「接續出題依據／勿重複」。
+**理由先行**：同一次呼叫即一併產出 `question_reason`（出題理由）——模型先依「出題歷史＋題組規則(question_system_prompt_text)＋出題規則(question_user_prompt_text)＋課程內容」決定出題理由，再據此寫題；`question_reason` 會說明本題如何呼應這些規則與歷史（若有）。
 
 **Query**：`course_id`
 **Body**（皆選填，非空才覆寫本次，不寫回題組）

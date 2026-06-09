@@ -22,10 +22,7 @@ from typing import Any
 
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse, Response
-from openai import OpenAI
-
 from services.bank_generation import (
-    BANK_QUIZ_LLM_MODEL,
     format_bank_quiz_history_prompt_for_llm,
     generate_bank_quiz,
     generate_bank_quiz_transcript_only,
@@ -179,38 +176,6 @@ def fetch_bank_unit_in_page(supabase, *, bank_page_id: str, bank_unit_id: int, c
 # ---------------------------------------------------------------------------
 
 
-def _generate_question_reason(
-    api_key: str, *, question_content: str, quiz_answer_reference: str, llm_model: str | None = None
-) -> str:
-    """出題後產生「出題理由」（1–2 句，寫入 Bank_QA.question_reason）。失敗時回空字串，不影響出題。"""
-    qc = (question_content or "").strip()
-    if not qc or not (api_key or "").strip():
-        return ""
-    try:
-        client = OpenAI(api_key=api_key)
-        resp = client.chat.completions.create(
-            model=llm_model or BANK_QUIZ_LLM_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "你是出題教師。請用 1–2 句說明這道題目的出題理由（想考察的重點概念或能力），語種與題目一致。回傳一個 JSON 物件，鍵名固定為 question_reason（Markdown 字串）。",
-                },
-                {
-                    "role": "user",
-                    "content": f"## 題目\n\n{qc}\n\n## 參考答案\n\n{(quiz_answer_reference or '').strip() or '（未提供）'}",
-                },
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.3,
-        )
-        data = json.loads(resp.choices[0].message.content or "{}")
-        if isinstance(data, dict):
-            return (data.get("question_reason") or "").strip()
-    except Exception:
-        _logger.warning("產生 question_reason 失敗，留空", exc_info=True)
-    return ""
-
-
 def _resolve_bank_quiz_llm_params(
     group: dict,
     course_id: int,
@@ -305,9 +270,8 @@ def _generate_bank_quiz_fields(
         qc = (result.get("quiz_content") or "").strip()
         qh = (result.get("quiz_hint") or "").strip()
         qref = (result.get("quiz_answer_reference") or "").strip()
-        question_reason = _generate_question_reason(
-            api_key, question_content=qc, quiz_answer_reference=qref, llm_model=llm_model
-        )
+        # 出題理由由出題那一次 LLM 一併產出（理由先行），不再另呼叫一次。
+        question_reason = (result.get("question_reason") or "").strip()
         return {
             "question_content": qc,
             "question_hint": qh,
@@ -470,11 +434,18 @@ def bank_llm_regenerate_qa_impl(
     existing = _bank_qa_rows_for_group(
         supabase, bank_group_id, course_id, cols="bank_qa_id, question_series_index, question_content, course_id"
     )
-    # 勿重複：題組內其他題（排除本題本身）
+    # 勿重複：只取「此題之前」的題（question_series_index 較小者）。
+    # 與逐題出題一致——第 N 題只看 1..N-1；故重出第 1 題時無歷史 qa，即使後面已出多題也不納入。
+    try:
+        current_series_index = int(qa.get("question_series_index") or 0)
+    except (TypeError, ValueError):
+        current_series_index = 0
     prior_items = [
         {"quiz_content": (q.get("question_content") or "").strip()}
         for q in existing
-        if int(q.get("bank_qa_id") or 0) != bank_qa_id and (q.get("question_content") or "").strip()
+        if int(q.get("bank_qa_id") or 0) != bank_qa_id
+        and (current_series_index <= 0 or int(q.get("question_series_index") or 0) < current_series_index)
+        and (q.get("question_content") or "").strip()
     ]
     api_key, llm_model, qup, qsp = _resolve_bank_quiz_llm_params(
         group,

@@ -89,11 +89,14 @@ SYSTEM_PROMPT_BANK_QUIZ = textwrap.dedent("""
     - `quiz_content`、`quiz_hint`、`quiz_answer_reference` 之字串值皆為 **Markdown**（段落、清單、`**強調**` 等）；用語與語種請依 **出題 user prompt**（有實質文字時）與課程內容。
     - 依上方 **出題歷史** 接續出題時：`quiz_content` **不得**重複或實質重複歷史中任一題；`quiz_hint` 與 `quiz_answer_reference` 亦須對應這道**新題**，勿沿用舊題答案結構敷衍。
 
-    ## 回傳格式（JSON）
+    ## 出題程序與回傳格式（JSON）
+
+    **理由先行**：請**先**綜合「出題歷史、使用者本次出題要求（題組規則／連續出題規定）、出題 user prompt（出題規則）與課程內容」決定本題的**出題理由**，**再**依該理由寫出題目與答案；`question_reason` 須與最終題目一致。
 
     請回傳一個 JSON 物件，鍵名固定為（英文）：
 
-    - `quiz_content`：**單一**題目題幹（Markdown 字串；**直接寫題，勿加「題目」等標籤或出題前言**）
+    - `question_reason`：**出題理由**（Markdown 字串）：說明本題要考查的重點概念／能力與為何此時出此題；**若有**「使用者本次出題要求（題組規則／連續出題規定）」或「出題 user prompt（出題規則）」，須說明本題**如何呼應／落實**之；並說明與**出題歷史**的延續／遞進關係（如有）。若無相關規則或歷史，僅就題目本身說明。
+    - `quiz_content`：**單一**題目題幹（Markdown 字串；**直接寫題，勿加「題目」等標籤或出題前言**），須與 `question_reason` 一致。
     - `quiz_hint`：該題答案提示（Markdown 字串）
     - `quiz_answer_reference`：該題參考答案（Markdown 字串）
     """).strip()
