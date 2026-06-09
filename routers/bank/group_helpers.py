@@ -193,10 +193,7 @@ def _generate_question_reason(
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "你是出題教師。請用 1–2 句說明這道題目的出題理由（想考察的重點概念或能力），"
-                        "語種與題目一致。回傳一個 JSON 物件，鍵名固定為 question_reason（Markdown 字串）。"
-                    ),
+                    "content": "你是出題教師。請用 1–2 句說明這道題目的出題理由（想考察的重點概念或能力），語種與題目一致。回傳一個 JSON 物件，鍵名固定為 question_reason（Markdown 字串）。",
                 },
                 {
                     "role": "user",
