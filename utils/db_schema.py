@@ -56,8 +56,10 @@ BANK_GROUP_SELECT_COLUMNS = (
 
 BANK_QA_SELECT_COLUMNS = (
     "bank_qa_id, bank_page_id, bank_unit_id, bank_group_id, person_id, course_id, "
-    "question_series_index, question_content, question_hint, question_answer_reference, "
-    "question_reason, answer_content, answer_critique, deleted, updated_at, created_at"
+    "question_series_index, question_system_prompt_text, question_user_prompt_text, "
+    "question_content, question_hint, question_answer_reference, question_reason, question_llm_model, "
+    "answer_user_prompt_text, answer_llm_model, answer_content, answer_critique, "
+    "deleted, updated_at, created_at"
 )
 
 # SELECT 欄位順序同 public DDL（rag_page_id → person_id → course_id → …）

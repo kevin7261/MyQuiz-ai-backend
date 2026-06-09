@@ -55,6 +55,39 @@ def prompt_placeholder_descriptions() -> dict[str, dict[str, str]]:
                 "FAISS 路徑為以 quiz_content 檢索之 chunk，同樣包成 ```text …```。"
             ),
         },
+        "bank": {
+            "quiz_system_prompt_text": (
+                "僅出題 system：題組連續出題規定；Bank_Group.question_system_prompt_text"
+                "（或請求 override），織入「指令優先級」區塊為最高優先；空則該節不出現。"
+            ),
+            "quiz_user_prompt_text": (
+                "出題／批改 user prompt；Bank_Group.question_user_prompt_text"
+                "（或 Bank_QA.question_user_prompt_text／請求 override）；"
+                "空字串時模板該節留白。"
+            ),
+            "quiz_history_body": (
+                "僅出題 user：已出過題目區塊正文；由同題組既有 Bank_QA 題幹"
+                "格式化成編號列表，或無題目時為「未提供」說明句。"
+            ),
+            "id_block": (
+                "僅批改 user：有 bank_qa_id 時為「## 關聯識別」Markdown 區塊"
+                "（含 bank_qa_id 列點），否則空字串。"
+            ),
+            "answer_user_prompt_text": (
+                "僅批改 user：作答／批改 user prompt；Bank_Group.answer_user_prompt_text"
+                "（或 Bank_QA.answer_user_prompt_text）；空則顯示「（未提供）」。"
+            ),
+            "quiz_content": (
+                "僅批改 user：本題題幹；Bank_QA.quiz_content 或請求 body。"
+            ),
+            "quiz_answer": (
+                "僅批改 user：學生作答；請求 body 之 answer_content／quiz_answer。"
+            ),
+            "context_md": (
+                "課程內容：unit_type=1 為 FAISS 檢索片段、2/3/4 為逐字稿全文，"
+                "包成 ```text …``` fenced block。"
+            ),
+        },
         "person_analysis": {
             "analysis_user_prompt_text": (
                 "個人分析指令；Course_Setting key=person_analysis_user_prompt_text"

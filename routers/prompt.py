@@ -24,6 +24,15 @@ from services.quiz_generation import (
     USER_PROMPT_COURSE,
     USER_PROMPT_COURSE_FOLLOWUP,
 )
+from services.bank_generation import (
+    SYSTEM_PROMPT_BANK_QUIZ,
+    USER_PROMPT_BANK_COURSE,
+)
+from services.bank_answering import (
+    SYSTEM_PROMPT_BANK_ANSWER,
+    USER_PROMPT_BANK_ANSWER_FAISS_COURSE,
+    USER_PROMPT_BANK_ANSWER_TRANSCRIPT_COURSE,
+)
 from services.prompt_placeholders import prompt_placeholder_descriptions
 from services.rag_prompts import rag_build_defaults, rag_retrieval_config
 from services.weakness_report import (
@@ -99,6 +108,20 @@ class LlmAskPrompts(BaseModel):
     )
 
 
+class BankPrompts(BaseModel):
+    """Bank（測試題庫）出題／批改 prompt 模板（bank 專屬，與 rag 無關；題組 question_system_prompt_text 會織入出題 system）。"""
+
+    llm_generate_system: str = Field(..., description="出題 system（SYSTEM_PROMPT_BANK_QUIZ）")
+    llm_generate_user: str = Field(..., description="出題 user（USER_PROMPT_BANK_COURSE）")
+    llm_answer_system: str = Field(..., description="批改 system（SYSTEM_PROMPT_BANK_ANSWER）")
+    llm_answer_user_transcript_course: str = Field(
+        ..., description="批改 user（逐字稿路徑，USER_PROMPT_BANK_ANSWER_TRANSCRIPT_COURSE）"
+    )
+    llm_answer_user_faiss_course: str = Field(
+        ..., description="批改 user（FAISS 路徑，USER_PROMPT_BANK_ANSWER_FAISS_COURSE）"
+    )
+
+
 class AnalysisPrompts(PromptPair):
     """個人／課程弱點分析 LLM prompt 模板。"""
 
@@ -114,6 +137,7 @@ class AllPromptTemplatesResponse(BaseModel):
     llm_generate: LlmGeneratePrompts
     llm_answer: LlmAnswerPrompts
     llm_ask: LlmAskPrompts
+    bank: BankPrompts
     person_analysis: AnalysisPrompts
     course_analysis: AnalysisPrompts
 
@@ -150,6 +174,13 @@ def get_all_prompt_templates(_person_id: PersonId):
             system=SYSTEM_PROMPT_ASK,
             user_transcript_course=USER_PROMPT_ASK_TRANSCRIPT_COURSE,
             user_faiss_course=USER_PROMPT_ASK_FAISS_COURSE,
+        ),
+        bank=BankPrompts(
+            llm_generate_system=SYSTEM_PROMPT_BANK_QUIZ,
+            llm_generate_user=USER_PROMPT_BANK_COURSE,
+            llm_answer_system=SYSTEM_PROMPT_BANK_ANSWER,
+            llm_answer_user_transcript_course=USER_PROMPT_BANK_ANSWER_TRANSCRIPT_COURSE,
+            llm_answer_user_faiss_course=USER_PROMPT_BANK_ANSWER_FAISS_COURSE,
         ),
         person_analysis=AnalysisPrompts(**person_tpl),
         course_analysis=AnalysisPrompts(**course_tpl),

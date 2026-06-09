@@ -263,7 +263,7 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 
 ### 2.6 刪除題組 `DELETE /v1/bank/groups/{bank_group_id}`
 
-軟刪題組並一併軟刪其所有 Bank_QA。
+**僅軟刪此題組**（deleted=true）；**不會**動到底下的 Bank_QA（如需刪題請個別呼叫 `DELETE /v1/bank/qa/{bank_qa_id}`）。
 **Query**：`course_id`
 **Response 200**：`{ message, bank_group_id, person_id, updated_at }`
 
@@ -287,15 +287,20 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
   "bank_unit_id": 5,
   "bank_page_id": "abc",
   "question_series_index": 1,
+  "question_system_prompt_text": "（出題當下自題組複製、凍結）",
+  "question_user_prompt_text": "（出題當下自題組複製、凍結）",
   "question_content": "...",
   "question_hint": "...",
   "question_answer_reference": "...",
   "question_reason": "本題考察…",
+  "answer_user_prompt_text": "（出題當下自題組複製、凍結，供批改用）",
+  "answer_llm_model": "",
   "answer_content": "",
   "answer_critique": null,
   "created_at": "..."
 }
 ```
+> 出題時：`question_system_prompt_text`／`question_user_prompt_text`／`answer_user_prompt_text` 為自題組複製的凍結 prompt；`question_llm_model` 為本次出題用的模型。`answer_llm_model` 出題時為空，**批改完成後**才填入批改實際用的模型（同時 `answer_content`／`answer_critique` 也在批改後填）。
 - 已出題數達 `qa_count` 上限 → **409**。
 - LLM 呼叫失敗 → 回 JSON `{ "llm_error": "...", "bank_group_id": 7, "question_content": "", ... }`（HTTP 200，前端以 `llm_error` 判斷）。
 
@@ -355,7 +360,11 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 `bank_group_id, bank_page_id, bank_unit_id, person_id, course_id, group_name, question_system_prompt_text, question_user_prompt_text, qa_count, question_llm_model, answer_user_prompt_text, answer_llm_model, for_exam, deleted, updated_at, created_at`
 
 ### Bank_QA
-`bank_qa_id, bank_page_id, bank_unit_id, bank_group_id, person_id, course_id, question_series_index, question_content, question_hint, question_answer_reference, question_reason, answer_content, answer_critique, deleted, updated_at, created_at`
+`bank_qa_id, bank_page_id, bank_unit_id, bank_group_id, person_id, course_id, question_series_index, question_system_prompt_text, question_user_prompt_text, question_content, question_hint, question_answer_reference, question_reason, question_llm_model, answer_user_prompt_text, answer_llm_model, answer_content, answer_critique, deleted, updated_at, created_at`
+
+> **prompt 凍結 / model 記錄**（隨 QA 一起回傳：GET pages/units、GET group、llm-generate 回應、answer-result）：
+> - **prompt**：`question_system_prompt_text`、`question_user_prompt_text`、`answer_user_prompt_text` 於**出題當下**自題組複製並**凍結**，之後不會變（題組改了不影響已出的題）。批改時用此題凍結的 `answer_user_prompt_text`。
+> - **model**：記「該次 LLM 呼叫實際用的模型」——`question_llm_model` 出題後即填；`answer_llm_model` **批改完成後才填**（出題當下為空字串，批改後才有值）。
 
 ---
 

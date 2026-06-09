@@ -264,7 +264,7 @@ def delete_bank_group(
     course_id: CourseId,
     bank_group_id: int = PathParam(..., gt=0, description="Bank_Group 主鍵"),
 ):
-    """軟刪除題組（deleted=true），並一併軟刪除其所有 Bank_QA。僅 person_id 一致者可刪除。"""
+    """軟刪除題組（僅將此題組 deleted=true，不動其 Bank_QA）。僅 person_id 一致者可刪除。"""
     try:
         supabase = get_supabase()
         group = _require_group_owner(
@@ -272,12 +272,8 @@ def delete_bank_group(
         )
         ts = now_taipei_iso()
         supabase.table("Bank_Group").update({"deleted": True, "updated_at": ts}).eq("bank_group_id", bank_group_id).eq("deleted", False).execute()
-        try:
-            supabase.table("Bank_QA").update({"deleted": True, "updated_at": ts}).eq("bank_group_id", bank_group_id).eq("deleted", False).execute()
-        except Exception:
-            pass
         return {
-            "message": "已將 Bank_Group 標記為刪除（含其 Bank_QA）",
+            "message": "已將 Bank_Group 標記為刪除",
             "bank_group_id": bank_group_id,
             "person_id": group.get("person_id"),
             "updated_at": ts,

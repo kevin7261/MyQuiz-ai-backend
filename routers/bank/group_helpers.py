@@ -321,6 +321,9 @@ def bank_llm_generate_qa_impl(
         )
         series_index = len(existing) + 1
         ts = now_taipei_iso()
+        # prompt 為出題當下自題組複製、凍結（question_*、answer_user_prompt_text）。
+        # 模型欄位記「實際呼叫 LLM 用的模型」：question_llm_model 為本次出題所用；
+        # answer_llm_model 不在此存，於批改完成時寫入批改實際用的模型。
         qa_row: dict[str, Any] = {
             "bank_page_id": bank_page_id,
             "bank_unit_id": bank_unit_id,
@@ -328,10 +331,14 @@ def bank_llm_generate_qa_impl(
             "person_id": pid,
             "course_id": course_id,
             "question_series_index": series_index,
+            "question_system_prompt_text": qsp,
+            "question_user_prompt_text": qup,
             "question_content": qc,
             "question_hint": qh,
             "question_answer_reference": qref,
             "question_reason": question_reason,
+            "question_llm_model": llm_model,
+            "answer_user_prompt_text": (group.get("answer_user_prompt_text") or ""),
             "answer_content": "",
             "answer_critique": None,
             "deleted": False,
@@ -386,7 +393,7 @@ def update_bank_qa_with_answer(
     bank_qa_id: int,
     answer_llm_model: str = "",
 ) -> tuple[str, int] | None:
-    """背景批改完成後更新 Bank_QA（answer_content、answer_critique 純文字）；回傳 (id_key, id_val)。"""
+    """背景批改完成後更新 Bank_QA：寫 answer_content、answer_critique 與 answer_llm_model（批改實際用的模型）；prompt 為出題時凍結，不覆寫。回傳 (id_key, id_val)。"""
     if bank_qa_id <= 0:
         return None
     critique_text = answer_critique_plain_text_from_result(result_dict)
@@ -396,6 +403,8 @@ def update_bank_qa_with_answer(
         "answer_critique": critique_text,
         "updated_at": ts,
     }
+    if (answer_llm_model or "").strip():
+        row["answer_llm_model"] = answer_llm_model.strip()
     try:
         supabase = get_supabase()
         supabase.table("Bank_QA").update(row).eq("bank_qa_id", bank_qa_id).eq("deleted", False).execute()
@@ -436,7 +445,10 @@ async def enqueue_bank_qa_answer_job(
         supabase,
         bank_qa_id,
         course_id,
-        cols="bank_qa_id, bank_group_id, bank_unit_id, person_id, question_content, course_id",
+        cols=(
+            "bank_qa_id, bank_group_id, bank_unit_id, person_id, question_content, "
+            "question_user_prompt_text, answer_user_prompt_text, answer_llm_model, course_id"
+        ),
     )
     if not qa:
         return JSONResponse(status_code=404, content={"error": f"找不到 bank_qa_id={bank_qa_id} 的 Bank_QA"})
@@ -451,15 +463,22 @@ async def enqueue_bank_qa_answer_job(
             content={"error": "該 Bank_QA 尚無題幹（question_content 為空），請先出題後再批改"},
         )
 
+    # 批改設定一律用「出題當下凍結在此題」的快照；舊資料（欄位空）才回退題組。
     bank_group_id = int(qa.get("bank_group_id") or 0)
-    group = _fetch_bank_group_row(
-        supabase,
-        bank_group_id,
-        course_id,
-        cols="bank_group_id, question_user_prompt_text, answer_user_prompt_text, answer_llm_model, course_id",
-    )
-    quiz_user_prompt = (group.get("question_user_prompt_text") or "").strip() if group else ""
-    answer_user_prompt = (group.get("answer_user_prompt_text") or "").strip() if group else ""
+    quiz_user_prompt = (qa.get("question_user_prompt_text") or "").strip()
+    answer_user_prompt = (qa.get("answer_user_prompt_text") or "").strip()
+    qa_answer_llm_model = (qa.get("answer_llm_model") or "").strip()
+    if not (quiz_user_prompt and answer_user_prompt and qa_answer_llm_model):
+        group = _fetch_bank_group_row(
+            supabase,
+            bank_group_id,
+            course_id,
+            cols="bank_group_id, question_user_prompt_text, answer_user_prompt_text, answer_llm_model, course_id",
+        )
+        if group:
+            quiz_user_prompt = quiz_user_prompt or (group.get("question_user_prompt_text") or "").strip()
+            answer_user_prompt = answer_user_prompt or (group.get("answer_user_prompt_text") or "").strip()
+            qa_answer_llm_model = qa_answer_llm_model or (group.get("answer_llm_model") or "").strip()
 
     api_key = get_bank_api_key(course_id)
     if not api_key:
@@ -467,7 +486,7 @@ async def enqueue_bank_qa_answer_job(
             status_code=400,
             content={"error": "請設定 Bank API Key：PUT /v1/bank/llm-api-key（Course_Setting key=bank-api-key，依 course_id）"},
         )
-    llm_model = ((group.get("answer_llm_model") or "").strip() if group else "") or get_bank_llm_model(course_id)
+    llm_model = qa_answer_llm_model or get_bank_llm_model(course_id)
 
     bank_unit_id = int(qa.get("bank_unit_id") or 0)
     unit = _fetch_bank_unit_for_llm(supabase, bank_unit_id, course_id) if bank_unit_id > 0 else None
