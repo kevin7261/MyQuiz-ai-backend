@@ -352,14 +352,8 @@ def groups_by_quiz_page_ids(page_ids: list[str], course_id: int) -> dict[str, li
 # ---------------------------------------------------------------------------
 
 
-def _resolve_quiz_llm_params(
-    group: dict,
-    course_id: int,
-    *,
-    question_user_prompt_override: str = "",
-    question_system_prompt_override: str = "",
-) -> tuple[str, str, str, str]:
-    """解析出題所需 api_key／llm_model／qup／qsp（不呼叫 LLM）。覆寫值非空才生效，不寫回題組。"""
+def _resolve_quiz_llm_params(group: dict, course_id: int) -> tuple[str, str, str, str]:
+    """解析出題所需 api_key／llm_model／qup／qsp（不呼叫 LLM）；prompt 一律取自 Quiz_Group。"""
     api_key = get_quiz_api_key(course_id)
     if not api_key:
         raise HTTPException(
@@ -367,8 +361,8 @@ def _resolve_quiz_llm_params(
             detail="請設定 Quiz API Key：PUT /v1/quiz/llm-api-key（Course_Setting key=quiz-api-key，依 course_id）",
         )
     llm_model = (group.get("question_llm_model") or "").strip() or get_quiz_llm_model(course_id)
-    qup = (question_user_prompt_override or "").strip() or (group.get("question_user_prompt_text") or "").strip()
-    qsp = (question_system_prompt_override or "").strip() or (group.get("question_system_prompt_text") or "").strip()
+    qup = (group.get("question_user_prompt_text") or "").strip()
+    qsp = (group.get("question_system_prompt_text") or "").strip()
     return api_key, llm_model, qup, qsp
 
 
@@ -380,8 +374,6 @@ def quiz_llm_generate_qa_impl(
     quiz_group_id: int,
     caller_person_id: str,
     course_id: int,
-    question_user_prompt_override: str = "",
-    question_system_prompt_override: str = "",
 ):
     """在題組內產生下一題：依題組 prompt 與既有題目（勿重複）出一題，寫入 Quiz_QA。"""
     supabase = get_supabase()
@@ -403,12 +395,7 @@ def quiz_llm_generate_qa_impl(
             detail=f"本題組已達 qa_count 上限（{qa_count} 題），無法再出題",
         )
 
-    api_key, llm_model, qup, qsp = _resolve_quiz_llm_params(
-        group,
-        course_id,
-        question_user_prompt_override=question_user_prompt_override,
-        question_system_prompt_override=question_system_prompt_override,
-    )
+    api_key, llm_model, qup, qsp = _resolve_quiz_llm_params(group, course_id)
 
     # 既有題幹 → 已出過題目（連續出題、勿重複）
     prior_items = [
@@ -496,8 +483,6 @@ def quiz_llm_regenerate_qa_impl(
     quiz_qa_id: int,
     caller_person_id: str,
     course_id: int,
-    question_user_prompt_override: str = "",
-    question_system_prompt_override: str = "",
 ):
     """重新產生**同一題**（原地覆寫同一 quiz_qa_id）。
 
@@ -534,12 +519,7 @@ def quiz_llm_regenerate_qa_impl(
         and (current_series_index <= 0 or int(q.get("question_series_index") or 0) < current_series_index)
         and (q.get("question_content") or "").strip()
     ]
-    api_key, llm_model, qup, qsp = _resolve_quiz_llm_params(
-        group,
-        course_id,
-        question_user_prompt_override=question_user_prompt_override,
-        question_system_prompt_override=question_system_prompt_override,
-    )
+    api_key, llm_model, qup, qsp = _resolve_quiz_llm_params(group, course_id)
 
     try:
         fields = generate_question_fields_from_bank_unit(

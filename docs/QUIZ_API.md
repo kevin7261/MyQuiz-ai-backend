@@ -177,10 +177,7 @@ Quiz_Group 是建立當下從 Bank_Group「快照」過來的：出題／批改 
 產生**下一題**（同步、會等 LLM）。用題組既有的 prompt；同題組已出過的題幹會當作「勿重複」一起送進去。**前端要呼叫 `qa_count` 次**才出滿一份。
 
 **Query**：`course_id`（必）
-**Body**（皆選填，本次覆寫用，不寫回題組）
-```json
-{ "question_user_prompt_text": "", "question_system_prompt_text": "" }
-```
+**Body**：無（prompt 一律自 `Quiz_Group.question_system_prompt_text`／`question_user_prompt_text` 讀取）
 
 **Response 200（成功）**
 ```json
@@ -214,7 +211,7 @@ Quiz_Group 是建立當下從 Bank_Group「快照」過來的：出題／批改 
 
 ### 2.7 原地重出同一題　`POST /v1/quiz/qa/{quiz_qa_id}/llm-regenerate`
 
-只重產這一題的 `question_*` 並覆寫回同一 `quiz_qa_id`（不新增、不改 `question_series_index`、不檢查上限）。同題組「此題之前」的題作為勿重複。重出後該題舊的作答／批改／評分會清空。Body、回應同 2.6。
+只重產這一題的 `question_*` 並覆寫回同一 `quiz_qa_id`（不新增、不改 `question_series_index`、不檢查上限）。prompt 自 `Quiz_Group` 讀取。同題組「此題之前」的題作為勿重複。重出後該題舊的作答／批改／評分會清空。無 Body；回應同 2.6。
 
 ---
 

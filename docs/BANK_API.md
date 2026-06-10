@@ -272,10 +272,7 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 **理由先行**：同一次呼叫即一併產出 `question_reason`（出題理由）——模型先依「出題歷史＋題組規則(question_system_prompt_text)＋出題規則(question_user_prompt_text)＋課程內容」決定出題理由，再據此寫題；`question_reason` 會說明本題如何呼應這些規則與歷史（若有）。
 
 **Query**：`course_id`
-**Body**（皆選填，非空才覆寫本次，不寫回題組）
-```json
-{ "question_user_prompt_text": "", "question_system_prompt_text": "" }
-```
+**Body**：無（prompt 一律自 `Bank_Group.question_system_prompt_text`／`question_user_prompt_text` 讀取；要改規則請先 `PUT` 題組 prompt 端點或 `PATCH` 題組）
 **Response 200**
 ```json
 {

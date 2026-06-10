@@ -29,11 +29,23 @@ from utils.taipei_time import now_taipei_iso
 from utils.supabase import get_supabase
 from utils.bank_course import execute_with_course_id_fallback, insert_bank_child_row
 
+from utils.course_setting import (
+    COURSE_SETTING_BANK_ANSWER_USER_PROMPT_TEXT,
+    COURSE_SETTING_BANK_QUESTION_SYSTEM_PROMPT_TEXT,
+    COURSE_SETTING_BANK_QUESTION_USER_PROMPT_TEXT,
+    resolve_group_prompt_texts,
+)
+
 from .group_schemas import (
+    BankGroupAnswerUserPromptTextResponse,
     BankGroupForExamRequest,
+    BankGroupQuestionSystemPromptTextResponse,
+    BankGroupQuestionUserPromptTextResponse,
     BankQaAnswerRequest,
     CreateBankGroupRequest,
-    GenerateBankQaRequest,
+    PutBankGroupAnswerUserPromptTextRequest,
+    PutBankGroupQuestionSystemPromptTextRequest,
+    PutBankGroupQuestionUserPromptTextRequest,
     UpdateBankGroupRequest,
 )
 from .group_helpers import (
@@ -108,17 +120,26 @@ def create_bank_group(
         page_id = (unit.get("bank_page_id") or bank_page_id or "").strip()
 
         ts = now_taipei_iso()
+        prompt_texts = resolve_group_prompt_texts(
+            body_system=body.question_system_prompt_text,
+            body_user=body.question_user_prompt_text,
+            body_answer=body.answer_user_prompt_text,
+            course_id=course_id,
+            system_key=COURSE_SETTING_BANK_QUESTION_SYSTEM_PROMPT_TEXT,
+            user_key=COURSE_SETTING_BANK_QUESTION_USER_PROMPT_TEXT,
+            answer_key=COURSE_SETTING_BANK_ANSWER_USER_PROMPT_TEXT,
+        )
         group_row: dict[str, Any] = {
             "bank_page_id": page_id,
             "bank_unit_id": bank_unit_id,
             "person_id": pid,
             "course_id": course_id,
             "group_name": (body.group_name or "").strip() or (unit.get("unit_name") or "").strip(),
-            "question_system_prompt_text": body.question_system_prompt_text or "",
-            "question_user_prompt_text": body.question_user_prompt_text or "",
+            "question_system_prompt_text": prompt_texts["question_system_prompt_text"],
+            "question_user_prompt_text": prompt_texts["question_user_prompt_text"],
             "qa_count": body.qa_count,
             "question_llm_model": (body.question_llm_model or "").strip(),
-            "answer_user_prompt_text": body.answer_user_prompt_text or "",
+            "answer_user_prompt_text": prompt_texts["answer_user_prompt_text"],
             "answer_llm_model": (body.answer_llm_model or "").strip(),
             "for_exam": bool(body.for_exam),
             "deleted": False,
@@ -176,6 +197,174 @@ def get_bank_group(
     group = to_json_safe(group)
     group["qas"] = to_json_safe(_bank_qa_rows_for_group(supabase, bank_group_id, course_id))
     return group
+
+
+def _get_bank_group_prompt_field(
+    bank_group_id: int, course_id: int, field: str
+) -> dict[str, Any]:
+    supabase = get_supabase()
+    cols = f"bank_group_id, {field}"
+    group = _fetch_bank_group_row(supabase, bank_group_id, course_id, cols=cols)
+    if not group:
+        raise HTTPException(status_code=404, detail=f"找不到 bank_group_id={bank_group_id} 的 Bank_Group，或已刪除")
+    return {"bank_group_id": bank_group_id, field: group.get(field) or ""}
+
+
+def _put_bank_group_prompt_field(
+    *,
+    bank_group_id: int,
+    course_id: int,
+    caller_person_id: str,
+    field: str,
+    value: str,
+) -> dict[str, Any]:
+    supabase = get_supabase()
+    _require_group_owner(
+        supabase, bank_group_id, course_id, caller_person_id, cols="bank_group_id, person_id, course_id"
+    )
+    supabase.table("Bank_Group").update({
+        field: value,
+        "updated_at": now_taipei_iso(),
+    }).eq("bank_group_id", bank_group_id).eq("deleted", False).execute()
+    return _get_bank_group_prompt_field(bank_group_id, course_id, field)
+
+
+@router.get(
+    "/groups/{bank_group_id}/question-system-prompt-text",
+    summary="Get Bank Group question_system_prompt_text",
+    operation_id="bank_get_group_question_system_prompt_text",
+)
+def get_bank_group_question_system_prompt_text(
+    _caller_person_id: PersonId,
+    course_id: CourseId,
+    bank_group_id: int = PathParam(..., gt=0, description="Bank_Group 主鍵"),
+):
+    """讀取 Bank_Group.question_system_prompt_text。"""
+    return BankGroupQuestionSystemPromptTextResponse(**_get_bank_group_prompt_field(
+        bank_group_id, course_id, "question_system_prompt_text"
+    ))
+
+
+@router.put(
+    "/groups/{bank_group_id}/question-system-prompt-text",
+    summary="Update Bank Group question_system_prompt_text",
+    operation_id="bank_put_group_question_system_prompt_text",
+)
+def put_bank_group_question_system_prompt_text(
+    body: openapi_body(
+        PutBankGroupQuestionSystemPromptTextRequest,
+        {"question_system_prompt_text": "請連續出題，題目越來越深入且彼此不重複。"},
+    ),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    bank_group_id: int = PathParam(..., gt=0, description="Bank_Group 主鍵"),
+):
+    """寫入 Bank_Group.question_system_prompt_text。僅 person_id 一致者可更新。"""
+    try:
+        return BankGroupQuestionSystemPromptTextResponse(**_put_bank_group_prompt_field(
+            bank_group_id=bank_group_id,
+            course_id=course_id,
+            caller_person_id=caller_person_id,
+            field="question_system_prompt_text",
+            value=body.question_system_prompt_text,
+        ))
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger.exception("PUT /bank/groups/{bank_group_id}/question-system-prompt-text 錯誤")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/groups/{bank_group_id}/question-user-prompt-text",
+    summary="Get Bank Group question_user_prompt_text",
+    operation_id="bank_get_group_question_user_prompt_text",
+)
+def get_bank_group_question_user_prompt_text(
+    _caller_person_id: PersonId,
+    course_id: CourseId,
+    bank_group_id: int = PathParam(..., gt=0, description="Bank_Group 主鍵"),
+):
+    """讀取 Bank_Group.question_user_prompt_text。"""
+    return BankGroupQuestionUserPromptTextResponse(**_get_bank_group_prompt_field(
+        bank_group_id, course_id, "question_user_prompt_text"
+    ))
+
+
+@router.put(
+    "/groups/{bank_group_id}/question-user-prompt-text",
+    summary="Update Bank Group question_user_prompt_text",
+    operation_id="bank_put_group_question_user_prompt_text",
+)
+def put_bank_group_question_user_prompt_text(
+    body: openapi_body(
+        PutBankGroupQuestionUserPromptTextRequest,
+        {"question_user_prompt_text": "請就課程內容出一道問答題。"},
+    ),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    bank_group_id: int = PathParam(..., gt=0, description="Bank_Group 主鍵"),
+):
+    """寫入 Bank_Group.question_user_prompt_text。僅 person_id 一致者可更新。"""
+    try:
+        return BankGroupQuestionUserPromptTextResponse(**_put_bank_group_prompt_field(
+            bank_group_id=bank_group_id,
+            course_id=course_id,
+            caller_person_id=caller_person_id,
+            field="question_user_prompt_text",
+            value=body.question_user_prompt_text,
+        ))
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger.exception("PUT /bank/groups/{bank_group_id}/question-user-prompt-text 錯誤")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/groups/{bank_group_id}/answer-user-prompt-text",
+    summary="Get Bank Group answer_user_prompt_text",
+    operation_id="bank_get_group_answer_user_prompt_text",
+)
+def get_bank_group_answer_user_prompt_text(
+    _caller_person_id: PersonId,
+    course_id: CourseId,
+    bank_group_id: int = PathParam(..., gt=0, description="Bank_Group 主鍵"),
+):
+    """讀取 Bank_Group.answer_user_prompt_text。"""
+    return BankGroupAnswerUserPromptTextResponse(**_get_bank_group_prompt_field(
+        bank_group_id, course_id, "answer_user_prompt_text"
+    ))
+
+
+@router.put(
+    "/groups/{bank_group_id}/answer-user-prompt-text",
+    summary="Update Bank Group answer_user_prompt_text",
+    operation_id="bank_put_group_answer_user_prompt_text",
+)
+def put_bank_group_answer_user_prompt_text(
+    body: openapi_body(
+        PutBankGroupAnswerUserPromptTextRequest,
+        {"answer_user_prompt_text": "請依參考答案批改，指出學生答得不足之處。"},
+    ),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    bank_group_id: int = PathParam(..., gt=0, description="Bank_Group 主鍵"),
+):
+    """寫入 Bank_Group.answer_user_prompt_text。僅 person_id 一致者可更新。"""
+    try:
+        return BankGroupAnswerUserPromptTextResponse(**_put_bank_group_prompt_field(
+            bank_group_id=bank_group_id,
+            course_id=course_id,
+            caller_person_id=caller_person_id,
+            field="answer_user_prompt_text",
+            value=body.answer_user_prompt_text,
+        ))
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger.exception("PUT /bank/groups/{bank_group_id}/answer-user-prompt-text 錯誤")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.patch("/groups/{bank_group_id}", summary="Update Bank Group", operation_id="bank_update_group")
@@ -293,51 +482,38 @@ def delete_bank_group(
 
 @router.post("/groups/{bank_group_id}/qa/llm-generate", summary="Bank LLM Generate Next QA", operation_id="bank_llm_generate_qa")
 def bank_llm_generate_qa(
-    body: openapi_body(
-        GenerateBankQaRequest,
-        {"question_user_prompt_text": "", "question_system_prompt_text": ""},
-    ),
     caller_person_id: PersonId,
     course_id: CourseId,
     bank_group_id: int = PathParam(..., gt=0, description="Bank_Group 主鍵"),
 ):
     """
-    在題組內產生**下一題**（LLM，同步）。一律使用題組既有之 question_system_prompt_text（連續出題規定，最高優先）
+    在題組內產生**下一題**（LLM，同步）。一律自 Bank_Group 讀取 question_system_prompt_text（連續出題規定）
     與 question_user_prompt_text（出題 user prompt）；同題組既有題目題幹會作為「已出過題目（勿重複）」一併送入。
-    已產生題數達 `qa_count` 上限時回 409。出題成功後新增一筆 Bank_QA 並回傳。
-    可選 body 覆寫本次 prompt（非空才覆寫，不寫回題組）。
+    已產生題數達 `qa_count` 上限時回 409。出題成功後新增一筆 Bank_QA 並回傳。無 request body。
     """
     return bank_llm_generate_qa_impl(
         bank_group_id=bank_group_id,
         caller_person_id=caller_person_id,
         course_id=course_id,
-        question_user_prompt_override=body.question_user_prompt_text,
-        question_system_prompt_override=body.question_system_prompt_text,
     )
 
 
 @router.post("/qa/{bank_qa_id}/llm-regenerate", summary="Bank LLM Regenerate QA (in place)", operation_id="bank_llm_regenerate_qa")
 def bank_llm_regenerate_qa(
-    body: openapi_body(
-        GenerateBankQaRequest,
-        {"question_user_prompt_text": "", "question_system_prompt_text": ""},
-    ),
     caller_person_id: PersonId,
     course_id: CourseId,
     bank_qa_id: int = PathParam(..., gt=0, description="Bank_QA 主鍵"),
 ):
     """
     **原地重出同一題**（LLM，同步）：只重新產生這一題的 question_* 內容並覆寫回**同一個 bank_qa_id**，
-    不刪除、不新增任何 Bank_QA，也不改動 question_series_index。同題組的**其他**題會作為「已出過題目
-    （勿重複）」送入，故不會與其餘題目重覆。重出後本題舊作答／批改會清空。不檢查 qa_count 上限。
-    可選 body 覆寫本次 prompt（非空才覆寫，不寫回題組）。
+    不刪除、不新增任何 Bank_QA，也不改動 question_series_index。prompt 一律自所屬 Bank_Group 讀取。
+    同題組的**其他**題會作為「已出過題目（勿重複）」送入。重出後本題舊作答／批改會清空。不檢查 qa_count 上限。
+    無 request body。
     """
     return bank_llm_regenerate_qa_impl(
         bank_qa_id=bank_qa_id,
         caller_person_id=caller_person_id,
         course_id=course_id,
-        question_user_prompt_override=body.question_user_prompt_text,
-        question_system_prompt_override=body.question_system_prompt_text,
     )
 
 

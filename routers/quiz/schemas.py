@@ -70,6 +70,39 @@ class UpdateQuizGroupRequest(BaseModel):
     answer_llm_model: Optional[str] = Field(None, description="新的批改 LLM 模型")
 
 
+class QuizGroupQuestionSystemPromptTextResponse(BaseModel):
+    """GET/PUT /quiz/groups/{quiz_group_id}/question-system-prompt-text 回應。"""
+
+    quiz_group_id: int
+    question_system_prompt_text: str = ""
+
+
+class PutQuizGroupQuestionSystemPromptTextRequest(BaseModel):
+    question_system_prompt_text: str = Field(..., description="Quiz_Group.question_system_prompt_text")
+
+
+class QuizGroupQuestionUserPromptTextResponse(BaseModel):
+    """GET/PUT /quiz/groups/{quiz_group_id}/question-user-prompt-text 回應。"""
+
+    quiz_group_id: int
+    question_user_prompt_text: str = ""
+
+
+class PutQuizGroupQuestionUserPromptTextRequest(BaseModel):
+    question_user_prompt_text: str = Field(..., description="Quiz_Group.question_user_prompt_text")
+
+
+class QuizGroupAnswerUserPromptTextResponse(BaseModel):
+    """GET/PUT /quiz/groups/{quiz_group_id}/answer-user-prompt-text 回應。"""
+
+    quiz_group_id: int
+    answer_user_prompt_text: str = ""
+
+
+class PutQuizGroupAnswerUserPromptTextRequest(BaseModel):
+    answer_user_prompt_text: str = Field(..., description="Quiz_Group.answer_user_prompt_text")
+
+
 class ListQuizBankGroupsResponse(BaseModel):
     """GET /quiz/bank-groups 回應：可選用的 Bank_Group（for_exam=true）列，附單元資訊。"""
 
@@ -83,21 +116,6 @@ class ListQuizBankGroupsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # 逐題出題（Quiz_QA；無追問）
 # ---------------------------------------------------------------------------
-
-
-class GenerateQuizQaRequest(BaseModel):
-    """
-    POST /quiz/groups/{quiz_group_id}/qa/llm-generate：在題組內產生下一題（LLM）。
-    一律使用該題組既有之 question_system_prompt_text／question_user_prompt_text；
-    本次可選擇性覆寫（非空才覆寫，不寫回 DB）。
-    """
-
-    question_user_prompt_text: str = Field(
-        "", description="可選；本次出題覆寫用的 user prompt（空則用題組既有值）"
-    )
-    question_system_prompt_text: str = Field(
-        "", description="可選；本次連續出題規定覆寫（空則用題組既有值）"
-    )
 
 
 # ---------------------------------------------------------------------------

@@ -58,22 +58,40 @@ class BankGroupForExamRequest(BaseModel):
     for_exam: bool = Field(True, description="true＝測驗用、false＝取消")
 
 
-class GenerateBankQaRequest(BaseModel):
-    """
-    POST /bank/groups/{bank_group_id}/qa/llm-generate：在題組內產生下一題（LLM）。
-    一律使用該題組既有之 question_system_prompt_text／question_user_prompt_text；
-    本次可選擇性覆寫（非空才覆寫，不寫回 DB）。
-    """
-
-    question_user_prompt_text: str = Field(
-        "", description="可選；本次出題覆寫用的 user prompt（空則用題組既有值）"
-    )
-    question_system_prompt_text: str = Field(
-        "", description="可選；本次連續出題規定覆寫（空則用題組既有值）"
-    )
-
-
 class BankQaAnswerRequest(BaseModel):
     """POST /bank/qa/{bank_qa_id}/llm-answer：對某一題（Bank_QA，由路徑指定）作答並非同步批改。"""
 
     answer_content: str = Field("", description="學生作答內容；寫入 Bank_QA.answer_content")
+
+
+class BankGroupQuestionSystemPromptTextResponse(BaseModel):
+    """GET/PUT /bank/groups/{bank_group_id}/question-system-prompt-text 回應。"""
+
+    bank_group_id: int
+    question_system_prompt_text: str = ""
+
+
+class PutBankGroupQuestionSystemPromptTextRequest(BaseModel):
+    question_system_prompt_text: str = Field(..., description="Bank_Group.question_system_prompt_text")
+
+
+class BankGroupQuestionUserPromptTextResponse(BaseModel):
+    """GET/PUT /bank/groups/{bank_group_id}/question-user-prompt-text 回應。"""
+
+    bank_group_id: int
+    question_user_prompt_text: str = ""
+
+
+class PutBankGroupQuestionUserPromptTextRequest(BaseModel):
+    question_user_prompt_text: str = Field(..., description="Bank_Group.question_user_prompt_text")
+
+
+class BankGroupAnswerUserPromptTextResponse(BaseModel):
+    """GET/PUT /bank/groups/{bank_group_id}/answer-user-prompt-text 回應。"""
+
+    bank_group_id: int
+    answer_user_prompt_text: str = ""
+
+
+class PutBankGroupAnswerUserPromptTextRequest(BaseModel):
+    answer_user_prompt_text: str = Field(..., description="Bank_Group.answer_user_prompt_text")

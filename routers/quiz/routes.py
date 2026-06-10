@@ -23,12 +23,17 @@ from utils.bank_storage import generate_page_id
 from .schemas import (
     CreateQuizGroupRequest,
     CreateQuizRequest,
-    GenerateQuizQaRequest,
     ListQuizAsksResponse,
     ListQuizBankGroupsResponse,
     ListQuizResponse,
+    PutQuizGroupAnswerUserPromptTextRequest,
+    PutQuizGroupQuestionSystemPromptTextRequest,
+    PutQuizGroupQuestionUserPromptTextRequest,
     QuizAskAnswerRateRequest,
     QuizAskRequest,
+    QuizGroupAnswerUserPromptTextResponse,
+    QuizGroupQuestionSystemPromptTextResponse,
+    QuizGroupQuestionUserPromptTextResponse,
     QuizQaAnswerRateRequest,
     QuizQaAnswerRequest,
     QuizQaQuestionRateRequest,
@@ -283,6 +288,172 @@ def get_quiz_group(
     return group
 
 
+def _get_quiz_group_prompt_field(quiz_group_id: int, course_id: int, field: str) -> dict[str, Any]:
+    supabase = get_supabase()
+    cols = f"quiz_group_id, {field}"
+    group = fetch_quiz_group_row(supabase, quiz_group_id, course_id, cols=cols)
+    if not group:
+        raise HTTPException(status_code=404, detail=f"找不到 quiz_group_id={quiz_group_id} 的 Quiz_Group，或已刪除")
+    return {"quiz_group_id": quiz_group_id, field: group.get(field) or ""}
+
+
+def _put_quiz_group_prompt_field(
+    *,
+    quiz_group_id: int,
+    course_id: int,
+    caller_person_id: str,
+    field: str,
+    value: str,
+) -> dict[str, Any]:
+    supabase = get_supabase()
+    _require_quiz_group_owner(
+        supabase, quiz_group_id, course_id, caller_person_id, cols="quiz_group_id, person_id, course_id"
+    )
+    supabase.table("Quiz_Group").update({
+        field: value,
+        "updated_at": now_taipei_iso(),
+    }).eq("quiz_group_id", quiz_group_id).eq("deleted", False).execute()
+    return _get_quiz_group_prompt_field(quiz_group_id, course_id, field)
+
+
+@router.get(
+    "/groups/{quiz_group_id}/question-system-prompt-text",
+    summary="Get Quiz Group question_system_prompt_text",
+    operation_id="quiz_get_group_question_system_prompt_text",
+)
+def get_quiz_group_question_system_prompt_text(
+    _caller_person_id: PersonId,
+    course_id: CourseId,
+    quiz_group_id: int = PathParam(..., gt=0, description="Quiz_Group 主鍵"),
+):
+    """讀取 Quiz_Group.question_system_prompt_text。"""
+    return QuizGroupQuestionSystemPromptTextResponse(**_get_quiz_group_prompt_field(
+        quiz_group_id, course_id, "question_system_prompt_text"
+    ))
+
+
+@router.put(
+    "/groups/{quiz_group_id}/question-system-prompt-text",
+    summary="Update Quiz Group question_system_prompt_text",
+    operation_id="quiz_put_group_question_system_prompt_text",
+)
+def put_quiz_group_question_system_prompt_text(
+    body: openapi_body(
+        PutQuizGroupQuestionSystemPromptTextRequest,
+        {"question_system_prompt_text": "請連續出題，題目越來越深入且彼此不重複。"},
+    ),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    quiz_group_id: int = PathParam(..., gt=0, description="Quiz_Group 主鍵"),
+):
+    """寫入 Quiz_Group.question_system_prompt_text。僅 person_id 一致者可更新。"""
+    try:
+        return QuizGroupQuestionSystemPromptTextResponse(**_put_quiz_group_prompt_field(
+            quiz_group_id=quiz_group_id,
+            course_id=course_id,
+            caller_person_id=caller_person_id,
+            field="question_system_prompt_text",
+            value=body.question_system_prompt_text,
+        ))
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger.exception("PUT /quiz/groups/{quiz_group_id}/question-system-prompt-text 錯誤")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/groups/{quiz_group_id}/question-user-prompt-text",
+    summary="Get Quiz Group question_user_prompt_text",
+    operation_id="quiz_get_group_question_user_prompt_text",
+)
+def get_quiz_group_question_user_prompt_text(
+    _caller_person_id: PersonId,
+    course_id: CourseId,
+    quiz_group_id: int = PathParam(..., gt=0, description="Quiz_Group 主鍵"),
+):
+    """讀取 Quiz_Group.question_user_prompt_text。"""
+    return QuizGroupQuestionUserPromptTextResponse(**_get_quiz_group_prompt_field(
+        quiz_group_id, course_id, "question_user_prompt_text"
+    ))
+
+
+@router.put(
+    "/groups/{quiz_group_id}/question-user-prompt-text",
+    summary="Update Quiz Group question_user_prompt_text",
+    operation_id="quiz_put_group_question_user_prompt_text",
+)
+def put_quiz_group_question_user_prompt_text(
+    body: openapi_body(
+        PutQuizGroupQuestionUserPromptTextRequest,
+        {"question_user_prompt_text": "請就課程內容出一道問答題。"},
+    ),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    quiz_group_id: int = PathParam(..., gt=0, description="Quiz_Group 主鍵"),
+):
+    """寫入 Quiz_Group.question_user_prompt_text。僅 person_id 一致者可更新。"""
+    try:
+        return QuizGroupQuestionUserPromptTextResponse(**_put_quiz_group_prompt_field(
+            quiz_group_id=quiz_group_id,
+            course_id=course_id,
+            caller_person_id=caller_person_id,
+            field="question_user_prompt_text",
+            value=body.question_user_prompt_text,
+        ))
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger.exception("PUT /quiz/groups/{quiz_group_id}/question-user-prompt-text 錯誤")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/groups/{quiz_group_id}/answer-user-prompt-text",
+    summary="Get Quiz Group answer_user_prompt_text",
+    operation_id="quiz_get_group_answer_user_prompt_text",
+)
+def get_quiz_group_answer_user_prompt_text(
+    _caller_person_id: PersonId,
+    course_id: CourseId,
+    quiz_group_id: int = PathParam(..., gt=0, description="Quiz_Group 主鍵"),
+):
+    """讀取 Quiz_Group.answer_user_prompt_text。"""
+    return QuizGroupAnswerUserPromptTextResponse(**_get_quiz_group_prompt_field(
+        quiz_group_id, course_id, "answer_user_prompt_text"
+    ))
+
+
+@router.put(
+    "/groups/{quiz_group_id}/answer-user-prompt-text",
+    summary="Update Quiz Group answer_user_prompt_text",
+    operation_id="quiz_put_group_answer_user_prompt_text",
+)
+def put_quiz_group_answer_user_prompt_text(
+    body: openapi_body(
+        PutQuizGroupAnswerUserPromptTextRequest,
+        {"answer_user_prompt_text": "請依參考答案批改，指出學生答得不足之處。"},
+    ),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    quiz_group_id: int = PathParam(..., gt=0, description="Quiz_Group 主鍵"),
+):
+    """寫入 Quiz_Group.answer_user_prompt_text。僅 person_id 一致者可更新。"""
+    try:
+        return QuizGroupAnswerUserPromptTextResponse(**_put_quiz_group_prompt_field(
+            quiz_group_id=quiz_group_id,
+            course_id=course_id,
+            caller_person_id=caller_person_id,
+            field="answer_user_prompt_text",
+            value=body.answer_user_prompt_text,
+        ))
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger.exception("PUT /quiz/groups/{quiz_group_id}/answer-user-prompt-text 錯誤")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.patch("/groups/{quiz_group_id}", summary="Update Quiz Group", operation_id="quiz_update_group")
 def update_quiz_group(
     body: openapi_body(
@@ -371,42 +542,36 @@ def delete_quiz_group(
 
 @router.post("/groups/{quiz_group_id}/qa/llm-generate", summary="Quiz LLM Generate Next QA", operation_id="quiz_llm_generate_qa")
 def quiz_llm_generate_qa(
-    body: openapi_body(GenerateQuizQaRequest, {"question_user_prompt_text": "", "question_system_prompt_text": ""}),
     caller_person_id: PersonId,
     course_id: CourseId,
     quiz_group_id: int = PathParam(..., gt=0, description="Quiz_Group 主鍵"),
 ):
     """
-    在題組內產生**下一題**（LLM，同步）。使用題組既有之 question_system_prompt_text／question_user_prompt_text；
-    同題組既有題目題幹作為「已出過題目（勿重複）」送入。已達 qa_count 上限時回 409。出題成功後新增一筆 Quiz_QA。
-    可選 body 覆寫本次 prompt（非空才覆寫，不寫回題組）。
+    在題組內產生**下一題**（LLM，同步）。一律自 Quiz_Group 讀取 question_system_prompt_text／question_user_prompt_text；
+    同題組既有題目題幹作為「已出過題目（勿重複）」送入。已達 qa_count 上限時回 409。出題成功後新增一筆 Quiz_QA。無 request body。
     """
     return quiz_llm_generate_qa_impl(
         quiz_group_id=quiz_group_id,
         caller_person_id=caller_person_id,
         course_id=course_id,
-        question_user_prompt_override=body.question_user_prompt_text,
-        question_system_prompt_override=body.question_system_prompt_text,
     )
 
 
 @router.post("/qa/{quiz_qa_id}/llm-regenerate", summary="Quiz LLM Regenerate QA (in place)", operation_id="quiz_llm_regenerate_qa")
 def quiz_llm_regenerate_qa(
-    body: openapi_body(GenerateQuizQaRequest, {"question_user_prompt_text": "", "question_system_prompt_text": ""}),
     caller_person_id: PersonId,
     course_id: CourseId,
     quiz_qa_id: int = PathParam(..., gt=0, description="Quiz_QA 主鍵"),
 ):
     """
     **原地重出同一題**（LLM，同步）：只重新產生這一題的 question_* 內容並覆寫回同一 quiz_qa_id，
-    不刪除、不新增、不改 question_series_index。同題組此題之前的題作為「勿重複」送入。重出後本題舊作答／批改／評分清空。不檢查 qa_count 上限。
+    prompt 一律自所屬 Quiz_Group 讀取。不刪除、不新增、不改 question_series_index。
+    同題組此題之前的題作為「勿重複」送入。重出後本題舊作答／批改／評分清空。不檢查 qa_count 上限。無 request body。
     """
     return quiz_llm_regenerate_qa_impl(
         quiz_qa_id=quiz_qa_id,
         caller_person_id=caller_person_id,
         course_id=course_id,
-        question_user_prompt_override=body.question_user_prompt_text,
-        question_system_prompt_override=body.question_system_prompt_text,
     )
 
 

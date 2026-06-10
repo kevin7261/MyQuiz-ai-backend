@@ -68,6 +68,9 @@ _API_PATH_ORDER: tuple[str, ...] = (
     # --- Bank：題組（建立／列表巢狀於 unit；單項以主鍵淺路徑）---
     "/v1/bank/pages/{bank_page_id}/units/{bank_unit_id}/groups",
     "/v1/bank/groups/{bank_group_id}",
+    "/v1/bank/groups/{bank_group_id}/question-system-prompt-text",
+    "/v1/bank/groups/{bank_group_id}/question-user-prompt-text",
+    "/v1/bank/groups/{bank_group_id}/answer-user-prompt-text",
     "/v1/bank/groups/{bank_group_id}/for-exam",
     # --- Bank：題目 LLM（出題／批改）---
     "/v1/bank/groups/{bank_group_id}/qa/llm-generate",
@@ -79,6 +82,9 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/bank/llm-api-key",
     "/v1/bank/llm-api-key/exists",
     "/v1/bank/llm-model",
+    "/v1/bank/question-system-prompt-text",
+    "/v1/bank/question-user-prompt-text",
+    "/v1/bank/answer-user-prompt-text",
     # --- Quiz（試卷／Test，搭配 bank 出題）：試卷 ---
     "/v1/quiz/pages",
     "/v1/quiz/pages/{quiz_page_id}",
@@ -86,6 +92,9 @@ _API_PATH_ORDER: tuple[str, ...] = (
     # --- Quiz：題組（建立巢狀於試卷；單項以主鍵淺路徑）---
     "/v1/quiz/pages/{quiz_page_id}/groups",
     "/v1/quiz/groups/{quiz_group_id}",
+    "/v1/quiz/groups/{quiz_group_id}/question-system-prompt-text",
+    "/v1/quiz/groups/{quiz_group_id}/question-user-prompt-text",
+    "/v1/quiz/groups/{quiz_group_id}/answer-user-prompt-text",
     # --- Quiz：題目 LLM（出題／批改）與評分 ---
     "/v1/quiz/groups/{quiz_group_id}/qa/llm-generate",
     "/v1/quiz/qa/{quiz_qa_id}/llm-regenerate",
@@ -103,6 +112,9 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/quiz/llm-api-key",
     "/v1/quiz/llm-api-key/exists",
     "/v1/quiz/llm-model",
+    "/v1/quiz/question-system-prompt-text",
+    "/v1/quiz/question-user-prompt-text",
+    "/v1/quiz/answer-user-prompt-text",
     # --- Exam：分頁 ---
     "/v1/exam/pages",
     "/v1/exam/rag-for-exams",
