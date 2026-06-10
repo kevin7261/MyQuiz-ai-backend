@@ -3,6 +3,8 @@ LLM Prompt 模板查詢 API。
 - GET /v1/prompt-templates：回傳抓 RAG、llm-generate、llm-answer、llm-ask、bank、quiz、個人分析、課程分析之 prompt 全文（程式內建模板，非 Course_Setting 或 DB 動態值）。
 """
 
+from typing import Any
+
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
@@ -171,7 +173,11 @@ class PromptModule(BaseModel):
     module: str = Field(..., description="模組代碼：rag／exam／bank／quiz／person_setting／course_setting")
     label: str = Field(..., description="模組中文標籤")
     description: str = Field("", description="此模組對應的端點與 prompt 來源說明")
-    sections: list[PromptSection] = Field(..., description="依用途分區（出題／批改／追問／分析）")
+    attributes: dict[str, Any] = Field(
+        default_factory=dict,
+        description="模組層級的非-prompt 屬性（如 RAG 向量檢索 retrieval_query／retrieval_k、建庫預設 embedding／chunk）",
+    )
+    sections: list[PromptSection] = Field(..., description="依用途分區（出題／出題-追問／批改／追問／分析）")
 
 
 class AllPromptTemplatesResponse(BaseModel):
@@ -209,10 +215,15 @@ def get_all_prompt_templates(_person_id: PersonId):
     rag_cfg = rag_retrieval_config()
 
     # 共用的用途分區（RAG 與 Exam 出題／批改 prompt 相同；Bank 與 Quiz 出題／批改 prompt 相同）
+    # 出題分「一般（無 followup）」與「追問（followup）」兩個 section。
     def _rag_generate_section() -> PromptSection:
-        return PromptSection(section="generate", label="出題", prompts=[
+        return PromptSection(section="generate", label="出題（一般，無 followup）", prompts=[
             PromptItem(role="system", variant="", name="SYSTEM_PROMPT_QUIZ", description="一般出題 system", content=SYSTEM_PROMPT_QUIZ),
             PromptItem(role="user", variant="", name="USER_PROMPT_COURSE", description="一般出題 user", content=USER_PROMPT_COURSE),
+        ])
+
+    def _rag_generate_followup_section() -> PromptSection:
+        return PromptSection(section="generate_followup", label="出題（追問 followup）", prompts=[
             PromptItem(role="system", variant="followup", name="SYSTEM_PROMPT_QUIZ_FOLLOWUP", description="追問出題 system", content=SYSTEM_PROMPT_QUIZ_FOLLOWUP),
             PromptItem(role="user", variant="followup", name="USER_PROMPT_COURSE_FOLLOWUP", description="追問出題 user", content=USER_PROMPT_COURSE_FOLLOWUP),
         ])
@@ -243,14 +254,29 @@ def get_all_prompt_templates(_person_id: PersonId):
             module="rag",
             label="RAG",
             description="POST /v1/rag/quizzes/llm-generate（及 followup）、llm-answer",
-            sections=[_rag_generate_section(), _rag_answer_section()],
+            attributes={
+                "retrieval": {
+                    "llm_generate": rag_cfg["llm_generate"],
+                    "llm_answer": rag_cfg["llm_answer"],
+                },
+                "build_defaults": rag_build_defaults(),
+            },
+            sections=[_rag_generate_section(), _rag_generate_followup_section(), _rag_answer_section()],
         ),
         PromptModule(
             module="exam",
             label="Exam",
-            description="POST /v1/exam/quizzes/llm-generate、llm-answer、llm-ask（出題／批改 prompt 與 RAG 共用）",
+            description="POST /v1/exam/quizzes/llm-generate、llm-answer、llm-ask（出題／批改 prompt 與檢索屬性與 RAG 共用）",
+            attributes={
+                "retrieval": {
+                    "llm_generate": rag_cfg["llm_generate"],
+                    "llm_answer": rag_cfg["llm_answer"],
+                },
+                "build_defaults": rag_build_defaults(),
+            },
             sections=[
                 _rag_generate_section(),
+                _rag_generate_followup_section(),
                 _rag_answer_section(),
                 PromptSection(section="ask", label="追問", prompts=[
                     PromptItem(role="system", variant="", name="SYSTEM_PROMPT_ASK", description="追問回答 system", content=SYSTEM_PROMPT_ASK),
