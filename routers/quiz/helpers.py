@@ -150,6 +150,27 @@ def quiz_qa_rows_for_group(supabase, quiz_group_id: int, course_id: int, *, cols
     return sel.data or []
 
 
+def renumber_quiz_qa_indices(supabase, quiz_group_id: int, course_id: int) -> None:
+    """刪題後將同題組剩餘 Quiz_QA 的 question_series_index 重排為 1, 2, 3, …。"""
+    rows = quiz_qa_rows_for_group(
+        supabase, quiz_group_id, course_id, cols="quiz_qa_id, question_series_index"
+    )
+    ts = now_taipei_iso()
+    for idx, row in enumerate(rows, start=1):
+        qa_id = row.get("quiz_qa_id")
+        if qa_id is None:
+            continue
+        try:
+            current = int(row.get("question_series_index") or 0)
+        except (TypeError, ValueError):
+            current = 0
+        if current == idx:
+            continue
+        supabase.table("Quiz_QA").update(
+            {"question_series_index": idx, "updated_at": ts}
+        ).eq("quiz_qa_id", qa_id).eq("deleted", False).execute()
+
+
 # ---------------------------------------------------------------------------
 # Bank 讀取（建立快照／出題內容；bank 表可能缺 course_id 欄位，沿用 bank fallback）
 # ---------------------------------------------------------------------------

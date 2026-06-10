@@ -1,5 +1,5 @@
 """
-MyQuiz.ai 後端入口。
+myQUIZ.ai 後端入口。
 
 啟動流程：
   1. load_dotenv() 載入 .env（SUPABASE_URL、SUPABASE_SERVICE_ROLE_KEY 等）
@@ -41,7 +41,7 @@ from utils.openapi_order import sort_openapi_paths
 # FastAPI 應用程式
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="MyQuiz.ai_backend")
+app = FastAPI(title="myQUIZ.ai backend")
 
 # ---------------------------------------------------------------------------
 # CORS 設定
