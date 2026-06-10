@@ -93,7 +93,7 @@ QUIZ_ASK_TABLE = "Quiz_Ask"
 QUIZ_ASK_SELECT_COLUMNS = (
     "quiz_ask_id, quiz_group_id, quiz_page_id, bank_page_id, bank_unit_id, bank_group_id, "
     "person_id, course_id, unit_name, unit_type, group_name, "
-    "ask_user_prompt_text, answer_content, answer_rate, deleted, updated_at, created_at"
+    "ask_user_prompt_text, ask_llm_model, answer_content, answer_rate, deleted, updated_at, created_at"
 )
 
 # SELECT 欄位順序同 public DDL（rag_page_id → person_id → course_id → …）

@@ -844,6 +844,7 @@ def quiz_llm_ask_impl(
             cleanup_answer_workspace(work_dir)
 
     ts = now_taipei_iso()
+    # ask_llm_model 記本次追問回答所用（同步完成後與 answer_content 一併寫入，對齊 Quiz_QA.question_llm_model）。
     ask_row: dict[str, Any] = {
         "quiz_group_id": quiz_group_id,
         "quiz_page_id": (group.get("quiz_page_id") or "").strip(),
@@ -856,6 +857,7 @@ def quiz_llm_ask_impl(
         "unit_type": unit_type_val,
         "group_name": (group.get("group_name") or "").strip(),
         "ask_user_prompt_text": ask_text,
+        "ask_llm_model": llm_model,
         "answer_content": answer_text,
         "answer_rate": 0,
         "deleted": False,

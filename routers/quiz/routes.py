@@ -52,6 +52,7 @@ from .helpers import (
     quiz_llm_generate_qa_impl,
     quiz_llm_regenerate_qa_impl,
     quiz_qa_rows_for_group,
+    renumber_quiz_qa_indices,
 )
 
 _logger = logging.getLogger("routers.quiz")
@@ -633,10 +634,13 @@ def delete_quiz_qa(
             raise HTTPException(status_code=403, detail="無權刪除該 Quiz_QA")
         ts = now_taipei_iso()
         supabase.table("Quiz_QA").update({"deleted": True, "updated_at": ts}).eq("quiz_qa_id", quiz_qa_id).eq("deleted", False).execute()
+        quiz_group_id_val = qa.get("quiz_group_id")
+        if quiz_group_id_val:
+            renumber_quiz_qa_indices(supabase, int(quiz_group_id_val), course_id)
         return {
             "message": "已將 Quiz_QA 標記為刪除",
             "quiz_qa_id": quiz_qa_id,
-            "quiz_group_id": qa.get("quiz_group_id"),
+            "quiz_group_id": quiz_group_id_val,
             "person_id": qa.get("person_id"),
             "updated_at": ts,
         }

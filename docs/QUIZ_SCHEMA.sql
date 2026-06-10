@@ -119,6 +119,7 @@ CREATE TABLE public."Quiz_Ask" (
   group_name           varchar(255) null default ''::character varying,
   -- 追問與回覆內容
   ask_user_prompt_text text null,
+  ask_llm_model        varchar(255) null default ''::character varying,
   answer_content       text null,
   answer_rate          smallint null default '0'::smallint,
   deleted              boolean null default false,
