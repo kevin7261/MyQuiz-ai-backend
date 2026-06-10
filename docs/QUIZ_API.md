@@ -264,7 +264,7 @@ Quiz_Group 是建立當下從 Bank_Group「快照」過來的：出題／批改 
 
 ## 3b. 追問（對題組對應的 Bank 課程內容發問）
 
-出題後，學生若對課程內容仍有不懂，可針對**整個題組**對應的 Bank 單元內容發問（不綁單題）。同步呼叫 LLM，依課程內容（逐字稿／向量檢索）作答，每問存一列 `Quiz_Ask`。
+出題後，學生若對課程內容仍有不懂，可針對**整個題組**對應的 Bank 單元內容發問（不綁單題）。同步呼叫 LLM；prompt 併入本題組全部 `Quiz_QA`（題目／提示／參考答案／學生作答／評閱）、已完成之 `Quiz_Ask` 追問紀錄、本次提問與課程內容（逐字稿／向量檢索）。每問存一列 `Quiz_Ask`。
 
 ### 3b.1 發問　`POST /v1/quiz/groups/{quiz_group_id}/llm-ask`
 
@@ -281,6 +281,7 @@ Quiz_Group 是建立當下從 Bank_Group「快照」過來的：出題／批改 
   "bank_unit_id": 7, "bank_group_id": 9,
   "unit_name": "第三章 細胞", "unit_type": 1, "group_name": "細胞題組",
   "ask_user_prompt_text": "想再問：…",
+  "ask_llm_model": "gpt-5.4",
   "answer_content": "依課程內容，內共生證據包括…（Markdown 純文字）",
   "answer_rate": 0,
   "created_at": "2026-06-10T16:00:00+08:00"
@@ -307,7 +308,7 @@ LLM 失敗時 HTTP 仍 200，帶 `{ "llm_error": "...", "quiz_group_id": 34, "an
 
 ### 發問　`POST /v1/quiz/groups/{quiz_group_id}/llm-ask`
 
-同步（會等 LLM 數秒）。`unit_type` 2/3/4 用逐字稿回答，其餘用該單元 RAG ZIP 檢索後回答。
+同步（會等 LLM 數秒）。`unit_type` 2/3/4 用逐字稿回答，其餘用該單元 RAG ZIP 檢索後回答。LLM prompt 另含本題組全部測驗題紀錄與先前追問紀錄（詳見 `GET /v1/prompt-templates` 之 `quiz` 區塊）。
 
 **Query**：`course_id`（必）
 **Body**

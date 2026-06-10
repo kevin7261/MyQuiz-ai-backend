@@ -589,8 +589,9 @@ def quiz_llm_ask(
 ):
     """
     出題後，對該題組對應 **Bank 單元的課程內容**發問（LLM，同步）。
-    unit_type 2／3／4 以 transcript 純 LLM 回答；其餘載入該單元 RAG ZIP 檢索後回答。
-    每次呼叫於 public.Quiz_Ask 新增一列並回傳（含 answer_content）。LLM 失敗回 200 + llm_error。
+    prompt 含題組出題規定、本題組全部測驗題紀錄（題目／提示／參考答案／作答／評閱）、
+    先前追問紀錄與本次提問；unit_type 2／3／4 以 transcript 純 LLM 回答，其餘載入 RAG ZIP 檢索。
+    每次呼叫於 public.Quiz_Ask 新增一列並回傳（含 answer_content、ask_llm_model）。LLM 失敗回 200 + llm_error。
     """
     return quiz_llm_ask_impl(
         quiz_group_id=quiz_group_id,

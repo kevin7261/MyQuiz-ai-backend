@@ -30,7 +30,12 @@ from services.bank_answering import (
     cleanup_answer_workspace,
     run_bank_answer_job_background,
 )
-from services.quiz_asking import run_quiz_ask_job, run_quiz_ask_transcript_only
+from services.quiz_asking import (
+    format_ask_history_body,
+    format_quiz_qa_history_body,
+    run_quiz_ask_job,
+    run_quiz_ask_transcript_only,
+)
 from utils.bank_llm_error import format_llm_error, is_llm_call_error, llm_error_json_response
 from utils.bank_course import (
     execute_with_course_id_fallback,
@@ -764,7 +769,7 @@ def quiz_llm_ask_impl(
 ):
     """
     學生於題組出題後，對該題組對應 **Bank 單元的課程內容**發問（POST /quiz/groups/{id}/llm-ask）。
-    依課程內容（逐字稿／向量檢索）同步請 LLM 回答，並於 public.Quiz_Ask 新增一列。
+    依課程內容（逐字稿／向量檢索）、本題組測驗紀錄與先前追問紀錄同步請 LLM 回答，並於 public.Quiz_Ask 新增一列。
     回傳該列（含 answer_content）。LLM 失敗回 200 + llm_error。
     """
     ask_text = (ask_user_prompt_text or "").strip()
@@ -802,6 +807,24 @@ def quiz_llm_ask_impl(
     question_user_prompt = (group.get("question_user_prompt_text") or "").strip()
     bank_group_id = int(group.get("bank_group_id") or 0)
 
+    qa_rows = quiz_qa_rows_for_group(
+        supabase,
+        quiz_group_id,
+        course_id,
+        cols=(
+            "question_series_index, question_content, question_hint, "
+            "question_answer_reference, answer_content, answer_critique"
+        ),
+    )
+    prior_asks = quiz_ask_rows_for_group(
+        supabase,
+        quiz_group_id,
+        course_id,
+        cols="ask_user_prompt_text, answer_content, created_at",
+    )
+    quiz_qa_history_body = format_quiz_qa_history_body(qa_rows)
+    ask_history_body = format_ask_history_body(prior_asks)
+
     work_dir: Path | None = None
     try:
         if unit_type_val in TRANSCRIPT_UNIT_TYPES:
@@ -815,6 +838,8 @@ def quiz_llm_ask_impl(
                 transcript_text,
                 ask_text,
                 question_user_prompt_text=question_user_prompt,
+                quiz_qa_history_body=quiz_qa_history_body,
+                ask_history_body=ask_history_body,
                 quiz_group_id=quiz_group_id,
                 bank_group_id=bank_group_id if bank_group_id > 0 else None,
                 llm_model=llm_model,
@@ -837,6 +862,8 @@ def quiz_llm_ask_impl(
                 api_key,
                 ask_text,
                 question_user_prompt_text=question_user_prompt,
+                quiz_qa_history_body=quiz_qa_history_body,
+                ask_history_body=ask_history_body,
                 quiz_group_id=quiz_group_id,
                 bank_group_id=bank_group_id if bank_group_id > 0 else None,
                 unit_type=unit_type_val,

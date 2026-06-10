@@ -109,4 +109,29 @@ def prompt_placeholder_descriptions() -> dict[str, dict[str, str]]:
                 "同 person_analysis.material_md，但素材範圍為整課 course_id 下已作答 Exam_Quiz。"
             ),
         },
+        "quiz": {
+            "question_user_prompt_text": (
+                "追問 user：題組出題規定；Quiz_Group.question_user_prompt_text；"
+                "空則顯示「（未提供）」。"
+            ),
+            "quiz_qa_history_body": (
+                "追問 user：本題組全部 Quiz_QA 紀錄正文；含題目、提示、參考答案、"
+                "學生作答、評閱（後三者可能為「（未提供）」）。"
+            ),
+            "ask_history_body": (
+                "追問 user：本題組已完成之 Quiz_Ask 紀錄正文；"
+                "含每次提問與回答，不含本次學生提問。"
+            ),
+            "ask_user_prompt_text": (
+                "追問 user：本次學生提問；POST .../llm-ask body；空則顯示「（未提供）」。"
+            ),
+            "context_md": (
+                "追問 user：課程內容；unit_type=2/3/4 為逐字稿全文，"
+                "其餘為以本次提問檢索之 FAISS 片段，包成 ```text …```。"
+            ),
+            "id_block": (
+                "追問 user：有 quiz_group_id／bank_group_id 時為「## 關聯識別」"
+                "Markdown 區塊，否則空字串。"
+            ),
+        },
     }

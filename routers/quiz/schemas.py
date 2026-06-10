@@ -148,7 +148,7 @@ class QuizQaAnswerRateRequest(BaseModel):
 
 class QuizAskRequest(BaseModel):
     """POST /quiz/groups/{quiz_group_id}/llm-ask：出題後對該題組對應的 Bank 課程內容發問。
-    每次呼叫於 public.Quiz_Ask 新增一列。"""
+    後端自動併入本題組 Quiz_QA 與先前 Quiz_Ask 紀錄至 LLM prompt；每次呼叫於 public.Quiz_Ask 新增一列。"""
 
     ask_user_prompt_text: str = Field(
         ...,
