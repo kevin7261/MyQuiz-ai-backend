@@ -7,7 +7,7 @@ Quiz（試卷）→ Quiz_Group（自既有 Bank_Group 快照之題組）→ Quiz
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 QuizRateValue = Literal[-1, 0, 1]
@@ -115,5 +115,34 @@ class QuizQaQuestionRateRequest(BaseModel):
 
 class QuizQaAnswerRateRequest(BaseModel):
     """PUT /quiz/qa/{quiz_qa_id}/answer-rate：更新 Quiz_QA.answer_rate。"""
+
+    answer_rate: QuizRateValue = Field(0, description="僅 -1、0、1")
+
+
+# ---------------------------------------------------------------------------
+# 追問（Quiz_Ask：對題組對應之 Bank 課程內容發問）
+# ---------------------------------------------------------------------------
+
+
+class QuizAskRequest(BaseModel):
+    """POST /quiz/groups/{quiz_group_id}/llm-ask：出題後對該題組對應的 Bank 課程內容發問。
+    每次呼叫於 public.Quiz_Ask 新增一列。"""
+
+    ask_user_prompt_text: str = Field(
+        ...,
+        description="學生的提問內容；置入回答 prompt 並寫入 Quiz_Ask.ask_user_prompt_text",
+        validation_alias=AliasChoices("ask_user_prompt_text", "ask", "question"),
+    )
+
+
+class ListQuizAsksResponse(BaseModel):
+    """GET /quiz/groups/{quiz_group_id}/asks 回應：該題組歷次提問（Quiz_Ask 列，依 created_at 由舊到新）。"""
+
+    asks: list[dict] = Field(..., description="Quiz_Ask 列（含 ask_user_prompt_text、answer_content、answer_rate）")
+    count: int
+
+
+class QuizAskAnswerRateRequest(BaseModel):
+    """PUT /quiz/asks/{quiz_ask_id}/answer-rate：更新 Quiz_Ask.answer_rate。"""
 
     answer_rate: QuizRateValue = Field(0, description="僅 -1、0、1")

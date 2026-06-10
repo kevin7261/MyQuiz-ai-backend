@@ -12,6 +12,8 @@ Quiz（試卷）→ Quiz_Group（自既有 Bank_Group 快照之題組）→ Quiz
    出題：POST /quiz/groups/{quiz_group_id}/qa/llm-generate（逐題，上限 qa_count）；POST /quiz/qa/{quiz_qa_id}/llm-regenerate
    批改：POST /quiz/qa/{quiz_qa_id}/llm-answer → GET /quiz/qa/answer-result/{job_id}
    評分／刪題：PUT /quiz/qa/{quiz_qa_id}/{question-rate,answer-rate}；DELETE /quiz/qa/{quiz_qa_id}
+   追問（對題組對應之 Bank 課程內容發問，寫入 Quiz_Ask）：POST /quiz/groups/{quiz_group_id}/llm-ask
+   → GET /quiz/groups/{quiz_group_id}/asks；PUT /quiz/asks/{quiz_ask_id}/answer-rate；DELETE /quiz/asks/{quiz_ask_id}
 2. LLM 設定（.settings_routes）：GET/PUT /quiz/llm-api-key、GET /quiz/llm-api-key/exists、GET/PUT /quiz/llm-model。
 """
 

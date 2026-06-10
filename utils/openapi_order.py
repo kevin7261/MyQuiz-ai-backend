@@ -94,6 +94,11 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/quiz/qa/{quiz_qa_id}/question-rate",
     "/v1/quiz/qa/{quiz_qa_id}/answer-rate",
     "/v1/quiz/qa/{quiz_qa_id}",
+    # --- Quiz：追問（對題組對應之 Bank 課程內容發問）---
+    "/v1/quiz/groups/{quiz_group_id}/llm-ask",
+    "/v1/quiz/groups/{quiz_group_id}/asks",
+    "/v1/quiz/asks/{quiz_ask_id}/answer-rate",
+    "/v1/quiz/asks/{quiz_ask_id}",
     # --- Quiz：LLM 設定（quiz 專屬，與 bank/exam/rag 分開）---
     "/v1/quiz/llm-api-key",
     "/v1/quiz/llm-api-key/exists",

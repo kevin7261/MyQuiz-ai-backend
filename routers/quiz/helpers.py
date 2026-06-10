@@ -36,6 +36,7 @@ from services.bank_answering import (
     cleanup_answer_workspace,
     run_bank_answer_job_background,
 )
+from services.quiz_asking import run_quiz_ask_job, run_quiz_ask_transcript_only
 from utils.bank_llm_error import format_llm_error, is_llm_call_error, llm_error_json_response
 from utils.bank_course import (
     execute_with_course_id_fallback,
@@ -108,6 +109,34 @@ def fetch_quiz_qa_row(supabase, quiz_qa_id: int, course_id: int, *, cols: str = 
         .execute()
     )
     return sel.data[0] if sel.data else None
+
+
+def fetch_quiz_ask_row(supabase, quiz_ask_id: int, course_id: int, *, cols: str = "*") -> dict | None:
+    """依 quiz_ask_id 取未刪除 Quiz_Ask 一列。"""
+    sel = (
+        supabase.table("Quiz_Ask")
+        .select(cols)
+        .eq("quiz_ask_id", quiz_ask_id)
+        .eq("course_id", course_id)
+        .eq("deleted", False)
+        .limit(1)
+        .execute()
+    )
+    return sel.data[0] if sel.data else None
+
+
+def quiz_ask_rows_for_group(supabase, quiz_group_id: int, course_id: int, *, cols: str = "*") -> list[dict]:
+    """依 quiz_group_id 取所有未刪除 Quiz_Ask，依 created_at 升序（由舊到新）。"""
+    sel = (
+        supabase.table("Quiz_Ask")
+        .select(cols)
+        .eq("quiz_group_id", quiz_group_id)
+        .eq("course_id", course_id)
+        .eq("deleted", False)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    return sel.data or []
 
 
 def quiz_qa_rows_for_group(supabase, quiz_group_id: int, course_id: int, *, cols: str = "*") -> list[dict]:
@@ -848,3 +877,141 @@ async def enqueue_quiz_qa_answer_job(
         llm_model=llm_model,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id, "answer_llm_model": llm_model})
+
+
+# ---------------------------------------------------------------------------
+# 追問（LLM；同步）：對題組對應之 Bank 課程內容發問，寫入 Quiz_Ask
+# ---------------------------------------------------------------------------
+
+
+def quiz_llm_ask_impl(
+    *,
+    quiz_group_id: int,
+    ask_user_prompt_text: str,
+    caller_person_id: str,
+    course_id: int,
+):
+    """
+    學生於題組出題後，對該題組對應 **Bank 單元的課程內容**發問（POST /quiz/groups/{id}/llm-ask）。
+    依課程內容（逐字稿／向量檢索）同步請 LLM 回答，並於 public.Quiz_Ask 新增一列。
+    回傳該列（含 answer_content）。LLM 失敗回 200 + llm_error。
+    """
+    ask_text = (ask_user_prompt_text or "").strip()
+    if not ask_text:
+        raise HTTPException(status_code=400, detail="ask_user_prompt_text 不可為空白")
+
+    supabase = get_supabase()
+    group = fetch_quiz_group_row(supabase, quiz_group_id, course_id, cols="*")
+    if not group:
+        raise HTTPException(status_code=404, detail=f"找不到 quiz_group_id={quiz_group_id} 的 Quiz_Group，或已刪除")
+    pid = (group.get("person_id") or "").strip()
+    if pid != caller_person_id:
+        raise HTTPException(status_code=403, detail="無權對該 Quiz_Group 發問")
+
+    api_key = get_quiz_api_key(course_id)
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="請設定 Quiz API Key：PUT /v1/quiz/llm-api-key（Course_Setting key=quiz-api-key，依 course_id）",
+        )
+    llm_model = get_quiz_llm_model(course_id)
+
+    bank_unit_id = int(group.get("bank_unit_id") or 0)
+    if bank_unit_id <= 0:
+        raise HTTPException(status_code=400, detail="該題組對應的 bank_unit_id 無效")
+    unit = fetch_bank_unit_for_llm(supabase, bank_unit_id, course_id)
+    if not unit:
+        raise HTTPException(status_code=404, detail=f"找不到 bank_unit_id={bank_unit_id} 的 Bank_Unit")
+
+    try:
+        unit_type_val = int(unit.get("unit_type") or 0)
+    except (TypeError, ValueError):
+        unit_type_val = 0
+    transcript_text = transcript_from_row(unit)
+    question_user_prompt = (group.get("question_user_prompt_text") or "").strip()
+    bank_group_id = int(group.get("bank_group_id") or 0)
+
+    work_dir: Path | None = None
+    try:
+        if unit_type_val in _TRANSCRIPT_UNIT_TYPES:
+            if not transcript_text.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="回答用 transcript 未設定：請於 Bank_Unit 設定 transcript（單元 2／3／4）",
+                )
+            answer_text = run_quiz_ask_transcript_only(
+                api_key,
+                transcript_text,
+                ask_text,
+                question_user_prompt_text=question_user_prompt,
+                quiz_group_id=quiz_group_id,
+                bank_group_id=bank_group_id if bank_group_id > 0 else None,
+                llm_model=llm_model,
+            )
+        else:
+            rag_zip_page_id = _rag_zip_page_id_from_unit(unit)
+            rag_zip_path = get_zip_path(rag_zip_page_id) if rag_zip_page_id else None
+            if not rag_zip_path or not rag_zip_path.exists():
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"找不到 RAG ZIP（page_id={rag_zip_page_id}），請確認該單元已 build-zip",
+                )
+            work_dir = Path(tempfile.mkdtemp(prefix="myquizai_quiz_ask_"))
+            try:
+                shutil.copy(rag_zip_path, work_dir / "ref.zip")
+            finally:
+                safe_unlink(rag_zip_path)
+            answer_text = run_quiz_ask_job(
+                work_dir,
+                api_key,
+                ask_text,
+                question_user_prompt_text=question_user_prompt,
+                quiz_group_id=quiz_group_id,
+                bank_group_id=bank_group_id if bank_group_id > 0 else None,
+                unit_type=unit_type_val,
+                llm_model=llm_model,
+            )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        if is_llm_call_error(e):
+            return llm_error_json_response({
+                "llm_error": format_llm_error(e),
+                "quiz_group_id": quiz_group_id,
+                "answer_content": "",
+            })
+        _logger.exception("POST /quiz/groups/{id}/llm-ask 回答失敗 quiz_group_id=%s", quiz_group_id)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    finally:
+        if work_dir is not None:
+            cleanup_answer_workspace(work_dir)
+
+    ts = now_taipei_iso()
+    ask_row: dict[str, Any] = {
+        "quiz_group_id": quiz_group_id,
+        "quiz_page_id": (group.get("quiz_page_id") or "").strip(),
+        "bank_page_id": (group.get("bank_page_id") or "").strip(),
+        "bank_unit_id": bank_unit_id,
+        "bank_group_id": bank_group_id,
+        "person_id": pid,
+        "course_id": course_id,
+        "unit_name": (group.get("unit_name") or "").strip(),
+        "unit_type": unit_type_val,
+        "group_name": (group.get("group_name") or "").strip(),
+        "ask_user_prompt_text": ask_text,
+        "answer_content": answer_text,
+        "answer_rate": 0,
+        "deleted": False,
+        "updated_at": ts,
+        "created_at": ts,
+    }
+    try:
+        ins = supabase.table("Quiz_Ask").insert(ask_row).execute()
+    except Exception as e:
+        _logger.exception("POST /quiz/groups/{id}/llm-ask 寫入 Quiz_Ask 失敗 quiz_group_id=%s", quiz_group_id)
+        raise HTTPException(status_code=500, detail=f"寫入 Quiz_Ask 失敗: {e!s}") from e
+    if not ins.data:
+        raise HTTPException(status_code=500, detail="寫入 Quiz_Ask 失敗（無回傳資料）")
+    return to_json_safe(ins.data[0])

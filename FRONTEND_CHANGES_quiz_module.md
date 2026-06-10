@@ -29,7 +29,10 @@ Quiz(試卷) ─< Quiz_Group(題組, 自 Bank_Group 快照) ─< Quiz_QA(題目)
 | 出題 | `POST /v1/quiz/groups/{quiz_group_id}/qa/llm-generate`（出下一題）、`POST /v1/quiz/qa/{quiz_qa_id}/llm-regenerate`（原地重出） |
 | 批改 | `POST /v1/quiz/qa/{quiz_qa_id}/llm-answer`（202+job_id）→ `GET /v1/quiz/qa/answer-result/{job_id}`（輪詢） |
 | 評分／刪題 | `PUT /v1/quiz/qa/{quiz_qa_id}/question-rate`、`PUT .../answer-rate`、`DELETE /v1/quiz/qa/{quiz_qa_id}` |
+| 追問 | `POST /v1/quiz/groups/{quiz_group_id}/llm-ask`、`GET /v1/quiz/groups/{quiz_group_id}/asks`、`PUT /v1/quiz/asks/{quiz_ask_id}/answer-rate`、`DELETE /v1/quiz/asks/{quiz_ask_id}` |
 | LLM 設定 | `GET/PUT /v1/quiz/llm-api-key`、`GET /v1/quiz/llm-api-key/exists`、`GET/PUT /v1/quiz/llm-model` |
+
+> **追問（新）**：出題後學生可對**整個題組對應的 Bank 課程內容**發問（不綁單題）。`POST .../llm-ask` 同步回 LLM 答案並存一列 Quiz_Ask；同樣 LLM 失敗會回 200+`llm_error`。需另跑 `docs/QUIZ_SCHEMA.sql` 內的 `Quiz_Ask` 建表。
 
 驗證與其他模組相同：`Authorization: Bearer <token>` ＋ 必填 query `?course_id=<int>`。
 

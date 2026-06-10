@@ -24,8 +24,11 @@ from .schemas import (
     CreateQuizGroupRequest,
     CreateQuizRequest,
     GenerateQuizQaRequest,
+    ListQuizAsksResponse,
     ListQuizBankGroupsResponse,
     ListQuizResponse,
+    QuizAskAnswerRateRequest,
+    QuizAskRequest,
     QuizQaAnswerRateRequest,
     QuizQaAnswerRequest,
     QuizQaQuestionRateRequest,
@@ -38,11 +41,14 @@ from .helpers import (
     enqueue_quiz_qa_answer_job,
     fetch_bank_group_for_snapshot,
     fetch_bank_unit_for_llm,
+    fetch_quiz_ask_row,
     fetch_quiz_group_row,
     fetch_quiz_page_row,
     fetch_quiz_qa_row,
     groups_by_quiz_page_ids,
     list_bank_groups_for_quiz,
+    quiz_ask_rows_for_group,
+    quiz_llm_ask_impl,
     quiz_llm_generate_qa_impl,
     quiz_llm_regenerate_qa_impl,
     quiz_qa_rows_for_group,
@@ -401,6 +407,106 @@ def quiz_llm_regenerate_qa(
         question_user_prompt_override=body.question_user_prompt_text,
         question_system_prompt_override=body.question_system_prompt_text,
     )
+
+
+# ---------------------------------------------------------------------------
+# 追問（對題組對應之 Bank 課程內容發問）
+# ---------------------------------------------------------------------------
+
+
+@router.post("/groups/{quiz_group_id}/llm-ask", summary="Quiz LLM Ask (course content)", operation_id="quiz_llm_ask")
+def quiz_llm_ask(
+    body: openapi_body(QuizAskRequest, {"ask_user_prompt_text": "想再問：粒線體與葉綠體的內共生證據有哪些？"}),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    quiz_group_id: int = PathParam(..., gt=0, description="Quiz_Group 主鍵"),
+):
+    """
+    出題後，對該題組對應 **Bank 單元的課程內容**發問（LLM，同步）。
+    unit_type 2／3／4 以 transcript 純 LLM 回答；其餘載入該單元 RAG ZIP 檢索後回答。
+    每次呼叫於 public.Quiz_Ask 新增一列並回傳（含 answer_content）。LLM 失敗回 200 + llm_error。
+    """
+    return quiz_llm_ask_impl(
+        quiz_group_id=quiz_group_id,
+        ask_user_prompt_text=body.ask_user_prompt_text,
+        caller_person_id=caller_person_id,
+        course_id=course_id,
+    )
+
+
+@router.get(
+    "/groups/{quiz_group_id}/asks",
+    response_model=ListQuizAsksResponse,
+    summary="List Quiz Group Asks",
+    operation_id="quiz_list_asks",
+)
+def list_quiz_group_asks(
+    _caller_person_id: PersonId,
+    course_id: CourseId,
+    quiz_group_id: int = PathParam(..., gt=0, description="Quiz_Group 主鍵"),
+):
+    """列出該題組歷次提問（Quiz_Ask，依 created_at 由舊到新）。"""
+    supabase = get_supabase()
+    group = fetch_quiz_group_row(supabase, quiz_group_id, course_id, cols="quiz_group_id")
+    if not group:
+        raise HTTPException(status_code=404, detail=f"找不到 quiz_group_id={quiz_group_id} 的 Quiz_Group，或已刪除")
+    asks = to_json_safe(quiz_ask_rows_for_group(supabase, quiz_group_id, course_id))
+    return ListQuizAsksResponse(asks=asks, count=len(asks))
+
+
+@router.put("/asks/{quiz_ask_id}/answer-rate", status_code=200, summary="Quiz Rate Ask Answer", operation_id="quiz_ask_answer_rate")
+def update_quiz_ask_answer_rate(
+    body: openapi_body(QuizAskAnswerRateRequest, {"answer_rate": 1}),
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    quiz_ask_id: int = PathParam(..., gt=0, description="Quiz_Ask 主鍵"),
+):
+    """更新 Quiz_Ask.answer_rate（-1／0／1）。僅 person_id 一致者可更新。"""
+    try:
+        supabase = get_supabase()
+        ask = fetch_quiz_ask_row(supabase, quiz_ask_id, course_id, cols="quiz_ask_id, person_id")
+        if not ask:
+            raise HTTPException(status_code=404, detail=f"找不到 quiz_ask_id={quiz_ask_id} 的 Quiz_Ask，或已刪除")
+        if (ask.get("person_id") or "").strip() != caller_person_id:
+            raise HTTPException(status_code=403, detail="無權評分該 Quiz_Ask")
+        ts = now_taipei_iso()
+        supabase.table("Quiz_Ask").update({"answer_rate": int(body.answer_rate), "updated_at": ts}).eq("quiz_ask_id", quiz_ask_id).eq("deleted", False).execute()
+        return {"quiz_ask_id": quiz_ask_id, "answer_rate": int(body.answer_rate), "updated_at": ts}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger.exception("PUT /quiz/asks/{quiz_ask_id}/answer-rate 錯誤")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/asks/{quiz_ask_id}", status_code=200, summary="Delete Quiz Ask", operation_id="quiz_ask_delete")
+def delete_quiz_ask(
+    caller_person_id: PersonId,
+    course_id: CourseId,
+    quiz_ask_id: int = PathParam(..., gt=0, description="Quiz_Ask 主鍵"),
+):
+    """軟刪除單筆提問（Quiz_Ask.deleted=true）。僅 person_id 一致者可刪除。"""
+    try:
+        supabase = get_supabase()
+        ask = fetch_quiz_ask_row(supabase, quiz_ask_id, course_id, cols="quiz_ask_id, quiz_group_id, person_id")
+        if not ask:
+            raise HTTPException(status_code=404, detail=f"找不到 quiz_ask_id={quiz_ask_id} 的 Quiz_Ask，或已刪除")
+        if (ask.get("person_id") or "").strip() != caller_person_id:
+            raise HTTPException(status_code=403, detail="無權刪除該 Quiz_Ask")
+        ts = now_taipei_iso()
+        supabase.table("Quiz_Ask").update({"deleted": True, "updated_at": ts}).eq("quiz_ask_id", quiz_ask_id).eq("deleted", False).execute()
+        return {
+            "message": "已將 Quiz_Ask 標記為刪除",
+            "quiz_ask_id": quiz_ask_id,
+            "quiz_group_id": ask.get("quiz_group_id"),
+            "person_id": ask.get("person_id"),
+            "updated_at": ts,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger.exception("DELETE /quiz/asks/{quiz_ask_id} 錯誤")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

@@ -87,6 +87,15 @@ QUIZ_QA_SELECT_COLUMNS = (
     "answer_rate, deleted, updated_at, created_at"
 )
 
+# Quiz_Ask（追問）：出題後對題組對應之 Bank 課程內容發問，每問一列
+QUIZ_ASK_TABLE = "Quiz_Ask"
+
+QUIZ_ASK_SELECT_COLUMNS = (
+    "quiz_ask_id, quiz_group_id, quiz_page_id, bank_page_id, bank_unit_id, bank_group_id, "
+    "person_id, course_id, unit_name, unit_type, group_name, "
+    "ask_user_prompt_text, answer_content, answer_rate, deleted, updated_at, created_at"
+)
+
 # SELECT 欄位順序同 public DDL（rag_page_id → person_id → course_id → …）
 RAG_SELECT_COLUMNS = (
     "rag_id, rag_page_id, person_id, course_id, tab_name, file_size, file_metadata, "
