@@ -408,6 +408,13 @@ def quiz_llm_generate_qa_impl(
         for q in existing
         if (q.get("question_content") or "").strip()
     ]
+    ask_rows = quiz_ask_rows_for_group(
+        supabase,
+        quiz_group_id,
+        course_id,
+        cols="ask_user_prompt_text, answer_content, created_at",
+    )
+    ask_history_body = format_ask_history_body(ask_rows)
 
     try:
         fields = generate_question_fields_from_bank_unit(
@@ -420,6 +427,7 @@ def quiz_llm_generate_qa_impl(
             qup=qup,
             qsp=qsp,
             prior_items=prior_items,
+            ask_history_body=ask_history_body,
         )
         series_index = len(existing) + 1
         ts = now_taipei_iso()
@@ -525,6 +533,13 @@ def quiz_llm_regenerate_qa_impl(
         and (q.get("question_content") or "").strip()
     ]
     api_key, llm_model, qup, qsp = _resolve_quiz_llm_params(group, course_id)
+    ask_rows = quiz_ask_rows_for_group(
+        supabase,
+        quiz_group_id,
+        course_id,
+        cols="ask_user_prompt_text, answer_content, created_at",
+    )
+    ask_history_body = format_ask_history_body(ask_rows)
 
     try:
         fields = generate_question_fields_from_bank_unit(
@@ -537,6 +552,7 @@ def quiz_llm_regenerate_qa_impl(
             qup=qup,
             qsp=qsp,
             prior_items=prior_items,
+            ask_history_body=ask_history_body,
         )
         ts = now_taipei_iso()
         update_row: dict[str, Any] = {

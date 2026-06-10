@@ -548,7 +548,8 @@ def quiz_llm_generate_qa(
 ):
     """
     在題組內產生**下一題**（LLM，同步）。一律自 Quiz_Group 讀取 question_system_prompt_text／question_user_prompt_text；
-    同題組既有題目題幹作為「已出過題目（勿重複）」送入。已達 qa_count 上限時回 409。出題成功後新增一筆 Quiz_QA。無 request body。
+    同題組既有題目題幹作為「已出過題目（勿重複）」送入；並併入本題組 Quiz_Ask 追問紀錄作為出題依據。
+    已達 qa_count 上限時回 409。出題成功後新增一筆 Quiz_QA。無 request body。
     """
     return quiz_llm_generate_qa_impl(
         quiz_group_id=quiz_group_id,
@@ -565,8 +566,9 @@ def quiz_llm_regenerate_qa(
 ):
     """
     **原地重出同一題**（LLM，同步）：只重新產生這一題的 question_* 內容並覆寫回同一 quiz_qa_id，
-    prompt 一律自所屬 Quiz_Group 讀取。不刪除、不新增、不改 question_series_index。
-    同題組此題之前的題作為「勿重複」送入。重出後本題舊作答／批改／評分清空。不檢查 qa_count 上限。無 request body。
+    prompt 一律自所屬 Quiz_Group 讀取；並併入本題組 Quiz_Ask 追問紀錄作為出題依據。
+    不刪除、不新增、不改 question_series_index。同題組此題之前的題作為「勿重複」送入。
+    重出後本題舊作答／批改／評分清空。不檢查 qa_count 上限。無 request body。
     """
     return quiz_llm_regenerate_qa_impl(
         quiz_qa_id=quiz_qa_id,

@@ -66,8 +66,12 @@ def prompt_placeholder_descriptions() -> dict[str, dict[str, str]]:
                 "空字串時模板該節留白。"
             ),
             "quiz_history_body": (
-                "僅出題 user：已出過題目區塊正文；由同題組既有 Bank_QA 題幹"
-                "格式化成編號列表，或無題目時為「未提供」說明句。"
+                "僅出題 system：已出過題目區塊正文；由同題組既有題幹"
+                "格式化成編號列表，或無題目時為占位說明句。"
+            ),
+            "ask_history_body": (
+                "僅出題 user（Quiz 路徑）：本題組 Quiz_Ask 追問紀錄正文；"
+                "含每次提問與回答。Bank 出題不帶追問，為「尚無追問紀錄」占位。"
             ),
             "id_block": (
                 "僅批改 user：有 bank_qa_id 時為「## 關聯識別」Markdown 區塊"

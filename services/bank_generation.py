@@ -47,6 +47,7 @@ SYSTEM_PROMPT_BANK_QUIZ = textwrap.dedent("""
     - 使用者訊息中 **`## 出題 user prompt`** 以下之內文為教師下給你的**直接出題指令**，優先級**高於**本 system 之泛化規則與 **課程內容** 之呈現方式。
     - 該節有**實質文字**時（非僅空白或占位），**必須完整遵守**（題型、難度、焦點、格式、用語等），不得因課程片段較易取材而偏離該節要求。
     - 僅當該節無實質文字時，始依 **課程內容** 與本訊息其餘規範出題。{quiz_system_prompt_text}
+    - 使用者訊息中的 **`## 追問紀錄`** 為本題組學生對課程內容的追問與回答，可作為**接續出題**之參考（例如針對學生困惑之處出題）；**勿**因此重複 system 出題歷史中已出過之題幹。
 
     ## 出題歷史（接續出題依據，必須遵守）
 
@@ -91,11 +92,11 @@ SYSTEM_PROMPT_BANK_QUIZ = textwrap.dedent("""
 
     ## 出題程序與回傳格式（JSON）
 
-    **理由先行**：請**先**綜合「出題歷史、使用者本次出題要求（題組規則／連續出題規定）、出題 user prompt（出題規則）與課程內容」決定本題的**出題理由**，**再**依該理由寫出題目與答案；`question_reason` 須與最終題目一致。
+    **理由先行**：請**先**綜合「出題歷史、追問紀錄、使用者本次出題要求（題組規則／連續出題規定）、出題 user prompt（出題規則）與課程內容」決定本題的**出題理由**，**再**依該理由寫出題目與答案；`question_reason` 須與最終題目一致。
 
     請回傳一個 JSON 物件，鍵名固定為（英文）：
 
-    - `question_reason`：**出題理由**（Markdown 字串）：說明本題要考查的重點概念／能力與為何此時出此題；**若有**「使用者本次出題要求（題組規則／連續出題規定）」或「出題 user prompt（出題規則）」，須說明本題**如何呼應／落實**之；並說明與**出題歷史**的延續／遞進關係（如有）。若無相關規則或歷史，僅就題目本身說明。
+    - `question_reason`：**出題理由**（Markdown 字串）：說明本題要考查的重點概念／能力與為何此時出此題；**若有**「使用者本次出題要求（題組規則／連續出題規定）」或「出題 user prompt（出題規則）」，須說明本題**如何呼應／落實**之；並說明與**出題歷史**的延續／遞進關係，以及是否回應**追問紀錄**中的學生困惑（如有）。若無相關規則或歷史，僅就題目本身說明。
     - `quiz_content`：**單一**題目題幹（Markdown 字串；**直接寫題，勿加「題目」等標籤或出題前言**），須與 `question_reason` 一致。
     - `quiz_hint`：該題答案提示（Markdown 字串）
     - `quiz_answer_reference`：該題參考答案（Markdown 字串）
@@ -119,11 +120,16 @@ USER_PROMPT_BANK_COURSE = textwrap.dedent("""
 
     下節 **出題 user prompt** 為教師直接指令，必須一定遵守。
     **出題歷史（已出過題目）見 system 之「## 出題歷史」**；請在該歷史基礎上**接續出下一題**，且不與其中任一題重複。
+    若有 **追問紀錄**，可參考學生困惑之處調整本題考查重點，但仍須遵守出題歷史之勿重複規定。
     **`quiz_content` 請直接寫題幹**（學生可立即作答的一句／一段發問），勿加「題目」標題、「根據課程…」前言或多問列點。
 
     ## 出題 user prompt
 
     {quiz_user_prompt_text}
+
+    ## 追問紀錄
+
+    {ask_history_body}
 
     ---
 
@@ -133,6 +139,10 @@ USER_PROMPT_BANK_COURSE = textwrap.dedent("""
 
     {context_md}
     """).strip()
+
+
+def _empty_ask_history_body() -> str:
+    return "（尚無追問紀錄；請忽略本節。）"
 
 
 # ---------------------------------------------------------------------------
@@ -176,9 +186,15 @@ def _quiz_history_body_for_prompt(*, quiz_history_list_prompt_text: str = "", qu
     return _format_bank_quiz_history_body(quiz_history_list)
 
 
-def _format_bank_quiz_user_message(*, quiz_user_prompt_text: str, context_md: str) -> str:
+def _format_bank_quiz_user_message(
+    *,
+    quiz_user_prompt_text: str,
+    context_md: str,
+    ask_history_body: str = "",
+) -> str:
     return USER_PROMPT_BANK_COURSE.format(
         quiz_user_prompt_text=(quiz_user_prompt_text or "").strip(),
+        ask_history_body=(ask_history_body or "").strip() or _empty_ask_history_body(),
         context_md=context_md,
     )
 
@@ -233,6 +249,7 @@ def _generate_bank_quiz_from_context(
     quiz_system_prompt_text: str = "",
     quiz_history_list: list[str] | None = None,
     quiz_history_list_prompt_text: str = "",
+    ask_history_body: str = "",
     llm_model: str | None = None,
 ) -> dict:
     if not api_key or not api_key.strip():
@@ -250,6 +267,7 @@ def _generate_bank_quiz_from_context(
     user_prompt = _format_bank_quiz_user_message(
         quiz_user_prompt_text=quiz_user_prompt_text,
         context_md=context_md,
+        ask_history_body=ask_history_body,
     )
     client = OpenAI(api_key=api_key)
     return _invoke_quiz_json_llm(
@@ -272,6 +290,7 @@ def generate_bank_quiz_transcript_only(
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[str] | None = None,
     quiz_history_list_prompt_text: str = "",
+    ask_history_body: str = "",
     llm_model: str | None = None,
     *,
     quiz_system_prompt_text: str = "",
@@ -287,6 +306,7 @@ def generate_bank_quiz_transcript_only(
         quiz_system_prompt_text=quiz_system_prompt_text,
         quiz_history_list=quiz_history_list,
         quiz_history_list_prompt_text=quiz_history_list_prompt_text,
+        ask_history_body=ask_history_body,
         llm_model=llm_model,
     )
 
@@ -297,6 +317,7 @@ def generate_bank_quiz(
     quiz_user_prompt_text: str = "",
     quiz_history_list: list[str] | None = None,
     quiz_history_list_prompt_text: str = "",
+    ask_history_body: str = "",
     llm_model: str | None = None,
     *,
     quiz_system_prompt_text: str = "",
@@ -339,6 +360,7 @@ def generate_bank_quiz(
             quiz_system_prompt_text=quiz_system_prompt_text,
             quiz_history_list=quiz_history_list,
             quiz_history_list_prompt_text=quiz_history_list_prompt_text,
+            ask_history_body=ask_history_body,
             llm_model=llm_model,
         )
     finally:

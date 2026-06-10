@@ -85,6 +85,7 @@ def generate_question_fields_from_bank_unit(
     qup: str,
     qsp: str,
     prior_items: list[dict],
+    ask_history_body: str = "",
 ) -> dict:
     """呼叫 bank 出題 LLM 產生一題（不寫 DB）。
 
@@ -120,6 +121,7 @@ def generate_question_fields_from_bank_unit(
                 transcript=transcript_text,
                 quiz_user_prompt_text=qup,
                 quiz_history_list_prompt_text=prompt_for_llm,
+                ask_history_body=ask_history_body,
                 llm_model=llm_model,
                 quiz_system_prompt_text=qsp,
             )
@@ -141,6 +143,7 @@ def generate_question_fields_from_bank_unit(
                 api_key=api_key,
                 quiz_user_prompt_text=qup,
                 quiz_history_list_prompt_text=prompt_for_llm,
+                ask_history_body=ask_history_body,
                 llm_model=llm_model,
                 quiz_system_prompt_text=qsp,
             )
