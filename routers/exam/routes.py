@@ -65,17 +65,13 @@ from .schemas import (
     CreateExamRequest,
     ExamApiKeyExistsResponse,
     ExamApiKeyResponse,
-    ExamAskAnswerRateRequest,
-    ExamAskResponse,
     ExamCreateLlmGenerateQuizFollowupRequest,
     ExamCreateLlmGenerateQuizRequest,
     ExamLlmGenerateQuizFollowupRequest,
     ExamLlmGenerateQuizRequest,
     ExamQuizAnswerRateRequest,
     ExamQuizAnswerRequest,
-    ExamQuizAskRequest,
     ExamQuizRateRequest,
-    ListExamAskResponse,
     ListExamResponse,
     ListRagForExamsResponse,
     PutExamApiKeyRequest,
@@ -83,7 +79,6 @@ from .schemas import (
 )
 from .helpers import (
     _create_exam_quiz_record,
-    _exam_llm_ask_impl,
     _exam_llm_generate_quiz_impl,
     _exam_quiz_history_prompt_dicts,
 )
@@ -985,118 +980,6 @@ async def exam_answer_submission(
         llm_model=llm_model,
     )
     return JSONResponse(status_code=202, content={"job_id": job_id, "answer_llm_model": llm_model})
-
-
-# ---------------------------------------------------------------------------
-# POST /exam/quizzes/llm-ask
-# ---------------------------------------------------------------------------
-
-@router.post(
-    "/quizzes/llm-ask",
-    summary="Exam Ask Quiz",
-    operation_id="exam_llm_ask_quiz",
-    response_model=ExamAskResponse,
-    status_code=201,
-)
-def exam_ask_submission(
-    request: Request,
-    body: openapi_body(
-        ExamQuizAskRequest,
-        {"exam_quiz_id": 1, "ask_user_prompt_text": "我看不懂這題的這個觀念，可以再說明嗎？"},
-    ),
-    caller_person_id: PersonId,
-    course_id: CourseId,
-):
-    """
-    學生作答某題後對該題追問課程內容（同步回傳）。
-    以 exam_quiz_id 定位 Exam_Quiz；題幹、RAG 綁定、學生作答（answer_content）與批改評語（answer_critique）皆自該列讀取。
-    依課程內容（unit_type 2／3／4 用 transcript；其餘載入 RAG ZIP 向量檢索）請 LLM 回答 ask_user_prompt_text，
-    並於 public.Exam_Ask 新增一列（每次追問各一列），回傳該列含 answer_content。
-    """
-    return _exam_llm_ask_impl(
-        request=request,
-        exam_quiz_id=body.exam_quiz_id,
-        ask_user_prompt_text=body.ask_user_prompt_text,
-        caller_person_id=caller_person_id,
-        course_id=course_id,
-    )
-
-
-# ---------------------------------------------------------------------------
-# GET /exam/quizzes/{exam_quiz_id}/asks
-# ---------------------------------------------------------------------------
-
-@router.get(
-    "/quizzes/{exam_quiz_id}/asks",
-    response_model=ListExamAskResponse,
-    summary="List Exam Quiz Asks",
-    operation_id="exam_quiz_asks_list",
-)
-def list_exam_quiz_asks(
-    caller_person_id: PersonId,
-    course_id: CourseId,
-    exam_quiz_id: int = PathParam(..., gt=0, description="Exam_Quiz 主鍵"),
-):
-    """列出某 Exam_Quiz 的歷次追問（Exam_Ask，依 created_at 由舊到新）；僅 person_id 與呼叫者一致者可讀。"""
-    supabase = get_supabase()
-    r = (
-        supabase.table("Exam_Ask")
-        .select("*")
-        .eq("exam_quiz_id", exam_quiz_id)
-        .eq("course_id", course_id)
-        .order("created_at", desc=False)
-        .execute()
-    )
-    rows = [
-        row for row in (r.data or [])
-        if (row.get("person_id") or "").strip() == caller_person_id
-    ]
-    out = to_json_safe(rows)
-    return ListExamAskResponse(asks=out, count=len(out))
-
-
-# ---------------------------------------------------------------------------
-# PUT /exam/asks/{exam_ask_id}/answer-rate
-# ---------------------------------------------------------------------------
-
-@router.put("/asks/{exam_ask_id}/answer-rate", summary="Exam Rate Ask Answer", status_code=200)
-def update_exam_ask_answer_rate(
-    body: openapi_body(ExamAskAnswerRateRequest, {"answer_rate": 0}),
-    caller_person_id: PersonId,
-    course_id: CourseId,
-    exam_ask_id: int = PathParam(..., ge=1, description="Exam_Ask 主鍵"),
-):
-    """依 exam_ask_id 更新 Exam_Ask.answer_rate（僅 -1、0、1）；僅 person_id 與呼叫者一致者可更新。"""
-    answer_rate = int(body.answer_rate)
-    supabase = get_supabase()
-    r = (
-        supabase.table("Exam_Ask")
-        .select("exam_ask_id, person_id, course_id")
-        .eq("exam_ask_id", exam_ask_id)
-        .eq("course_id", course_id)
-        .limit(1)
-        .execute()
-    )
-    if not r.data or len(r.data) == 0:
-        raise HTTPException(status_code=404, detail=f"找不到 exam_ask_id={exam_ask_id} 的 Exam_Ask")
-    apid = (r.data[0].get("person_id") or "").strip()
-    if apid != caller_person_id:
-        raise HTTPException(status_code=403, detail="無權更新該題追問 answer_rate")
-    supabase.table("Exam_Ask").update(
-        {"answer_rate": answer_rate, "updated_at": now_taipei_iso()}
-    ).eq("exam_ask_id", exam_ask_id).execute()
-    after = (
-        supabase.table("Exam_Ask")
-        .select("exam_ask_id, answer_rate, updated_at, created_at")
-        .eq("exam_ask_id", exam_ask_id)
-        .limit(1)
-        .execute()
-    )
-    if not after.data or len(after.data) == 0:
-        raise HTTPException(status_code=500, detail="更新 answer_rate 後讀取失敗")
-    out = dict(after.data[0])
-    out["message"] = "已更新 answer_rate"
-    return to_json_safe(out)
 
 
 # ---------------------------------------------------------------------------

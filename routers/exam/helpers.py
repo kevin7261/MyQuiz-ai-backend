@@ -2,13 +2,11 @@
 
 import json
 import logging
-import shutil
-import tempfile
 import textwrap
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 from fastapi.responses import Response
 from postgrest.exceptions import APIError
 
@@ -29,9 +27,7 @@ from services.exam_queries import (
 )
 from services.answering import (
     _rag_quiz_missing_column_error,
-    cleanup_answer_workspace,
 )
-from services.asking import run_ask_job, run_ask_transcript_only
 from utils.llm_error import format_llm_error, is_llm_call_error, llm_error_json_response
 from utils.taipei_time import now_taipei_iso, to_taipei_iso
 from utils.serialization import to_json_safe
@@ -42,7 +38,7 @@ from utils.rag_course import (
     execute_with_course_id_fallback,
     select_without_course_id_if_needed,
 )
-from utils.rag_exam_setting import rag_id_from_rag_page_id, resolve_exam_content_rag_id
+from utils.rag_exam_setting import rag_id_from_rag_page_id
 from utils.rag_stem import get_rag_stem_from_rag_id, instruction_from_rag_row, transcript_from_row
 from utils.supabase import get_supabase
 from utils.zip_storage import get_zip_path
@@ -826,215 +822,3 @@ def _exam_llm_generate_quiz_impl(
         if path is not None:
             safe_unlink(path)
 
-
-def _exam_llm_ask_impl(
-    *,
-    request: Request,
-    exam_quiz_id: int,
-    ask_user_prompt_text: str,
-    caller_person_id: str,
-    course_id: int,
-):
-    """
-    學生作答後對該題追問課程內容（POST /exam/quizzes/llm-ask）。
-    以 exam_quiz_id 定位 Exam_Quiz 列，解析其 RAG 綁定，依課程內容（逐字稿／向量檢索）
-    同步請 LLM 回答學生問題，並於 public.Exam_Ask 新增一列。回傳該列（含 answer_content）。
-    """
-    ask_text = (ask_user_prompt_text or "").strip()
-    if not ask_text:
-        raise HTTPException(status_code=400, detail="ask_user_prompt_text 不可為空白")
-
-    supabase = get_supabase()
-    qsel = apply_exam_quiz_not_deleted(
-        supabase.table("Exam_Quiz")
-        .select(
-            "exam_quiz_id, exam_page_id, rag_page_id, rag_unit_id, rag_quiz_id, person_id, course_id, "
-            "unit_name, quiz_name, quiz_user_prompt_text, quiz_content, "
-            "answer_user_prompt_text, answer_content, answer_critique"
-        )
-        .eq("exam_quiz_id", exam_quiz_id)
-        .eq("course_id", course_id)
-    ).limit(1).execute()
-    if not qsel.data or len(qsel.data) == 0:
-        raise HTTPException(status_code=404, detail=f"找不到 exam_quiz_id={exam_quiz_id} 的 Exam_Quiz，或已刪除")
-    qrow = qsel.data[0]
-    person_id = (qrow.get("person_id") or "").strip()
-    if person_id != caller_person_id:
-        raise HTTPException(status_code=403, detail="無權對該 Exam_Quiz 追問")
-
-    quiz_content = (qrow.get("quiz_content") or "").strip()
-    if not quiz_content:
-        raise HTTPException(
-            status_code=400,
-            detail="該 Exam_Quiz 尚未出題（quiz_content 為空）；請先 POST /exam/quizzes/llm-generate 出題",
-        )
-
-    rag_uid_int = 0
-    _ruid = qrow.get("rag_unit_id")
-    if _ruid is not None:
-        try:
-            rag_uid_int = int(_ruid)
-        except (TypeError, ValueError):
-            rag_uid_int = 0
-
-    rag_rqid_int = 0
-    _rqid = qrow.get("rag_quiz_id")
-    if _rqid is not None:
-        try:
-            rag_rqid_int = int(_rqid)
-            if rag_rqid_int < 0:
-                rag_rqid_int = 0
-        except (TypeError, ValueError):
-            rag_rqid_int = 0
-
-    # 解析回答用 RAG（與 llm-answer 一致：優先 rag_page_id，缺則 resolve_exam_content_rag_id）。
-    rag_id_used: int | None = None
-    rt_exam = str(qrow.get("rag_page_id") or "").strip()
-    if rt_exam:
-        rag_id_used = rag_id_from_rag_page_id(supabase, rt_exam, course_id)
-    if rag_id_used is None or rag_id_used <= 0:
-        rag_id_used, _ = resolve_exam_content_rag_id(
-            supabase,
-            request,
-            stem_rag_unit_id=rag_uid_int if rag_uid_int > 0 else None,
-            rag_quiz_id=rag_rqid_int if rag_rqid_int > 0 else None,
-            course_id=course_id,
-        )
-    if rag_id_used is None or rag_id_used <= 0:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "無法決定回答用之 RAG：請確認 Exam_Quiz 填有對應 `Rag` 之 rag_page_id，"
-                "或 rag_unit_id／rag_quiz_id 可自 Rag_Unit／Rag_Quiz 解析。"
-            ),
-        )
-
-    rag_rows = select_rag_row_with_transcript_fallback(supabase, int(rag_id_used))
-    if not rag_rows.data or len(rag_rows.data) == 0:
-        raise HTTPException(status_code=404, detail=f"找不到 rag_id={rag_id_used} 的 Rag 資料，或已刪除")
-    rag_row = rag_rows.data[0]
-    assert_row_course_id(rag_row, course_id, "Rag")
-    rag_id = int(rag_row.get("rag_id") or 0)
-    rag_page_id_for_units = (rag_row.get("rag_page_id") or "").strip()
-
-    unit_filter: str | None = (qrow.get("unit_name") or "").strip() or None
-    stem_rag_unit_id: int | None = rag_uid_int if rag_uid_int > 0 else None
-
-    stem, rag_zip_page_id = get_rag_stem_from_rag_id(
-        supabase, rag_id, unit_name=unit_filter, rag_unit_id=stem_rag_unit_id
-    )
-
-    selected = _select_rag_unit_for_exam_prompt(
-        supabase,
-        rag_page_id_for_units=rag_page_id_for_units,
-        course_id=course_id,
-        stem_rag_unit_id=stem_rag_unit_id,
-        unit_filter=unit_filter,
-    )
-
-    transcript_text = ""
-    if selected:
-        transcript_text = transcript_from_row(selected)
-    if not transcript_text:
-        transcript_text = instruction_from_rag_row(rag_row)
-    try:
-        unit_type_val = int(selected.get("unit_type") or 0) if selected else 0
-    except (TypeError, ValueError):
-        unit_type_val = 0
-
-    api_key = get_exam_api_key(course_id)
-    if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="請設定 Exam API Key：PUT /exam/llm-api-key（Course_Setting key=exam-api-key，依 course_id）",
-        )
-    llm_model = get_rag_llm_model(course_id)
-
-    quiz_user_prompt = (qrow.get("quiz_user_prompt_text") or "").strip()
-    answer_user_prompt = (qrow.get("answer_user_prompt_text") or "").strip()
-    student_answer = (qrow.get("answer_content") or "").strip()
-    answer_critique = (qrow.get("answer_critique") or "").strip()
-
-    work_dir: Path | None = None
-    try:
-        if unit_type_val in (2, 3, 4):
-            if not transcript_text.strip():
-                raise HTTPException(
-                    status_code=400,
-                    detail="回答用 transcript 未設定（單元 2／3／4）；請於 Rag_Unit 或 Rag 設定 transcript",
-                )
-            answer_text = run_ask_transcript_only(
-                api_key,
-                transcript_text,
-                quiz_content,
-                ask_text,
-                quiz_answer=student_answer,
-                answer_critique=answer_critique,
-                quiz_user_prompt_text=quiz_user_prompt,
-                answer_user_prompt_text=answer_user_prompt,
-                exam_quiz_id=exam_quiz_id,
-                rag_quiz_id=rag_rqid_int if rag_rqid_int > 0 else None,
-                llm_model=llm_model,
-            )
-        else:
-            rag_zip_path = get_zip_path(rag_zip_page_id)
-            if not rag_zip_path or not rag_zip_path.exists():
-                raise HTTPException(status_code=404, detail=f"找不到 RAG ZIP（page_id={rag_zip_page_id}）")
-            work_dir = Path(tempfile.mkdtemp(prefix="myquizai_exam_ask_"))
-            shutil.copy(rag_zip_path, work_dir / "ref.zip")
-            answer_text = run_ask_job(
-                work_dir,
-                api_key,
-                quiz_content,
-                ask_text,
-                quiz_answer=student_answer,
-                answer_critique=answer_critique,
-                quiz_user_prompt_text=quiz_user_prompt,
-                answer_user_prompt_text=answer_user_prompt,
-                exam_quiz_id=exam_quiz_id,
-                rag_quiz_id=rag_rqid_int if rag_rqid_int > 0 else None,
-                unit_type=unit_type_val,
-                llm_model=llm_model,
-            )
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        if is_llm_call_error(e):
-            return llm_error_json_response({
-                "llm_error": format_llm_error(e),
-                "exam_quiz_id": exam_quiz_id,
-                "answer_content": "",
-            })
-        _logger.exception("POST /exam/quizzes/llm-ask 回答失敗 exam_quiz_id=%s", exam_quiz_id)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    finally:
-        if work_dir is not None:
-            cleanup_answer_workspace(work_dir)
-
-    ts = now_taipei_iso()
-    ask_row: dict[str, Any] = {
-        "exam_quiz_id": exam_quiz_id,
-        "exam_page_id": (qrow.get("exam_page_id") or "").strip(),
-        "rag_page_id": rag_page_id_for_units or rt_exam,
-        "rag_unit_id": rag_uid_int,
-        "rag_quiz_id": rag_rqid_int,
-        "person_id": person_id,
-        "course_id": course_id,
-        "unit_name": (qrow.get("unit_name") or "").strip(),
-        "quiz_name": (qrow.get("quiz_name") or "").strip(),
-        "ask_user_prompt_text": ask_text,
-        "answer_content": answer_text,
-        "answer_rate": 0,
-        "updated_at": ts,
-        "created_at": ts,
-    }
-    try:
-        ins = supabase.table("Exam_Ask").insert(ask_row).execute()
-    except Exception as e:
-        _logger.exception("POST /exam/quizzes/llm-ask 寫入 Exam_Ask 失敗 exam_quiz_id=%s", exam_quiz_id)
-        raise HTTPException(status_code=500, detail=f"寫入 Exam_Ask 失敗: {e!s}") from e
-    if not ins.data or len(ins.data) == 0:
-        raise HTTPException(status_code=500, detail="寫入 Exam_Ask 失敗（無回傳資料）")
-    return to_json_safe(ins.data[0])

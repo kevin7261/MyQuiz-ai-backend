@@ -1,6 +1,6 @@
 """
 LLM Prompt 模板查詢 API。
-- GET /v1/prompt-templates：回傳抓 RAG、llm-generate、llm-answer、llm-ask、bank、quiz、個人分析、課程分析之 prompt 全文（程式內建模板，非 Course_Setting 或 DB 動態值）。
+- GET /v1/prompt-templates：回傳抓 RAG、llm-generate、llm-answer、bank、quiz、個人分析、課程分析之 prompt 全文（程式內建模板，非 Course_Setting 或 DB 動態值）。
 """
 
 from typing import Any
@@ -14,11 +14,6 @@ from services.answering import (
     SYSTEM_PROMPT_ANSWER,
     USER_PROMPT_ANSWER_FAISS_COURSE,
     USER_PROMPT_ANSWER_TRANSCRIPT_COURSE,
-)
-from services.asking import (
-    SYSTEM_PROMPT_ASK,
-    USER_PROMPT_ASK_FAISS_COURSE,
-    USER_PROMPT_ASK_TRANSCRIPT_COURSE,
 )
 from services.quiz_generation import (
     SYSTEM_PROMPT_QUIZ,
@@ -98,20 +93,6 @@ class LlmAnswerPrompts(BaseModel):
     user_faiss_course: str = Field(
         ...,
         description="FAISS 檢索路徑 user prompt（USER_PROMPT_ANSWER_FAISS_COURSE）",
-    )
-
-
-class LlmAskPrompts(BaseModel):
-    """POST .../llm-ask 所用 prompt 模板（學生答題後追問課程內容）。"""
-
-    system: str = Field(..., description="追問回答 system prompt（SYSTEM_PROMPT_ASK）")
-    user_transcript_course: str = Field(
-        ...,
-        description="逐字稿路徑 user prompt（USER_PROMPT_ASK_TRANSCRIPT_COURSE）",
-    )
-    user_faiss_course: str = Field(
-        ...,
-        description="FAISS 檢索路徑 user prompt（USER_PROMPT_ASK_FAISS_COURSE）",
     )
 
 
@@ -196,7 +177,6 @@ class AllPromptTemplatesResponse(BaseModel):
     rag: RagPrompts
     llm_generate: LlmGeneratePrompts
     llm_answer: LlmAnswerPrompts
-    llm_ask: LlmAskPrompts
     bank: BankPrompts
     quiz: QuizPrompts
     person_analysis: AnalysisPrompts
@@ -266,7 +246,7 @@ def get_all_prompt_templates(_person_id: PersonId):
         PromptModule(
             module="exam",
             label="Exam",
-            description="POST /v1/exam/quizzes/llm-generate、llm-answer、llm-ask（出題／批改 prompt 與檢索屬性與 RAG 共用）",
+            description="POST /v1/exam/quizzes/llm-generate、llm-answer（出題／批改 prompt 與檢索屬性與 RAG 共用）",
             attributes={
                 "retrieval": {
                     "llm_generate": rag_cfg["llm_generate"],
@@ -278,11 +258,6 @@ def get_all_prompt_templates(_person_id: PersonId):
                 _rag_generate_section(),
                 _rag_generate_followup_section(),
                 _rag_answer_section(),
-                PromptSection(section="ask", label="追問", prompts=[
-                    PromptItem(role="system", variant="", name="SYSTEM_PROMPT_ASK", description="追問回答 system", content=SYSTEM_PROMPT_ASK),
-                    PromptItem(role="user", variant="transcript_course", name="USER_PROMPT_ASK_TRANSCRIPT_COURSE", description="追問 user（逐字稿路徑）", content=USER_PROMPT_ASK_TRANSCRIPT_COURSE),
-                    PromptItem(role="user", variant="faiss_course", name="USER_PROMPT_ASK_FAISS_COURSE", description="追問 user（向量檢索路徑）", content=USER_PROMPT_ASK_FAISS_COURSE),
-                ]),
             ],
         ),
         PromptModule(
@@ -347,11 +322,6 @@ def get_all_prompt_templates(_person_id: PersonId):
             system=SYSTEM_PROMPT_ANSWER,
             user_transcript_course=USER_PROMPT_ANSWER_TRANSCRIPT_COURSE,
             user_faiss_course=USER_PROMPT_ANSWER_FAISS_COURSE,
-        ),
-        llm_ask=LlmAskPrompts(
-            system=SYSTEM_PROMPT_ASK,
-            user_transcript_course=USER_PROMPT_ASK_TRANSCRIPT_COURSE,
-            user_faiss_course=USER_PROMPT_ASK_FAISS_COURSE,
         ),
         bank=BankPrompts(
             llm_generate_system=SYSTEM_PROMPT_BANK_QUIZ,
