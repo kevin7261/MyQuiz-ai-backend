@@ -9,6 +9,8 @@ from typing import Literal, Optional
 
 from pydantic import AliasChoices, BaseModel, Field
 
+from utils.qa_count import QA_COUNT_MAX, QA_COUNT_MIN
+
 
 QuizRateValue = Literal[-1, 0, 1]
 
@@ -58,7 +60,9 @@ class UpdateQuizGroupRequest(BaseModel):
     """PATCH /quiz/groups/{quiz_group_id}：更新題組快照（僅更新有傳入的欄位）。"""
 
     group_name: Optional[str] = Field(None, description="新的題組顯示名稱")
-    qa_count: Optional[int] = Field(None, ge=0, description="新的題數上限")
+    qa_count: Optional[int] = Field(
+        None, ge=QA_COUNT_MIN, le=QA_COUNT_MAX, description="新的題數上限（1–20）"
+    )
     question_system_prompt_text: Optional[str] = Field(None, description="新的連續出題規定")
     question_user_prompt_text: Optional[str] = Field(None, description="新的出題 user prompt")
     question_llm_model: Optional[str] = Field(None, description="新的出題 LLM 模型")

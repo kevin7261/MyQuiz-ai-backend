@@ -116,7 +116,7 @@ def create_bank_group(
             "group_name": (body.group_name or "").strip() or (unit.get("unit_name") or "").strip(),
             "question_system_prompt_text": body.question_system_prompt_text or "",
             "question_user_prompt_text": body.question_user_prompt_text or "",
-            "qa_count": int(body.qa_count or 0),
+            "qa_count": body.qa_count,
             "question_llm_model": (body.question_llm_model or "").strip(),
             "answer_user_prompt_text": body.answer_user_prompt_text or "",
             "answer_llm_model": (body.answer_llm_model or "").strip(),

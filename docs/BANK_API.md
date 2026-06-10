@@ -363,8 +363,8 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 `bank_qa_id, bank_page_id, bank_unit_id, bank_group_id, person_id, course_id, question_series_index, question_system_prompt_text, question_user_prompt_text, question_content, question_hint, question_answer_reference, question_reason, question_llm_model, answer_user_prompt_text, answer_llm_model, answer_content, answer_critique, deleted, updated_at, created_at`
 
 > **prompt 凍結 / model 記錄**（隨 QA 一起回傳：GET pages/units、GET group、llm-generate 回應、answer-result）：
-> - **prompt**：`question_system_prompt_text`、`question_user_prompt_text`、`answer_user_prompt_text` 於**出題當下**自題組複製並**凍結**，之後不會變（題組改了不影響已出的題）。批改時用此題凍結的 `answer_user_prompt_text`。
-> - **model**：記「該次 LLM 呼叫實際用的模型」——`question_llm_model` 出題後即填；`answer_llm_model` **批改完成後才填**（出題當下為空字串，批改後才有值）。
+> - **prompt**：QA 列記「這一題各次 LLM 呼叫**實際用了什麼**」——`question_system_prompt_text`／`question_user_prompt_text` 於**出題／重出當下**寫入本次出題實際用的規則；`answer_user_prompt_text` 出題當下先複製題組值，**批改完成後覆寫為本次批改實際使用的規則**（重出時重置為題組現值）。出題／重出／批改**每次都用題組現值**（批改時重抓 Bank_Group；題組欄位空才回退此題快照，舊資料相容）。
+> - **model**：記「該次 LLM 呼叫實際用的模型」——`question_llm_model` 出題後即填；`answer_llm_model` **批改完成後才填**（出題當下為空字串，批改後才有值）。批改模型取「題組 `answer_llm_model` 現值，空則課程 `bank-llm-model` 現值」，不沿用 QA 上次批改的模型。
 
 ---
 

@@ -12,6 +12,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from utils.qa_count import QA_COUNT_DEFAULT, QA_COUNT_MAX, QA_COUNT_MIN
+
 
 class CreateBankGroupRequest(BaseModel):
     """
@@ -21,7 +23,10 @@ class CreateBankGroupRequest(BaseModel):
 
     group_name: str = Field("", description="題組顯示名稱")
     qa_count: int = Field(
-        0, ge=0, description="本題組預定要出的題數上限；逐題產生時不會超過此數（0 表示不限）"
+        QA_COUNT_DEFAULT,
+        ge=QA_COUNT_MIN,
+        le=QA_COUNT_MAX,
+        description="本題組預定要出的題數上限（1–20）；逐題產生時不會超過此數",
     )
     question_system_prompt_text: str = Field(
         "", description="連續出題的規定（織入出題 system prompt，最高優先；如越來越難、勿重複）"
@@ -37,7 +42,9 @@ class UpdateBankGroupRequest(BaseModel):
     """PATCH /bank/groups/{bank_group_id}：更新題組設定（僅更新有傳入的欄位）。"""
 
     group_name: Optional[str] = Field(None, description="新的題組顯示名稱")
-    qa_count: Optional[int] = Field(None, ge=0, description="新的題數上限")
+    qa_count: Optional[int] = Field(
+        None, ge=QA_COUNT_MIN, le=QA_COUNT_MAX, description="新的題數上限（1–20）"
+    )
     question_system_prompt_text: Optional[str] = Field(None, description="新的連續出題規定")
     question_user_prompt_text: Optional[str] = Field(None, description="新的出題 user prompt")
     question_llm_model: Optional[str] = Field(None, description="新的出題 LLM 模型")

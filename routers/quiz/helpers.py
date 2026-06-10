@@ -38,6 +38,7 @@ from utils.bank_course import (
 )
 from utils.bank_storage import get_zip_path
 from utils.bank_stem import transcript_from_row
+from utils.qa_count import normalize_qa_count
 from utils.quiz_llm_key import get_quiz_api_key, get_quiz_llm_model
 from utils.supabase import get_supabase
 from utils.serialization import to_json_safe
@@ -277,7 +278,7 @@ def build_quiz_group_snapshot_row(
         "group_name": group_name,
         "question_system_prompt_text": bank_group.get("question_system_prompt_text") or "",
         "question_user_prompt_text": bank_group.get("question_user_prompt_text") or "",
-        "qa_count": int(bank_group.get("qa_count") or 0),
+        "qa_count": normalize_qa_count(bank_group.get("qa_count")),
         "question_llm_model": (bank_group.get("question_llm_model") or "").strip(),
         "answer_user_prompt_text": bank_group.get("answer_user_prompt_text") or "",
         "answer_llm_model": (bank_group.get("answer_llm_model") or "").strip(),
@@ -391,15 +392,12 @@ def quiz_llm_generate_qa_impl(
     if pid != caller_person_id:
         raise HTTPException(status_code=403, detail="無權於該題組出題")
 
-    try:
-        qa_count = int(group.get("qa_count") or 0)
-    except (TypeError, ValueError):
-        qa_count = 0
+    qa_count = normalize_qa_count(group.get("qa_count"))
 
     existing = quiz_qa_rows_for_group(
         supabase, quiz_group_id, course_id, cols="quiz_qa_id, question_series_index, question_content"
     )
-    if qa_count > 0 and len(existing) >= qa_count:
+    if len(existing) >= qa_count:
         raise HTTPException(
             status_code=409,
             detail=f"本題組已達 qa_count 上限（{qa_count} 題），無法再出題",
@@ -564,19 +562,18 @@ def quiz_llm_regenerate_qa_impl(
             "question_answer_reference": fields["question_answer_reference"],
             "question_reason": fields["question_reason"],
             "question_llm_model": llm_model,
-            # 重出後舊作答／批改／評分失效，一併清空（question_series_index 不變）
+            # 重出後舊作答／批改／評分失效，一併清空（question_series_index 不變）；
+            # 批改規則紀錄重置為題組現值（同新出一題），待下次批改完成再寫入實際使用值
             "answer_content": "",
             "answer_critique": None,
             "answer_llm_model": None,
+            "answer_user_prompt_text": (group.get("answer_user_prompt_text") or ""),
             "answer_rate": 0,
             "updated_at": ts,
         }
         supabase.table("Quiz_QA").update(update_row).eq("quiz_qa_id", quiz_qa_id).eq("deleted", False).execute()
         updated = fetch_quiz_qa_row(supabase, quiz_qa_id, course_id, cols="*") or {**qa, **update_row}
-        try:
-            qa_count = int(group.get("qa_count") or 0)
-        except (TypeError, ValueError):
-            qa_count = 0
+        qa_count = normalize_qa_count(group.get("qa_count"))
         out = {
             "question_llm_model": llm_model,
             "qa_count": qa_count,
@@ -620,8 +617,11 @@ def update_quiz_qa_with_answer(
     *,
     quiz_qa_id: int,
     answer_llm_model: str = "",
+    answer_user_prompt_text: str = "",
 ) -> tuple[str, int] | None:
-    """背景批改完成後更新 Quiz_QA：寫 answer_content、answer_critique 與 answer_llm_model；prompt 為出題時凍結，不覆寫。回傳 (id_key, id_val)。"""
+    """背景批改完成後更新 Quiz_QA：寫 answer_content、answer_critique，並把本次批改**實際使用**的
+    answer_llm_model／answer_user_prompt_text 寫回（QA 列記「這一題各次呼叫實際用了什麼」：
+    出題規則於出題時寫入、批改規則於批改時寫入）；question_* 為出題時凍結，不覆寫。回傳 (id_key, id_val)。"""
     if quiz_qa_id <= 0:
         return None
     critique_text = answer_critique_plain_text_from_result(result_dict)
@@ -633,6 +633,8 @@ def update_quiz_qa_with_answer(
     }
     if (answer_llm_model or "").strip():
         row["answer_llm_model"] = answer_llm_model.strip()
+    if (answer_user_prompt_text or "").strip():
+        row["answer_user_prompt_text"] = answer_user_prompt_text.strip()
     try:
         supabase = get_supabase()
         supabase.table("Quiz_QA").update(row).eq("quiz_qa_id", quiz_qa_id).eq("deleted", False).execute()
@@ -691,22 +693,29 @@ async def enqueue_quiz_qa_answer_job(
             content={"error": "該 Quiz_QA 尚無題幹（question_content 為空），請先出題後再批改"},
         )
 
-    # 批改設定一律用「出題當下凍結在此題」的快照；舊資料（欄位空）才回退題組。
+    # 批改設定一律用「題組現值」：規則／模型每次批改時自 Quiz_Group 重抓（保證最新）；
+    # 題組規則為空才回退此題出題當下凍結的快照（舊資料相容）。
+    # 模型不看 QA 凍結值：題組 answer_llm_model 空 → 課程 quiz-llm-model 現值；
+    # 批改完成後由 update_quiz_qa_with_answer 把實際使用的模型／批改規則寫回
+    # Quiz_QA.answer_llm_model／answer_user_prompt_text（QA 列記各次呼叫實際使用值）。
     quiz_group_id = int(qa.get("quiz_group_id") or 0)
-    quiz_user_prompt = (qa.get("question_user_prompt_text") or "").strip()
-    answer_user_prompt = (qa.get("answer_user_prompt_text") or "").strip()
-    qa_answer_llm_model = (qa.get("answer_llm_model") or "").strip()
-    if not (quiz_user_prompt and answer_user_prompt and qa_answer_llm_model):
-        group = fetch_quiz_group_row(
+    group = (
+        fetch_quiz_group_row(
             supabase,
             quiz_group_id,
             course_id,
             cols="quiz_group_id, question_user_prompt_text, answer_user_prompt_text, answer_llm_model, course_id",
         )
-        if group:
-            quiz_user_prompt = quiz_user_prompt or (group.get("question_user_prompt_text") or "").strip()
-            answer_user_prompt = answer_user_prompt or (group.get("answer_user_prompt_text") or "").strip()
-            qa_answer_llm_model = qa_answer_llm_model or (group.get("answer_llm_model") or "").strip()
+        or {}
+    )
+    quiz_user_prompt = (
+        (group.get("question_user_prompt_text") or "").strip()
+        or (qa.get("question_user_prompt_text") or "").strip()
+    )
+    answer_user_prompt = (
+        (group.get("answer_user_prompt_text") or "").strip()
+        or (qa.get("answer_user_prompt_text") or "").strip()
+    )
 
     api_key = get_quiz_api_key(course_id)
     if not api_key:
@@ -714,7 +723,7 @@ async def enqueue_quiz_qa_answer_job(
             status_code=400,
             content={"error": "請設定 Quiz API Key：PUT /v1/quiz/llm-api-key（Course_Setting key=quiz-api-key，依 course_id）"},
         )
-    llm_model = qa_answer_llm_model or get_quiz_llm_model(course_id)
+    llm_model = (group.get("answer_llm_model") or "").strip() or get_quiz_llm_model(course_id)
 
     bank_unit_id = int(qa.get("bank_unit_id") or 0)
     try:
@@ -734,7 +743,13 @@ async def enqueue_quiz_qa_answer_job(
     }
 
     def insert_fn(rd, ans):
-        return update_quiz_qa_with_answer(rd, ans, quiz_qa_id=quiz_qa_id, answer_llm_model=llm_model)
+        return update_quiz_qa_with_answer(
+            rd,
+            ans,
+            quiz_qa_id=quiz_qa_id,
+            answer_llm_model=llm_model,
+            answer_user_prompt_text=answer_user_prompt,
+        )
 
     background_tasks.add_task(
         run_bank_answer_job_background,
