@@ -13,51 +13,38 @@
 
 import json
 import logging
-import shutil
-import tempfile
 import uuid
-import zipfile
-from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse, Response
-from services.bank_generation import (
-    format_bank_quiz_history_prompt_for_llm,
-    generate_bank_quiz,
-    generate_bank_quiz_transcript_only,
-)
 from services.bank_answering import (
     answer_critique_plain_text_from_result,
-    cleanup_answer_workspace,
     run_bank_answer_job_background,
 )
 from utils.bank_llm_error import format_llm_error, is_llm_call_error, llm_error_json_response
 from utils.bank_llm_key import get_bank_api_key, get_bank_llm_model
 from utils.taipei_time import now_taipei_iso
-from utils.bank_stem import transcript_from_row
 from utils.bank_course import (
     execute_with_course_id_fallback,
     insert_bank_child_row,
     select_without_course_id_if_needed,
 )
 from utils.supabase import get_supabase
-from utils.bank_storage import get_zip_path
 from utils.serialization import to_json_safe
-from utils.fs import safe_unlink
 
-from .helpers import (
-    BANK_UNIT_TYPE_MP3,
-    BANK_UNIT_TYPE_TEXT,
-    BANK_UNIT_TYPE_YOUTUBE,
+# 出題／批改之單元內容存取與題目產生 glue（bank 與 quiz 共用，見 routers.bank.question_content）
+from .question_content import (
+    BankAnswerSetupError,
+    fetch_bank_unit_for_llm,
+    generate_question_fields_from_bank_unit,
+    prepare_bank_answer_workspace,
 )
 
 _logger = logging.getLogger("routers.bank")
 
 # 記憶體批改結果（鍵為 job_id）；供 GET /bank/qa/answer-result/{job_id} 輪詢。
 _bank_answer_job_results: dict[str, dict[str, Any]] = {}
-
-_TRANSCRIPT_UNIT_TYPES = (BANK_UNIT_TYPE_TEXT, BANK_UNIT_TYPE_MP3, BANK_UNIT_TYPE_YOUTUBE)
 
 
 # ---------------------------------------------------------------------------
@@ -122,37 +109,7 @@ def _fetch_bank_qa_row(supabase, bank_qa_id: int, course_id: int, *, cols: str =
     return sel.data[0] if sel.data else None
 
 
-def _fetch_bank_unit_for_llm(supabase, bank_unit_id: int, course_id: int) -> dict | None:
-    """取出題／批改所需之 Bank_Unit 欄位（不含 folder_combination，避免舊表 42703）。"""
-
-    def build(with_course_filter: bool):
-        cols = select_without_course_id_if_needed(
-            "Bank_Unit",
-            "bank_unit_id, bank_page_id, person_id, unit_name, unit_type, transcript, upload_file_name, course_id",
-            with_course_filter,
-        )
-        q = (
-            supabase.table("Bank_Unit")
-            .select(cols)
-            .eq("bank_unit_id", bank_unit_id)
-            .eq("deleted", False)
-        )
-        if with_course_filter and course_id is not None:
-            q = q.eq("course_id", course_id)
-        return q.limit(1)
-
-    sel = execute_with_course_id_fallback("Bank_Unit", build, course_id)
-    return sel.data[0] if sel.data else None
-
-
-def _rag_zip_page_id_from_unit(unit_row: dict) -> str:
-    """由 Bank_Unit.upload_file_name（{stem}_rag.zip）取出 rag ZIP 的 page_id（{stem}_rag）。"""
-    rf = (unit_row.get("upload_file_name") or "").strip()
-    if rf.lower().endswith(".zip"):
-        rid = rf[:-4].strip()
-        if rid and "/" not in rid and "\\" not in rid:
-            return rid
-    return ""
+# 單元內容存取（fetch_bank_unit_for_llm／rag_zip_page_id_from_unit）已抽至 .question_content，bank 與 quiz 共用。
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +119,7 @@ def _rag_zip_page_id_from_unit(unit_row: dict) -> str:
 
 def fetch_bank_unit_in_page(supabase, *, bank_page_id: str, bank_unit_id: int, course_id: int) -> dict:
     """取 Bank_Unit 並驗證其隸屬於路徑 bank_page_id（題組建立／列表巢狀於 page/unit 下時用）。"""
-    unit = _fetch_bank_unit_for_llm(supabase, bank_unit_id, course_id)
+    unit = fetch_bank_unit_for_llm(supabase, bank_unit_id, course_id)
     if not unit:
         raise HTTPException(status_code=404, detail=f"找不到 bank_unit_id={bank_unit_id} 的 Bank_Unit，或已刪除")
     up = (unit.get("bank_page_id") or "").strip()
@@ -196,93 +153,7 @@ def _resolve_bank_quiz_llm_params(
     return api_key, llm_model, qup, qsp
 
 
-def _generate_bank_quiz_fields(
-    supabase,
-    group: dict,
-    *,
-    course_id: int,
-    api_key: str,
-    llm_model: str,
-    qup: str,
-    qsp: str,
-    prior_items: list[dict],
-) -> dict:
-    """呼叫 bank 出題 LLM 產生一題（不寫 DB）。
-
-    回傳含 question_content／question_hint／question_answer_reference／question_reason／
-    bank_unit_id／bank_page_id。LLM 失敗時 raise（由呼叫端轉 llm_error_json_response）；
-    驗證錯誤 raise HTTPException。`prior_items` 為「已出過題目（勿重複）」題幹清單。
-    """
-    bank_unit_id = int(group.get("bank_unit_id") or 0)
-    if bank_unit_id <= 0:
-        raise HTTPException(status_code=400, detail="該題組對應的 bank_unit_id 無效")
-    unit = _fetch_bank_unit_for_llm(supabase, bank_unit_id, course_id)
-    if not unit:
-        raise HTTPException(status_code=404, detail=f"找不到 bank_unit_id={bank_unit_id} 的 Bank_Unit")
-    bank_page_id = (unit.get("bank_page_id") or group.get("bank_page_id") or "").strip()
-
-    prompt_for_llm = format_bank_quiz_history_prompt_for_llm(prior_items)
-
-    try:
-        unit_type_val = int(unit.get("unit_type") or 0)
-    except (TypeError, ValueError):
-        unit_type_val = 0
-    transcript_text = transcript_from_row(unit)
-
-    path: Path | None = None
-    try:
-        if unit_type_val in _TRANSCRIPT_UNIT_TYPES:
-            if not transcript_text:
-                raise HTTPException(
-                    status_code=400,
-                    detail="單元類型 2／3／4 需有逐字稿：請於 Bank_Unit 設定 transcript，或經 build-zip 寫入",
-                )
-            result = generate_bank_quiz_transcript_only(
-                api_key=api_key,
-                transcript=transcript_text,
-                quiz_user_prompt_text=qup,
-                quiz_history_list_prompt_text=prompt_for_llm,
-                llm_model=llm_model,
-                quiz_system_prompt_text=qsp,
-            )
-        else:
-            rag_zip_page_id = _rag_zip_page_id_from_unit(unit)
-            if not rag_zip_page_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail="該單元尚無 RAG ZIP（upload_file_name 為空）；請先執行 build-zip 建立向量庫",
-                )
-            path = get_zip_path(rag_zip_page_id)
-            if not path or not path.exists():
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"找不到 RAG ZIP（page_id={rag_zip_page_id}），請確認該單元已 build-zip",
-                )
-            result = generate_bank_quiz(
-                path,
-                api_key=api_key,
-                quiz_user_prompt_text=qup,
-                quiz_history_list_prompt_text=prompt_for_llm,
-                llm_model=llm_model,
-                quiz_system_prompt_text=qsp,
-            )
-
-        qc = (result.get("quiz_content") or "").strip()
-        qh = (result.get("quiz_hint") or "").strip()
-        qref = (result.get("quiz_answer_reference") or "").strip()
-        # 出題理由由出題那一次 LLM 一併產出（理由先行），不再另呼叫一次。
-        question_reason = (result.get("question_reason") or "").strip()
-        return {
-            "question_content": qc,
-            "question_hint": qh,
-            "question_answer_reference": qref,
-            "question_reason": question_reason,
-            "bank_unit_id": bank_unit_id,
-            "bank_page_id": bank_page_id,
-        }
-    finally:
-        if path is not None:
-            safe_unlink(path)
+# _generate_bank_quiz_fields 已抽至 .question_content.generate_question_fields_from_bank_unit（bank 與 quiz 共用）。
 
 
 def bank_llm_generate_qa_impl(
@@ -331,9 +202,10 @@ def bank_llm_generate_qa_impl(
     ]
 
     try:
-        fields = _generate_bank_quiz_fields(
+        fields = generate_question_fields_from_bank_unit(
             supabase,
-            group,
+            bank_unit_id=int(group.get("bank_unit_id") or 0),
+            bank_page_id_fallback=(group.get("bank_page_id") or ""),
             course_id=course_id,
             api_key=api_key,
             llm_model=llm_model,
@@ -455,9 +327,10 @@ def bank_llm_regenerate_qa_impl(
     )
 
     try:
-        fields = _generate_bank_quiz_fields(
+        fields = generate_question_fields_from_bank_unit(
             supabase,
-            group,
+            bank_unit_id=int(group.get("bank_unit_id") or 0),
+            bank_page_id_fallback=(group.get("bank_page_id") or ""),
             course_id=course_id,
             api_key=api_key,
             llm_model=llm_model,
@@ -628,44 +501,12 @@ async def enqueue_bank_qa_answer_job(
     llm_model = qa_answer_llm_model or get_bank_llm_model(course_id)
 
     bank_unit_id = int(qa.get("bank_unit_id") or 0)
-    unit = _fetch_bank_unit_for_llm(supabase, bank_unit_id, course_id) if bank_unit_id > 0 else None
     try:
-        unit_type = int(unit.get("unit_type") or 0) if unit else 0
-    except (TypeError, ValueError):
-        unit_type = 0
-    transcript_text = transcript_from_row(unit) if unit else ""
-
-    transcript_answer: str | None = None
-    if unit_type in _TRANSCRIPT_UNIT_TYPES:
-        if not transcript_text.strip():
-            return JSONResponse(
-                status_code=400,
-                content={"error": "批改用 transcript 未設定：請於 Bank_Unit 設定 transcript（單元 2／3／4）"},
-            )
-        transcript_answer = transcript_text
-        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_bank_answer_tx_"))
-    else:
-        rag_zip_page_id = _rag_zip_page_id_from_unit(unit or {})
-        rag_zip_path = get_zip_path(rag_zip_page_id) if rag_zip_page_id else None
-        if not rag_zip_path or not rag_zip_path.exists():
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"找不到 RAG ZIP（page_id={rag_zip_page_id}），請確認該單元已 build-zip"},
-            )
-        work_dir = Path(tempfile.mkdtemp(prefix="myquizai_bank_answer_"))
-        zip_source_path = work_dir / "ref.zip"
-        extract_folder = work_dir / "extract"
-        extract_folder.mkdir(parents=True, exist_ok=True)
-        try:
-            shutil.copy(rag_zip_path, zip_source_path)
-            if not zipfile.is_zipfile(zip_source_path):
-                cleanup_answer_workspace(work_dir)
-                return JSONResponse(status_code=400, content={"error": "無效的 ZIP 檔"})
-        except Exception as e:
-            cleanup_answer_workspace(work_dir)
-            return JSONResponse(status_code=500, content={"error": str(e)})
-        finally:
-            safe_unlink(rag_zip_path)
+        unit_type, transcript_answer, work_dir = prepare_bank_answer_workspace(
+            supabase, bank_unit_id=bank_unit_id, course_id=course_id, prefix="myquizai_bank_answer"
+        )
+    except BankAnswerSetupError as e:
+        return JSONResponse(status_code=e.status_code, content={"error": e.detail})
 
     job_id = str(uuid.uuid4())
     _bank_answer_job_results[job_id] = {"status": "pending", "result": None, "error": None, "llm_error": None}

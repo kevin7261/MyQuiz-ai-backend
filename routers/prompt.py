@@ -1,6 +1,6 @@
 """
 LLM Prompt 模板查詢 API。
-- GET /v1/prompt-templates：回傳抓 RAG、llm-generate、llm-answer、個人分析、課程分析之 prompt 全文（程式內建模板，非 Course_Setting 或 DB 動態值）。
+- GET /v1/prompt-templates：回傳抓 RAG、llm-generate、llm-answer、llm-ask、bank、quiz、個人分析、課程分析之 prompt 全文（程式內建模板，非 Course_Setting 或 DB 動態值）。
 """
 
 from fastapi import APIRouter
@@ -32,6 +32,11 @@ from services.bank_answering import (
     SYSTEM_PROMPT_BANK_ANSWER,
     USER_PROMPT_BANK_ANSWER_FAISS_COURSE,
     USER_PROMPT_BANK_ANSWER_TRANSCRIPT_COURSE,
+)
+from services.quiz_asking import (
+    SYSTEM_PROMPT_QUIZ_ASK,
+    USER_PROMPT_QUIZ_ASK_FAISS_COURSE,
+    USER_PROMPT_QUIZ_ASK_TRANSCRIPT_COURSE,
 )
 from services.prompt_placeholders import prompt_placeholder_descriptions
 from services.rag_prompts import rag_build_defaults, rag_retrieval_config
@@ -122,6 +127,22 @@ class BankPrompts(BaseModel):
     )
 
 
+class QuizPrompts(BaseModel):
+    """Quiz（試卷／Test）prompt 模板。
+
+    出題／批改沿用 `bank` 區塊（quiz 重用 bank 的 LLM 管線，金鑰／模型走 quiz- 設定）；
+    此處為 quiz 專屬之「追問」prompt（學生對題組對應之 Bank 課程內容發問，services.quiz_asking）。
+    """
+
+    llm_ask_system: str = Field(..., description="追問回答 system（SYSTEM_PROMPT_QUIZ_ASK）")
+    llm_ask_user_transcript_course: str = Field(
+        ..., description="追問 user（逐字稿路徑，USER_PROMPT_QUIZ_ASK_TRANSCRIPT_COURSE）"
+    )
+    llm_ask_user_faiss_course: str = Field(
+        ..., description="追問 user（FAISS 路徑，USER_PROMPT_QUIZ_ASK_FAISS_COURSE）"
+    )
+
+
 class AnalysisPrompts(PromptPair):
     """個人／課程弱點分析 LLM prompt 模板。"""
 
@@ -138,6 +159,7 @@ class AllPromptTemplatesResponse(BaseModel):
     llm_answer: LlmAnswerPrompts
     llm_ask: LlmAskPrompts
     bank: BankPrompts
+    quiz: QuizPrompts
     person_analysis: AnalysisPrompts
     course_analysis: AnalysisPrompts
 
@@ -181,6 +203,11 @@ def get_all_prompt_templates(_person_id: PersonId):
             llm_answer_system=SYSTEM_PROMPT_BANK_ANSWER,
             llm_answer_user_transcript_course=USER_PROMPT_BANK_ANSWER_TRANSCRIPT_COURSE,
             llm_answer_user_faiss_course=USER_PROMPT_BANK_ANSWER_FAISS_COURSE,
+        ),
+        quiz=QuizPrompts(
+            llm_ask_system=SYSTEM_PROMPT_QUIZ_ASK,
+            llm_ask_user_transcript_course=USER_PROMPT_QUIZ_ASK_TRANSCRIPT_COURSE,
+            llm_ask_user_faiss_course=USER_PROMPT_QUIZ_ASK_FAISS_COURSE,
         ),
         person_analysis=AnalysisPrompts(**person_tpl),
         course_analysis=AnalysisPrompts(**course_tpl),
