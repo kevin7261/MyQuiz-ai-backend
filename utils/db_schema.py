@@ -62,6 +62,31 @@ BANK_QA_SELECT_COLUMNS = (
     "deleted, updated_at, created_at"
 )
 
+# Quiz（試卷／Test）：搭配 bank 出題的應試層，定位等同 exam 之於 rag。
+# Quiz（試卷）→ Quiz_Group（自 Bank_Group 快照之題組）→ Quiz_QA（逐題出題／批改，無追問）。
+QUIZ_TABLE = "Quiz"
+QUIZ_GROUP_TABLE = "Quiz_Group"
+QUIZ_QA_TABLE = "Quiz_QA"
+
+QUIZ_SELECT_COLUMNS = (
+    "quiz_id, quiz_page_id, person_id, course_id, tab_name, deleted, updated_at, created_at"
+)
+
+QUIZ_GROUP_SELECT_COLUMNS = (
+    "quiz_group_id, quiz_page_id, bank_page_id, bank_unit_id, bank_group_id, person_id, course_id, "
+    "unit_name, unit_type, group_name, question_system_prompt_text, question_user_prompt_text, "
+    "qa_count, question_llm_model, answer_user_prompt_text, answer_llm_model, "
+    "deleted, updated_at, created_at"
+)
+
+QUIZ_QA_SELECT_COLUMNS = (
+    "quiz_qa_id, quiz_group_id, quiz_page_id, bank_page_id, bank_unit_id, bank_group_id, "
+    "person_id, course_id, question_series_index, question_system_prompt_text, question_user_prompt_text, "
+    "question_content, question_hint, question_answer_reference, question_reason, question_rate, "
+    "question_llm_model, answer_user_prompt_text, answer_llm_model, answer_content, answer_critique, "
+    "answer_rate, deleted, updated_at, created_at"
+)
+
 # SELECT 欄位順序同 public DDL（rag_page_id → person_id → course_id → …）
 RAG_SELECT_COLUMNS = (
     "rag_id, rag_page_id, person_id, course_id, tab_name, file_size, file_metadata, "

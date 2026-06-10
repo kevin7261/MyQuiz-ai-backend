@@ -71,6 +71,7 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/bank/groups/{bank_group_id}/for-exam",
     # --- Bank：題目 LLM（出題／批改）---
     "/v1/bank/groups/{bank_group_id}/qa/llm-generate",
+    "/v1/bank/qa/{bank_qa_id}/llm-regenerate",
     "/v1/bank/qa/{bank_qa_id}/llm-answer",
     "/v1/bank/qa/answer-result/{job_id}",
     "/v1/bank/qa/{bank_qa_id}",
@@ -78,6 +79,25 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/bank/llm-api-key",
     "/v1/bank/llm-api-key/exists",
     "/v1/bank/llm-model",
+    # --- Quiz（試卷／Test，搭配 bank 出題）：試卷 ---
+    "/v1/quiz/pages",
+    "/v1/quiz/pages/{quiz_page_id}",
+    "/v1/quiz/bank-groups",
+    # --- Quiz：題組（建立巢狀於試卷；單項以主鍵淺路徑）---
+    "/v1/quiz/pages/{quiz_page_id}/groups",
+    "/v1/quiz/groups/{quiz_group_id}",
+    # --- Quiz：題目 LLM（出題／批改）與評分 ---
+    "/v1/quiz/groups/{quiz_group_id}/qa/llm-generate",
+    "/v1/quiz/qa/{quiz_qa_id}/llm-regenerate",
+    "/v1/quiz/qa/{quiz_qa_id}/llm-answer",
+    "/v1/quiz/qa/answer-result/{job_id}",
+    "/v1/quiz/qa/{quiz_qa_id}/question-rate",
+    "/v1/quiz/qa/{quiz_qa_id}/answer-rate",
+    "/v1/quiz/qa/{quiz_qa_id}",
+    # --- Quiz：LLM 設定（quiz 專屬，與 bank/exam/rag 分開）---
+    "/v1/quiz/llm-api-key",
+    "/v1/quiz/llm-api-key/exists",
+    "/v1/quiz/llm-model",
     # --- Exam：分頁 ---
     "/v1/exam/pages",
     "/v1/exam/rag-for-exams",
@@ -121,10 +141,12 @@ def _path_group_rank(path: str) -> tuple:
         return (0, _PATH_RANK[path], path)
     if path.startswith("/v1/rag/"):
         return (1, 0, path)
-    if path.startswith("/v1/exam/"):
+    if path.startswith("/v1/quiz/"):
         return (1, 1, path)
-    if path.startswith("/v1/person-analyses") or path.startswith("/v1/course-analyses"):
+    if path.startswith("/v1/exam/"):
         return (1, 2, path)
+    if path.startswith("/v1/person-analyses") or path.startswith("/v1/course-analyses"):
+        return (1, 3, path)
     return (2, 0, path)
 
 

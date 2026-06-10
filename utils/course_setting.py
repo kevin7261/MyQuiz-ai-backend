@@ -18,6 +18,9 @@ COURSE_SETTING_EXAM_API_KEY = "exam-api-key"
 # Bank（測試題庫）專屬金鑰與模型（與 rag-api-key／llm-model 完全分開）
 COURSE_SETTING_BANK_API_KEY = "bank-api-key"
 COURSE_SETTING_BANK_LLM_MODEL = "bank-llm-model"
+# Quiz（試卷／Test，搭配 bank 出題）專屬金鑰與模型（與 bank-/exam-/rag- 完全分開）
+COURSE_SETTING_QUIZ_API_KEY = "quiz-api-key"
+COURSE_SETTING_QUIZ_LLM_MODEL = "quiz-llm-model"
 
 
 def fetch_course_setting_text(key: str, course_id: int) -> str:
