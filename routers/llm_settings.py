@@ -52,6 +52,34 @@ def _add_prompt_text_routes(
     setting_key: str,
 ) -> None:
     """產生某一 prompt 欄位的 GET／PUT 課程預設端點（如 /bank/question-system-prompt-text）。"""
+    _add_course_setting_prompt_routes(
+        router,
+        prefix=prefix,
+        title=title,
+        path="/" + field.replace("_", "-"),
+        field=field,
+        setting_key=setting_key,
+        get_doc=f"讀取 {group_table}.{field} 課程預設（Course_Setting key={setting_key}）。",
+        put_doc=f"寫入 {group_table}.{field} 課程預設（傳空字串可清除）。",
+        example=_PROMPT_TEXT_EXAMPLES.get(field, "string"),
+        request_field_description=f"{group_table}.{field} 課程預設",
+    )
+
+
+def _add_course_setting_prompt_routes(
+    router: APIRouter,
+    *,
+    prefix: str,
+    title: str,
+    path: str,
+    field: str,
+    setting_key: str,
+    get_doc: str,
+    put_doc: str,
+    example: str,
+    request_field_description: str,
+) -> None:
+    """產生某一 Course_Setting 文字欄位的 GET／PUT 端點（路徑與回應欄位名可自訂）。"""
     camel = "".join(part.capitalize() for part in field.split("_"))
     resp_model = create_model(
         f"{title}{camel}Response",
@@ -60,9 +88,9 @@ def _add_prompt_text_routes(
     )
     req_model = create_model(
         f"Put{title}{camel}Request",
-        **{field: (str, Field(..., description=f"{group_table}.{field} 課程預設"))},
+        **{field: (str, Field(..., description=request_field_description))},
     )
-    path = "/" + field.replace("_", "-")
+    op_suffix = field
 
     def get_setting(person_id: PersonId, course_id: CourseId):
         _require_active_person(person_id)
@@ -72,13 +100,13 @@ def _add_prompt_text_routes(
     _register(
         router, "GET", path, get_setting,
         name=f"get_{prefix}_{field}_setting",
-        doc=f"讀取 {group_table}.{field} 課程預設（Course_Setting key={setting_key}）。",
+        doc=get_doc,
         response_model=resp_model,
-        operation_id=f"{prefix}_get_{field}",
+        operation_id=f"{prefix}_get_{op_suffix}",
     )
 
     def put_setting(
-        body: openapi_body(req_model, {field: _PROMPT_TEXT_EXAMPLES[field]}),
+        body: openapi_body(req_model, {field: example}),
         person_id: PersonId,
         course_id: CourseId,
     ):
@@ -96,9 +124,9 @@ def _add_prompt_text_routes(
     _register(
         router, "PUT", path, put_setting,
         name=f"put_{prefix}_{field}_setting",
-        doc=f"寫入 {group_table}.{field} 課程預設（傳空字串可清除）。",
+        doc=put_doc,
         response_model=resp_model,
-        operation_id=f"{prefix}_put_{field}",
+        operation_id=f"{prefix}_put_{op_suffix}",
     )
 
 

@@ -113,6 +113,27 @@ def prompt_placeholder_descriptions() -> dict[str, dict[str, str]]:
                 "同 person_analysis.material_md，但素材範圍為整課 course_id 下已作答 Exam_Quiz。"
             ),
         },
+        "user_analysis": {
+            "analysis_user_prompt_text": (
+                "個人弱點分析指令；Course_Setting key=user_analysis_user_prompt_text"
+                "（GET/PUT /user-analyses/analysis-user-prompt-text，依 course_id）；"
+                "空則「（未提供）」。"
+            ),
+            "material_md": (
+                "測驗素材 Markdown：已批改 Quiz_QA 的 answer_critique 摘要列表；"
+                "否則為題幹、參考答案、學生作答、answer_rate 等摘要。"
+            ),
+        },
+        "quiz_analysis": {
+            "analysis_user_prompt_text": (
+                "測驗課程分析指令；Course_Setting key=quiz_analysis_user_prompt_text"
+                "（GET/PUT /quiz-analyses/analysis-user-prompt-text，依 course_id）；"
+                "空則「（未提供）」。"
+            ),
+            "material_md": (
+                "同 user_analysis.material_md，但素材範圍為整課 course_id 下所有學生已作答 Quiz_QA。"
+            ),
+        },
         "quiz": {
             "question_user_prompt_text": (
                 "追問 user：題組出題規定；Quiz_Group.question_user_prompt_text；"

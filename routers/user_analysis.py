@@ -9,8 +9,8 @@
 
 對齊「一列一 page、按 id 操作」模式：
 - 一列＝一筆分析紀錄；POST 新增、PATCH 改名、DELETE 刪除、POST /{id}/llm-analysis 寫入報告。
-- 分析指令由呼叫者每次在 POST /{id}/llm-analysis 的 body 自行輸入（不預存 Course_Setting）；
-  結果列的 analysis_prompt_text 僅為該次輸入快照。
+- 分析指令存 Course_Setting（GET/PUT /user-analyses/analysis-user-prompt-text）；
+  結果列的 analysis_prompt_text 僅為產生報告當下的規則快照。
 - person_id 一律為呼叫 API 的登入帳號。
 """
 
@@ -23,11 +23,13 @@ from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
+from routers.analysis_prompt_settings import register_analysis_user_prompt_routes
 from services.analysis_setting import resolve_login_person_id
 from services.quiz_analysis_setting import (
     add_user_analysis_row,
     fetch_user_analyses_by_person,
     fetch_user_analysis_row,
+    fetch_user_analysis_user_prompt_for_llm,
     save_user_analysis_result,
     soft_delete_user_analysis,
     update_user_analysis_name,
@@ -36,10 +38,18 @@ from services.quiz_queries import quiz_qas_by_person_id, quizzes_with_qas_respon
 from services.weakness_report import generate_weakness_report_md, quiz_has_answer
 from utils.openapi import openapi_body
 from utils.quiz_llm_key import get_quiz_api_key, get_quiz_llm_model
+from utils.course_setting import COURSE_SETTING_USER_ANALYSIS_USER_PROMPT_TEXT
 from utils.serialization import to_json_safe
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/user-analyses", tags=["user analysis"])
+
+register_analysis_user_prompt_routes(
+    router,
+    setting_key=COURSE_SETTING_USER_ANALYSIS_USER_PROMPT_TEXT,
+    operation_id_prefix="user_analysis",
+    example="請依本次作答分析學生弱點…",
+)
 
 ANALYSIS_LABEL_USER = "個人弱點分析"
 
@@ -126,15 +136,6 @@ class UserAnalysisDeleteResponse(BaseModel):
     person_id: Optional[str] = None
     course_id: Optional[int] = None
     updated_at: Optional[str] = None
-
-
-class UserLlmAnalysisRequest(BaseModel):
-    """POST /user-analyses/{user_analysis_id}/llm-analysis：每次自行輸入分析指令。"""
-
-    analysis_user_prompt_text: str = Field(
-        default="",
-        description="本次弱點分析教師指令；未填則 LLM 僅依作答資料分析",
-    )
 
 
 class UserLlmAnalysisResponse(BaseModel):
@@ -304,10 +305,6 @@ def delete_user_analysis(
 
 @router.post("/{user_analysis_id}/llm-analysis", response_model=UserLlmAnalysisResponse)
 def user_llm_analysis(
-    body: openapi_body(
-        UserLlmAnalysisRequest,
-        {"analysis_user_prompt_text": "請依本次作答分析我的弱點…"},
-    ),
     person_id: PersonId,
     course_id: CourseId,
     user_analysis_id: int = PathParam(
@@ -316,7 +313,8 @@ def user_llm_analysis(
 ):
     """
     必填 query `person_id`（呼叫者）、`course_id`；path 帶 `user_analysis_id`（目標列）。
-    body `analysis_user_prompt_text` 為本次分析指令（每次自行輸入，不讀 Course_Setting）。
+    分析指令自 Course_Setting key=user_analysis_user_prompt_text 讀取
+    （GET/PUT /user-analyses/analysis-user-prompt-text）。
     依呼叫者在指定課程的 Quiz_QA 作答紀錄，使用 LLM 產生個人弱點報告並寫入指定 User_Analysis 列。
     API Key 使用 Course_Setting key=quiz-api-key；模型使用 key=quiz-llm-model。
     """
@@ -354,11 +352,11 @@ def user_llm_analysis(
                 "（Course_Setting key=quiz-api-key，依 course_id）"
             )
         elif not llm_error:
-            prompt_text = (body.analysis_user_prompt_text or "").strip()
+            setting_prompt = fetch_user_analysis_user_prompt_for_llm(course_id)
             weakness_report, _, llm_err = generate_weakness_report_md(
                 to_json_safe(qas_with_answers),
                 api_key,
-                prompt_text,
+                setting_prompt,
                 analysis_label=ANALYSIS_LABEL_USER,
                 llm_model=analysis_llm_model,
             )
@@ -368,7 +366,7 @@ def user_llm_analysis(
                 saved = save_user_analysis_result(
                     user_analysis_id,
                     weakness_report,
-                    analysis_prompt_text=prompt_text,
+                    analysis_prompt_text=setting_prompt,
                 )
                 if not saved:
                     logger.error(

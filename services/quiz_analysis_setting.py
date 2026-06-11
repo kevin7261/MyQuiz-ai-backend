@@ -6,8 +6,10 @@ User_Analysis：個人弱點分析（基於 Quiz_QA，依 person_id + course_id 
 Quiz_Analysis：測驗課程分析（基於 Quiz_QA，依 course_id 範圍，全體學生）。
   - 定位等同 Course_Analysis 之於 Exam_Quiz。
 
-User_Analysis：分析指令由 POST llm-analysis 的 body 傳入；analysis_prompt_text 為該次快照。
-Quiz_Analysis：不支援自訂分析指令；analysis_prompt_text 不使用。
+User_Analysis：分析指令存 Course_Setting（GET/PUT /user-analyses/analysis-user-prompt-text）；
+  analysis_prompt_text 為產生報告當下的規則快照。
+Quiz_Analysis：分析指令存 Course_Setting（GET/PUT /quiz-analyses/analysis-user-prompt-text）；
+  analysis_prompt_text 為產生報告當下的規則快照。
 """
 
 from __future__ import annotations
@@ -15,6 +17,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from utils.course_setting import (
+    COURSE_SETTING_QUIZ_ANALYSIS_USER_PROMPT_TEXT,
+    COURSE_SETTING_USER_ANALYSIS_USER_PROMPT_TEXT,
+    fetch_course_setting_text,
+)
 from utils.supabase import get_supabase
 from utils.taipei_time import now_taipei_iso
 
@@ -175,6 +182,20 @@ def soft_delete_user_analysis(user_analysis_id: int) -> Optional[dict[str, Any]]
             "soft_delete_user_analysis failed user_analysis_id=%s", user_analysis_id
         )
     return None
+
+
+def fetch_user_analysis_user_prompt_for_llm(course_id: int | str) -> str:
+    """LLM 用教師指令（Course_Setting key=user_analysis_user_prompt_text）。"""
+    return fetch_course_setting_text(
+        COURSE_SETTING_USER_ANALYSIS_USER_PROMPT_TEXT, int(course_id)
+    )
+
+
+def fetch_quiz_analysis_user_prompt_for_llm(course_id: int | str) -> str:
+    """LLM 用教師指令（Course_Setting key=quiz_analysis_user_prompt_text）。"""
+    return fetch_course_setting_text(
+        COURSE_SETTING_QUIZ_ANALYSIS_USER_PROMPT_TEXT, int(course_id)
+    )
 
 
 def save_user_analysis_result(
