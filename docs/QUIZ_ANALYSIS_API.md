@@ -10,6 +10,29 @@
 > **與 Person / Course Analysis 的差異**：`person-analyses` / `course-analyses` 分析 RAG 出題（Exam_Quiz）；
 > 本文件兩支 API 分析 **Bank 出題試卷（Quiz_QA）**，金鑰獨立（`quiz-api-key`）、模型獨立（`quiz-llm-model`）。
 
+### 端點總表
+
+| Method | Path | 說明 |
+|--------|------|------|
+| GET | `/v1/user-analyses` | 列出個人分析結果 |
+| POST | `/v1/user-analyses` | 新增空白 User_Analysis 列 |
+| GET | `/v1/user-analyses/user-analysis-user-prompt-text` | 讀取個人弱點分析指令 |
+| PUT | `/v1/user-analyses/user-analysis-user-prompt-text` | 寫入個人弱點分析指令 |
+| PATCH | `/v1/user-analyses/{user_analysis_id}` | 更名 |
+| DELETE | `/v1/user-analyses/{user_analysis_id}` | 軟刪 |
+| POST | `/v1/user-analyses/{user_analysis_id}/llm-analysis` | 產生個人弱點報告（LLM） |
+| GET | `/v1/quiz-analyses` | 列出課程分析結果 |
+| POST | `/v1/quiz-analyses` | 新增空白 Quiz_Analysis 列 |
+| GET | `/v1/quiz-analyses/quiz-analysis-user-prompt-text` | 讀取測驗課程分析指令 |
+| PUT | `/v1/quiz-analyses/quiz-analysis-user-prompt-text` | 寫入測驗課程分析指令 |
+| PATCH | `/v1/quiz-analyses/{quiz_analysis_id}` | 更名 |
+| DELETE | `/v1/quiz-analyses/{quiz_analysis_id}` | 軟刪 |
+| POST | `/v1/quiz-analyses/{quiz_analysis_id}/llm-analysis` | 產生課程分析報告（LLM） |
+| GET/PUT | `/v1/quiz/user-analysis-user-prompt-text` | 同上（個人指令，掛在 quiz 設定區塊） |
+| GET/PUT | `/v1/quiz/quiz-analysis-user-prompt-text` | 同上（課程指令，掛在 quiz 設定區塊） |
+
+> 分析指令的靜態路徑（`…/user-analysis-user-prompt-text`、`…/quiz-analysis-user-prompt-text`）已註冊在 `/{id}` **之前**，不會被 `{user_analysis_id}` / `{quiz_analysis_id}` 吃掉。
+
 ---
 
 ## 0. 共通約定
@@ -23,11 +46,12 @@
 - **LLM 設定**：分析使用 Quiz 模組的金鑰與模型，需先設定
   - `PUT /v1/quiz/llm-api-key`　`{ "api_key": "sk-..." }`
   - `PUT /v1/quiz/llm-model`　`{ "llm_model": "gpt-5.4" }`
-- **分析指令（可選）**：教師可在 Course_Setting 預設 LLM 分析指令
-  - `user_analysis_user_prompt_text`：個人弱點分析指令
-  - `quiz_analysis_user_prompt_text`：測驗課程分析指令
+- **分析指令**：存於 `Course_Setting`（依 `course_id`）；詳見 **§1.6、§2.6**
+  - 個人弱點：`user_analysis_user_prompt_text`
+  - 測驗課程：`quiz_analysis_user_prompt_text`
+  - GET 須為有效登入使用者；PUT 僅 user_type **1（開發者）／2（管理者）**
 
-### 使用模式（兩支 API 皆相同）
+### 使用模式（分析結果列）
 
 ```
 1. POST /{prefix}                     → 建一筆空白分析列，取得 id

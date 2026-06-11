@@ -9,7 +9,7 @@
 
 對齊「一列一 page、按 id 操作」模式：
 - 一列＝一筆分析紀錄；POST 新增、PATCH 改名、DELETE 刪除、POST /{id}/llm-analysis 寫入報告。
-- 分析規則存 Course_Setting（key=user_analysis_user_prompt_text）；
+- 分析規則存 Course_Setting（GET/PUT /user-analyses/user-analysis-user-prompt-text；key=user_analysis_user_prompt_text）；
   結果列的 analysis_prompt_text 僅為產生報告當下的規則快照。
 - person_id 一律為呼叫 API 的登入帳號。
 """
@@ -38,10 +38,16 @@ from services.weakness_report import generate_weakness_report_md, quiz_has_answe
 from utils.openapi import openapi_body
 from utils.quiz_llm_key import get_quiz_api_key, get_quiz_llm_model
 from utils.serialization import to_json_safe
+from routers.quiz_module_analysis_prompts import register_user_analysis_prompt_routes
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/user-analyses", tags=["user analysis"])
+register_user_analysis_prompt_routes(
+    router,
+    get_operation_id="user_analyses_get_user_analysis_user_prompt_text",
+    put_operation_id="user_analyses_put_user_analysis_user_prompt_text",
+)
 
 ANALYSIS_LABEL_USER = "個人弱點分析"
 
