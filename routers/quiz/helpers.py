@@ -99,6 +99,24 @@ def fetch_quiz_group_row(supabase, quiz_group_id: int, course_id: int, *, cols: 
     return sel.data[0] if sel.data else None
 
 
+def require_quiz_group_owner(
+    supabase,
+    quiz_group_id: int,
+    course_id: int,
+    caller_person_id: str,
+    *,
+    cols: str = "*",
+    forbidden_detail: str = "無權存取該 Quiz_Group",
+) -> dict:
+    """取 Quiz_Group 並驗證擁有者；不存在回 404、非擁有者回 403（detail 依呼叫情境傳入）。"""
+    group = fetch_quiz_group_row(supabase, quiz_group_id, course_id, cols=cols)
+    if not group:
+        raise HTTPException(status_code=404, detail=f"找不到 quiz_group_id={quiz_group_id} 的 Quiz_Group，或已刪除")
+    if (group.get("person_id") or "").strip() != caller_person_id:
+        raise HTTPException(status_code=403, detail=forbidden_detail)
+    return group
+
+
 def fetch_quiz_qa_row(supabase, quiz_qa_id: int, course_id: int, *, cols: str = "*") -> dict | None:
     """依 quiz_qa_id 取未刪除 Quiz_QA 一列。"""
     sel = (
@@ -382,12 +400,10 @@ def quiz_llm_generate_qa_impl(
 ):
     """在題組內產生下一題：依題組 prompt 與既有題目（勿重複）出一題，寫入 Quiz_QA。"""
     supabase = get_supabase()
-    group = fetch_quiz_group_row(supabase, quiz_group_id, course_id, cols="*")
-    if not group:
-        raise HTTPException(status_code=404, detail=f"找不到 quiz_group_id={quiz_group_id} 的 Quiz_Group，或已刪除")
+    group = require_quiz_group_owner(
+        supabase, quiz_group_id, course_id, caller_person_id, forbidden_detail="無權於該題組出題"
+    )
     pid = (group.get("person_id") or "").strip()
-    if pid != caller_person_id:
-        raise HTTPException(status_code=403, detail="無權於該題組出題")
 
     qa_count = normalize_qa_count(group.get("qa_count"))
 
@@ -510,12 +526,9 @@ def quiz_llm_regenerate_qa_impl(
     quiz_group_id = int(qa.get("quiz_group_id") or 0)
     if quiz_group_id <= 0:
         raise HTTPException(status_code=400, detail="該題的 quiz_group_id 無效")
-    group = fetch_quiz_group_row(supabase, quiz_group_id, course_id, cols="*")
-    if not group:
-        raise HTTPException(status_code=404, detail=f"找不到 quiz_group_id={quiz_group_id} 的 Quiz_Group，或已刪除")
-    pid = (group.get("person_id") or "").strip()
-    if pid != caller_person_id:
-        raise HTTPException(status_code=403, detail="無權重出該題")
+    group = require_quiz_group_owner(
+        supabase, quiz_group_id, course_id, caller_person_id, forbidden_detail="無權重出該題"
+    )
 
     existing = quiz_qa_rows_for_group(
         supabase, quiz_group_id, course_id, cols="quiz_qa_id, question_series_index, question_content"
@@ -793,12 +806,10 @@ def quiz_llm_ask_impl(
         raise HTTPException(status_code=400, detail="ask_user_prompt_text 不可為空白")
 
     supabase = get_supabase()
-    group = fetch_quiz_group_row(supabase, quiz_group_id, course_id, cols="*")
-    if not group:
-        raise HTTPException(status_code=404, detail=f"找不到 quiz_group_id={quiz_group_id} 的 Quiz_Group，或已刪除")
+    group = require_quiz_group_owner(
+        supabase, quiz_group_id, course_id, caller_person_id, forbidden_detail="無權對該 Quiz_Group 發問"
+    )
     pid = (group.get("person_id") or "").strip()
-    if pid != caller_person_id:
-        raise HTTPException(status_code=403, detail="無權對該 Quiz_Group 發問")
 
     api_key = get_quiz_api_key(course_id)
     if not api_key:

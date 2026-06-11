@@ -72,6 +72,24 @@ def _fetch_bank_group_row(supabase, bank_group_id: int, course_id: int, *, cols:
     return sel.data[0] if sel.data else None
 
 
+def require_bank_group_owner(
+    supabase,
+    bank_group_id: int,
+    course_id: int,
+    caller_person_id: str,
+    *,
+    cols: str = "*",
+    forbidden_detail: str = "無權存取該 Bank_Group",
+) -> dict:
+    """取 Bank_Group 並驗證擁有者；不存在回 404、非擁有者回 403（detail 依呼叫情境傳入）。"""
+    group = _fetch_bank_group_row(supabase, bank_group_id, course_id, cols=cols)
+    if not group:
+        raise HTTPException(status_code=404, detail=f"找不到 bank_group_id={bank_group_id} 的 Bank_Group，或已刪除")
+    if (group.get("person_id") or "").strip() != caller_person_id:
+        raise HTTPException(status_code=403, detail=forbidden_detail)
+    return group
+
+
 def _bank_qa_rows_for_group(supabase, bank_group_id: int, course_id: int, *, cols: str = "*") -> list[dict]:
     """依 bank_group_id 取所有未刪除 Bank_QA，依 question_series_index、created_at 升序。"""
 
@@ -159,12 +177,10 @@ def bank_llm_generate_qa_impl(
 ):
     """在題組內產生下一題：依題組 prompt 與既有題目（勿重複）出一題，寫入 Bank_QA。"""
     supabase = get_supabase()
-    group = _fetch_bank_group_row(supabase, bank_group_id, course_id, cols="*")
-    if not group:
-        raise HTTPException(status_code=404, detail=f"找不到 bank_group_id={bank_group_id} 的 Bank_Group，或已刪除")
+    group = require_bank_group_owner(
+        supabase, bank_group_id, course_id, caller_person_id, forbidden_detail="無權於該題組出題"
+    )
     pid = (group.get("person_id") or "").strip()
-    if pid != caller_person_id:
-        raise HTTPException(status_code=403, detail="無權於該題組出題")
 
     qa_count = normalize_qa_count(group.get("qa_count"))
 
@@ -277,14 +293,9 @@ def bank_llm_regenerate_qa_impl(
     bank_group_id = int(qa.get("bank_group_id") or 0)
     if bank_group_id <= 0:
         raise HTTPException(status_code=400, detail="該題的 bank_group_id 無效")
-    group = _fetch_bank_group_row(supabase, bank_group_id, course_id, cols="*")
-    if not group:
-        raise HTTPException(
-            status_code=404, detail=f"找不到 bank_group_id={bank_group_id} 的 Bank_Group，或已刪除"
-        )
-    pid = (group.get("person_id") or "").strip()
-    if pid != caller_person_id:
-        raise HTTPException(status_code=403, detail="無權重出該題")
+    group = require_bank_group_owner(
+        supabase, bank_group_id, course_id, caller_person_id, forbidden_detail="無權重出該題"
+    )
 
     existing = _bank_qa_rows_for_group(
         supabase, bank_group_id, course_id, cols="bank_qa_id, question_series_index, question_content, course_id"

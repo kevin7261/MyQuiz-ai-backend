@@ -58,21 +58,12 @@ from .helpers import (
     quiz_llm_regenerate_qa_impl,
     quiz_qa_rows_for_group,
     renumber_quiz_qa_indices,
+    require_quiz_group_owner,
 )
 
 _logger = logging.getLogger("routers.quiz")
 
 router = APIRouter(prefix="/quiz", tags=["quiz"])
-
-
-def _require_quiz_group_owner(supabase, quiz_group_id: int, course_id: int, caller_person_id: str, *, cols: str = "*") -> dict:
-    """取 Quiz_Group 並驗證擁有者；不存在回 404、非擁有者回 403。"""
-    group = fetch_quiz_group_row(supabase, quiz_group_id, course_id, cols=cols)
-    if not group:
-        raise HTTPException(status_code=404, detail=f"找不到 quiz_group_id={quiz_group_id} 的 Quiz_Group，或已刪除")
-    if (group.get("person_id") or "").strip() != caller_person_id:
-        raise HTTPException(status_code=403, detail="無權存取該 Quiz_Group")
-    return group
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +297,7 @@ def _put_quiz_group_prompt_field(
     value: str,
 ) -> dict[str, Any]:
     supabase = get_supabase()
-    _require_quiz_group_owner(
+    require_quiz_group_owner(
         supabase, quiz_group_id, course_id, caller_person_id, cols="quiz_group_id, person_id, course_id"
     )
     supabase.table("Quiz_Group").update({
@@ -475,7 +466,7 @@ def update_quiz_group(
     """更新題組快照（僅更新有傳入的欄位）。僅 person_id 一致者可更新。"""
     try:
         supabase = get_supabase()
-        _require_quiz_group_owner(
+        require_quiz_group_owner(
             supabase, quiz_group_id, course_id, caller_person_id, cols="quiz_group_id, person_id, course_id"
         )
 
@@ -517,7 +508,7 @@ def delete_quiz_group(
     """軟刪除題組（僅將此題組 deleted=true，不動其 Quiz_QA）。僅 person_id 一致者可刪除。"""
     try:
         supabase = get_supabase()
-        group = _require_quiz_group_owner(
+        group = require_quiz_group_owner(
             supabase, quiz_group_id, course_id, caller_person_id, cols="quiz_group_id, person_id, course_id"
         )
         ts = now_taipei_iso()

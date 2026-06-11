@@ -58,21 +58,12 @@ from .group_helpers import (
     enqueue_bank_qa_answer_job,
     fetch_bank_unit_in_page,
     groups_by_bank_unit_ids,
+    require_bank_group_owner,
 )
 
 _logger = logging.getLogger("routers.bank")
 
 router = APIRouter(prefix="/bank", tags=["bank"])
-
-
-def _require_group_owner(supabase, bank_group_id: int, course_id: int, caller_person_id: str, *, cols: str = "*") -> dict:
-    """取 Bank_Group 並驗證擁有者；不存在回 404、非擁有者回 403。"""
-    group = _fetch_bank_group_row(supabase, bank_group_id, course_id, cols=cols)
-    if not group:
-        raise HTTPException(status_code=404, detail=f"找不到 bank_group_id={bank_group_id} 的 Bank_Group，或已刪除")
-    if (group.get("person_id") or "").strip() != caller_person_id:
-        raise HTTPException(status_code=403, detail="無權存取該 Bank_Group")
-    return group
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +210,7 @@ def _put_bank_group_prompt_field(
     value: str,
 ) -> dict[str, Any]:
     supabase = get_supabase()
-    _require_group_owner(
+    require_bank_group_owner(
         supabase, bank_group_id, course_id, caller_person_id, cols="bank_group_id, person_id, course_id"
     )
     supabase.table("Bank_Group").update({
@@ -391,7 +382,7 @@ def update_bank_group(
     """
     try:
         supabase = get_supabase()
-        _require_group_owner(
+        require_bank_group_owner(
             supabase, bank_group_id, course_id, caller_person_id, cols="bank_group_id, person_id, course_id"
         )
 
@@ -434,7 +425,7 @@ def mark_bank_group_for_exam(
     """更新 Bank_Group.for_exam（true＝測驗用、false＝取消）。僅 person_id 一致者可更新。"""
     try:
         supabase = get_supabase()
-        _require_group_owner(
+        require_bank_group_owner(
             supabase, bank_group_id, course_id, caller_person_id, cols="bank_group_id, person_id, course_id"
         )
         ts = now_taipei_iso()
@@ -457,7 +448,7 @@ def delete_bank_group(
     """軟刪除題組（僅將此題組 deleted=true，不動其 Bank_QA）。僅 person_id 一致者可刪除。"""
     try:
         supabase = get_supabase()
-        group = _require_group_owner(
+        group = require_bank_group_owner(
             supabase, bank_group_id, course_id, caller_person_id, cols="bank_group_id, person_id, course_id"
         )
         ts = now_taipei_iso()

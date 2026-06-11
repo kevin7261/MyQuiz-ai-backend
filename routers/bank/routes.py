@@ -85,6 +85,24 @@ router = APIRouter(prefix="/bank", tags=["bank"])
 BANK_SELECT_ALL = "*"
 
 
+def _attach_groups_to_units(units: list[dict], course_id) -> None:
+    """為每個 Bank_Unit 掛上 groups（Bank_Group 含其 Bank_QA）；一次查全部 unit 的題組。"""
+    unit_ids: list[int] = []
+    for unit in units:
+        uid = unit.get("bank_unit_id")
+        if uid is not None:
+            try:
+                unit_ids.append(int(uid))
+            except (TypeError, ValueError):
+                pass
+    unit_ids = list(dict.fromkeys(unit_ids))
+    groups_by_unit = groups_by_bank_unit_ids(unit_ids, course_id=course_id)
+    for unit in units:
+        uid = unit.get("bank_unit_id")
+        uid_int = int(uid) if uid is not None else None
+        unit["groups"] = groups_by_unit.get(uid_int, []) if uid_int is not None else []
+
+
 @router.get("/pages", response_model=ListBankResponse)
 def list_bank(
     person_id: PersonId,
@@ -111,18 +129,9 @@ def list_bank(
             r.get("bank_page_id") for r in data if r.get("bank_page_id")
         ))
         units_by_tab = _units_by_bank_page_ids(bank_page_ids, course_id=course_id)
-
-        all_unit_ids: list[int] = []
-        for units in units_by_tab.values():
-            for unit in units:
-                uid = unit.get("bank_unit_id")
-                if uid is not None:
-                    try:
-                        all_unit_ids.append(int(uid))
-                    except (TypeError, ValueError):
-                        pass
-        all_unit_ids = list(dict.fromkeys(all_unit_ids))
-        groups_by_unit = groups_by_bank_unit_ids(all_unit_ids, course_id=course_id)
+        _attach_groups_to_units(
+            [unit for units in units_by_tab.values() for unit in units], course_id
+        )
 
         for row in data:
             page_id = row.get("bank_page_id")
@@ -130,7 +139,6 @@ def list_bank(
             for unit in units:
                 uid = unit.get("bank_unit_id")
                 uid_int = int(uid) if uid is not None else None
-                unit["groups"] = groups_by_unit.get(uid_int, []) if uid_int is not None else []
                 try:
                     utype = int(unit.get("unit_type") or 0)
                 except (TypeError, ValueError):
@@ -523,21 +531,7 @@ def list_bank_units(
 
         units_resp = execute_with_course_id_fallback("Bank_Unit", build_units_query, course_id)
         units = units_resp.data or []
-
-        unit_ids: list[int] = []
-        for u in units:
-            uid = u.get("bank_unit_id")
-            if uid is not None:
-                try:
-                    unit_ids.append(int(uid))
-                except (TypeError, ValueError):
-                    pass
-        unit_ids = list(dict.fromkeys(unit_ids))
-        groups_by_unit = groups_by_bank_unit_ids(unit_ids, course_id=course_id)
-        for unit in units:
-            uid = unit.get("bank_unit_id")
-            uid_int = int(uid) if uid is not None else None
-            unit["groups"] = groups_by_unit.get(uid_int, []) if uid_int is not None else []
+        _attach_groups_to_units(units, course_id)
 
         units = to_json_safe(units)
         return {"units": units, "count": len(units)}
@@ -614,6 +608,97 @@ def _fetch_bank_unit_row_by_id_or_http_error(
     return row
 
 
+def _read_unit_zip_bytes_for_audio(
+    row: dict, owner_pid: str, bank_page_id: str
+) -> tuple[bytes, bool, str | None]:
+    """讀取音訊來源 ZIP：優先單元 repack（Bank_Unit.repack_file_name），失敗改讀該 tab 之 upload ZIP。
+
+    回傳 (zip_bytes, zip_is_unit_repack, repack_err)；兩者皆讀不到時 raise HTTPException（404／400／500）。
+    """
+    zip_bytes: bytes | None = None
+    zip_is_unit_repack = False
+    repack_fn = (row.get("repack_file_name") or "").strip()
+    repack_err: str | None = None
+    if repack_fn:
+        try:
+            zip_bytes = read_repack_zip_bytes(repack_fn)
+            zip_is_unit_repack = True
+        except FileNotFoundError as e:
+            repack_err = str(e)
+        except ValueError as e:
+            repack_err = str(e)
+        except Exception as e:
+            _logger.exception("讀取 repack ZIP 失敗")
+            repack_err = str(e)
+
+    if zip_bytes is None:
+        try:
+            zip_bytes = read_upload_zip_bytes(owner_pid, bank_page_id)
+            zip_is_unit_repack = False
+        except FileNotFoundError as e:
+            detail = str(e)
+            if repack_err:
+                detail = f"{detail}（repack 亦失敗：{repack_err}）"
+            raise HTTPException(status_code=404, detail=detail) from e
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            _logger.exception("讀取 upload ZIP 失敗")
+            raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+
+    return zip_bytes, zip_is_unit_repack, repack_err
+
+
+def _extract_unit_audio_with_fallback(
+    *,
+    row: dict,
+    owner_pid: str,
+    bank_page_id: str,
+    folder_name: str,
+) -> tuple[bytes, str, str]:
+    """取單元音訊（contents, suffix, inner_path）。
+
+    來源 ZIP 由 :func:`_read_unit_zip_bytes_for_audio` 決定（repack 優先、upload 備援）；
+    repack ZIP 內找不到對應音訊時，再改以 upload ZIP 重試一次。錯誤一律轉 HTTPException。
+    """
+    zip_bytes, zip_is_unit_repack, repack_err = _read_unit_zip_bytes_for_audio(
+        row, owner_pid, bank_page_id
+    )
+    from_repack_ok = bool((row.get("repack_file_name") or "").strip()) and repack_err is None
+    try:
+        return pick_audio_from_upload_zip_with_folder_fallback(
+            zip_bytes,
+            folder_name,
+            allow_scan_other_top_folders=zip_is_unit_repack,
+        )
+    except ValueError as e:
+        if not (from_repack_ok and zip_is_unit_repack):
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        try:
+            zip_bytes = read_upload_zip_bytes(owner_pid, bank_page_id)
+        except FileNotFoundError as e2:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{e!s}（repack ZIP 內亦無法對應音訊，且無 upload 可備援：{e2!s}）",
+            ) from e
+        except ValueError as e2:
+            raise HTTPException(status_code=400, detail=f"{e!s}（upload 備援：{e2!s}）") from e
+        except Exception as e2:
+            _logger.exception("讀取 upload ZIP 備援失敗")
+            raise HTTPException(
+                status_code=500,
+                detail=f"{e!s}（upload 備援讀取失敗：{e2!s}）",
+            ) from e
+        try:
+            return pick_audio_from_upload_zip_with_folder_fallback(
+                zip_bytes,
+                folder_name,
+                allow_scan_other_top_folders=False,
+            )
+        except ValueError as e3:
+            raise HTTPException(status_code=400, detail=str(e3)) from e
+
+
 @router.get(
     "/units/{bank_unit_id}/mp3-file",
     summary="Bank Tab Unit Mp3 File",
@@ -652,71 +737,12 @@ def bank_tab_unit_mp3_file(
             detail="Bank_Unit.folder_combination 與 unit_name 皆為空，無法對應 repack／upload ZIP 內單元路徑",
         )
 
-    zip_bytes: bytes | None = None
-    zip_is_unit_repack = False
-    repack_fn = (row.get("repack_file_name") or "").strip()
-    repack_err: str | None = None
-    if repack_fn:
-        try:
-            zip_bytes = read_repack_zip_bytes(repack_fn)
-            zip_is_unit_repack = True
-        except FileNotFoundError as e:
-            repack_err = str(e)
-        except ValueError as e:
-            repack_err = str(e)
-        except Exception as e:
-            _logger.exception("讀取 repack ZIP 失敗")
-            repack_err = str(e)
-
-    if zip_bytes is None:
-        try:
-            zip_bytes = read_upload_zip_bytes(owner_pid, bank_page_id)
-            zip_is_unit_repack = False
-        except FileNotFoundError as e:
-            detail = str(e)
-            if repack_err:
-                detail = f"{detail}（repack 亦失敗：{repack_err}）"
-            raise HTTPException(status_code=404, detail=detail) from e
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-        except Exception as e:
-            _logger.exception("讀取 upload ZIP 失敗")
-            raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
-
-    from_repack_ok = bool(repack_fn) and repack_err is None
-    try:
-        contents, suffix, inner_path = pick_audio_from_upload_zip_with_folder_fallback(
-            zip_bytes,
-            folder_name,
-            allow_scan_other_top_folders=zip_is_unit_repack,
-        )
-    except ValueError as e:
-        if from_repack_ok and zip_is_unit_repack:
-            try:
-                zip_bytes = read_upload_zip_bytes(owner_pid, bank_page_id)
-            except FileNotFoundError as e2:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{e!s}（repack ZIP 內亦無法對應音訊，且無 upload 可備援：{e2!s}）",
-                ) from e
-            except ValueError as e2:
-                raise HTTPException(status_code=400, detail=f"{e!s}（upload 備援：{e2!s}）") from e
-            except Exception as e2:
-                _logger.exception("讀取 upload ZIP 備援失敗")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"{e!s}（upload 備援讀取失敗：{e2!s}）",
-                ) from e
-            try:
-                contents, suffix, inner_path = pick_audio_from_upload_zip_with_folder_fallback(
-                    zip_bytes,
-                    folder_name,
-                    allow_scan_other_top_folders=False,
-                )
-            except ValueError as e3:
-                raise HTTPException(status_code=400, detail=str(e3)) from e
-        else:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+    contents, suffix, inner_path = _extract_unit_audio_with_fallback(
+        row=row,
+        owner_pid=owner_pid,
+        bank_page_id=bank_page_id,
+        folder_name=folder_name,
+    )
 
     media = audio_media_type_for_suffix(suffix)
     disp_name = Path(inner_path).name
