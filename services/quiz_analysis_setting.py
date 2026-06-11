@@ -3,8 +3,8 @@ Quiz 模組弱點分析結果列資料存取（User_Analysis、Quiz_Analysis）�
 
 User_Analysis：個人弱點分析（基於 Quiz_QA，依 person_id + course_id 範圍）。
   - 定位等同 Person_Analysis 之於 Exam_Quiz。
-Quiz_Analysis：測驗作答分析（基於 Quiz_QA，依 quiz_page_id 範圍，全體學生）。
-  - 定位等同 Course_Analysis 之於 Exam_Quiz，但範圍為單份試卷。
+Quiz_Analysis：測驗課程分析（基於 Quiz_QA，依 course_id 範圍，全體學生）。
+  - 定位等同 Course_Analysis 之於 Exam_Quiz。
 
 分析規則（教師指令）存於 Course_Setting：
   - user_analysis_user_prompt_text
@@ -212,7 +212,7 @@ def save_user_analysis_result(
 
 QUIZ_ANALYSIS_TABLE = "Quiz_Analysis"
 QUIZ_ANALYSIS_COLUMNS = (
-    "quiz_analysis_id, person_id, quiz_page_id, course_id, analysis_name, "
+    "quiz_analysis_id, person_id, course_id, analysis_name, "
     "analysis_prompt_text, analysis_text, deleted, updated_at, created_at"
 )
 
@@ -251,22 +251,19 @@ def fetch_quiz_analysis_user_prompt_for_llm(course_id: int | str) -> str:
     )
 
 
-def fetch_quiz_analyses_by_quiz_page(
-    quiz_page_id: str,
+def fetch_quiz_analyses_by_course(
+    course_id: int | str,
 ) -> list[dict[str, Any]]:
     """
-    讀取特定試卷所有 Quiz_Analysis 結果列（analysis_text 非 null，deleted=false），
+    讀取課程所有 Quiz_Analysis 結果列（analysis_text 非 null，deleted=false），
     依 quiz_analysis_id 升冪。
     """
-    page_id = _str(quiz_page_id)
-    if not page_id:
-        return []
     try:
         supabase = get_supabase()
         resp = (
             supabase.table(QUIZ_ANALYSIS_TABLE)
             .select(QUIZ_ANALYSIS_COLUMNS)
-            .eq("quiz_page_id", page_id)
+            .eq("course_id", int(course_id))
             .eq("deleted", False)
             .not_.is_("analysis_text", "null")
             .order("quiz_analysis_id", desc=False)
@@ -275,7 +272,7 @@ def fetch_quiz_analyses_by_quiz_page(
         return resp.data or []
     except Exception:
         logger.exception(
-            "fetch_quiz_analyses_by_quiz_page failed quiz_page_id=%s", quiz_page_id
+            "fetch_quiz_analyses_by_course failed course_id=%s", course_id
         )
         return []
 
@@ -303,7 +300,6 @@ def fetch_quiz_analysis_row(quiz_analysis_id: int) -> Optional[dict[str, Any]]:
 
 def add_quiz_analysis_row(
     caller_person_id: str,
-    quiz_page_id: str,
     course_id: int | str,
     analysis_name: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
@@ -312,15 +308,10 @@ def add_quiz_analysis_row(
     if not pid:
         logger.error("Quiz_Analysis add rejected: empty caller person_id")
         return None
-    page_id = _str(quiz_page_id)
-    if not page_id:
-        logger.error("Quiz_Analysis add rejected: empty quiz_page_id")
-        return None
     try:
         supabase = get_supabase()
         payload = {
             "person_id": pid,
-            "quiz_page_id": page_id,
             "course_id": int(course_id),
             "analysis_name": _str(analysis_name),
             "analysis_text": "",
@@ -329,14 +320,10 @@ def add_quiz_analysis_row(
         resp = supabase.table(QUIZ_ANALYSIS_TABLE).insert(payload).execute()
         if resp.data:
             return resp.data[0]
-        logger.error(
-            "Quiz_Analysis insert returned no data person_id=%s quiz_page_id=%s",
-            pid,
-            page_id,
-        )
+        logger.error("Quiz_Analysis insert returned no data person_id=%s", pid)
     except Exception:
         logger.exception(
-            "Quiz_Analysis add failed person_id=%s quiz_page_id=%s", pid, page_id
+            "Quiz_Analysis add failed person_id=%s course_id=%s", pid, course_id
         )
     return None
 

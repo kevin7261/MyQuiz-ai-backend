@@ -68,22 +68,17 @@ def quiz_qas_by_person_id(
         return []
 
 
-def quiz_qas_by_quiz_page_id(
-    quiz_page_id: str,
-) -> list[dict[str, Any]]:
+def quiz_qas_by_course_id(course_id: int | str) -> list[dict[str, Any]]:
     """
-    取得特定試卷所有學生的 Quiz_QA（deleted=false，依 person_id 再依 quiz_qa_id 升冪，正規化後）。
-    用於 quiz_analysis（測驗作答分析）彙整全體學生答題狀況。
+    取得課程內所有學生的 Quiz_QA（deleted=false，依 person_id 再依 quiz_qa_id 升冪，正規化後）。
+    用於 quiz_analysis（整門課程測驗作答分析）彙整全體學生答題狀況。
     """
-    page_id = (quiz_page_id or "").strip()
-    if not page_id:
-        return []
     try:
         supabase = get_supabase()
         resp = (
             supabase.table(QUIZ_QA_TABLE)
             .select(QUIZ_QA_SELECT_COLUMNS)
-            .eq("quiz_page_id", page_id)
+            .eq("course_id", int(course_id))
             .eq("deleted", False)
             .order("person_id", desc=False)
             .order("quiz_qa_id", desc=False)
@@ -91,9 +86,7 @@ def quiz_qas_by_quiz_page_id(
         )
         return [normalize_quiz_qa(row) for row in resp.data or []]
     except Exception:
-        logger.exception(
-            "quiz_qas_by_quiz_page_id failed quiz_page_id=%s", quiz_page_id
-        )
+        logger.exception("quiz_qas_by_course_id failed course_id=%s", course_id)
         return []
 
 
