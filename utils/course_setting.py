@@ -29,10 +29,6 @@ COURSE_SETTING_BANK_ANSWER_USER_PROMPT_TEXT = "bank_answer_user_prompt_text"
 COURSE_SETTING_QUIZ_QUESTION_SYSTEM_PROMPT_TEXT = "quiz_question_system_prompt_text"
 COURSE_SETTING_QUIZ_QUESTION_USER_PROMPT_TEXT = "quiz_question_user_prompt_text"
 COURSE_SETTING_QUIZ_ANSWER_USER_PROMPT_TEXT = "quiz_answer_user_prompt_text"
-# Quiz 個人弱點分析／測驗作答分析指令（User_Analysis、Quiz_Analysis 共用教師設定欄）
-COURSE_SETTING_USER_ANALYSIS_USER_PROMPT_TEXT_KEY = "user_analysis_user_prompt_text"
-COURSE_SETTING_QUIZ_ANALYSIS_USER_PROMPT_TEXT_KEY = "quiz_analysis_user_prompt_text"
-
 DEFAULT_QUESTION_SYSTEM_PROMPT_TEXT = "請連續出題，題目越來越深入且彼此不重複。"
 DEFAULT_QUESTION_USER_PROMPT_TEXT = "請就課程內容出一道問答題。"
 DEFAULT_ANSWER_USER_PROMPT_TEXT = "請依參考答案批改，指出學生答得不足之處。"

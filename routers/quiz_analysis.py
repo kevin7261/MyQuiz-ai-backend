@@ -9,8 +9,7 @@
 
 對齊「一列一 page、按 id 操作」模式：
 - 一列＝一筆分析紀錄；POST 新增、PATCH 改名、DELETE 刪除、POST /{id}/llm-analysis 寫入報告。
-- 分析規則存 Course_Setting（GET/PUT /quiz-analyses/quiz-analysis-user-prompt-text；key=quiz_analysis_user_prompt_text）；
-  結果列的 analysis_prompt_text 僅為產生報告當下的規則快照。
+- 不支援自訂分析指令（無 Course_Setting 預存、llm-analysis 亦無 body）；LLM 僅依作答資料分析。
 - person_id 一律為呼叫 API 的登入帳號（建立者／教師）。
 """
 
@@ -28,7 +27,6 @@ from services.quiz_analysis_setting import (
     add_quiz_analysis_row,
     fetch_quiz_analyses_by_course,
     fetch_quiz_analysis_row,
-    fetch_quiz_analysis_user_prompt_for_llm,
     save_quiz_analysis_result,
     soft_delete_quiz_analysis,
     update_quiz_analysis_name,
@@ -38,16 +36,9 @@ from services.weakness_report import generate_weakness_report_md, quiz_has_answe
 from utils.openapi import openapi_body
 from utils.quiz_llm_key import get_quiz_api_key, get_quiz_llm_model
 from utils.serialization import to_json_safe
-from routers.quiz_module_analysis_prompts import register_quiz_analysis_prompt_routes
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/quiz-analyses", tags=["quiz analysis"])
-register_quiz_analysis_prompt_routes(
-    router,
-    get_operation_id="quiz_analyses_get_quiz_analysis_user_prompt_text",
-    put_operation_id="quiz_analyses_put_quiz_analysis_user_prompt_text",
-)
 
 ANALYSIS_LABEL_QUIZ = "測驗課程分析"
 
@@ -68,14 +59,6 @@ class QuizAnalysisListItem(BaseModel):
     course_id: Optional[int] = None
     analysis_name: Optional[str] = Field(
         default=None, description="分析名稱（DB 欄位 analysis_name）"
-    )
-    analysis_user_prompt_text: Optional[str] = Field(
-        default=None,
-        description="教師分析指令（對應 Course_Setting key=quiz_analysis_user_prompt_text）",
-    )
-    analysis_prompt_text: Optional[str] = Field(
-        default=None,
-        description="產生報告當下的規則快照（DB 欄位 analysis_prompt_text）",
     )
     analysis_text: Optional[str] = Field(
         default=None, description="分析報告 Markdown"
@@ -178,8 +161,6 @@ def list_quiz_analyses(person_id: PersonId, course_id: CourseId):
                 person_id=row.get("person_id"),
                 course_id=row.get("course_id"),
                 analysis_name=row.get("analysis_name"),
-                analysis_user_prompt_text=row.get("analysis_prompt_text"),
-                analysis_prompt_text=row.get("analysis_prompt_text"),
                 analysis_text=row.get("analysis_text"),
                 quizzes=course_quizzes,
                 created_at=row.get("created_at"),
@@ -313,7 +294,7 @@ def quiz_llm_analysis(
 ):
     """
     必填 query `person_id`（呼叫者）、`course_id`；path 帶 `quiz_analysis_id`（目標列）。
-    彙整課程內所有學生的 Quiz_QA 作答紀錄，使用 LLM 產生測驗課程分析報告並寫入指定 Quiz_Analysis 列。
+    不支援自訂分析指令；彙整課程內所有學生的 Quiz_QA 作答紀錄，使用 LLM 產生測驗課程分析報告並寫入指定 Quiz_Analysis 列。
     API Key 使用 Course_Setting key=quiz-api-key；模型使用 key=quiz-llm-model。
     """
     try:
@@ -350,22 +331,17 @@ def quiz_llm_analysis(
                 "（Course_Setting key=quiz-api-key，依 course_id）"
             )
         elif not llm_error:
-            setting_prompt = fetch_quiz_analysis_user_prompt_for_llm(course_id)
             weakness_report, _, llm_err = generate_weakness_report_md(
                 to_json_safe(qas_with_answers),
                 api_key,
-                setting_prompt,
+                "",
                 analysis_label=ANALYSIS_LABEL_QUIZ,
                 llm_model=analysis_llm_model,
             )
             if llm_err:
                 llm_error = llm_err
             if weakness_report:
-                saved = save_quiz_analysis_result(
-                    quiz_analysis_id,
-                    weakness_report,
-                    analysis_prompt_text=setting_prompt,
-                )
+                saved = save_quiz_analysis_result(quiz_analysis_id, weakness_report)
                 if not saved:
                     logger.error(
                         "quiz_llm_analysis: LLM ok but Quiz_Analysis update failed "

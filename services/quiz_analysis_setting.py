@@ -6,9 +6,8 @@ User_Analysis：個人弱點分析（基於 Quiz_QA，依 person_id + course_id 
 Quiz_Analysis：測驗課程分析（基於 Quiz_QA，依 course_id 範圍，全體學生）。
   - 定位等同 Course_Analysis 之於 Exam_Quiz。
 
-分析規則（教師指令）存於 Course_Setting：
-  - user_analysis_user_prompt_text
-  - quiz_analysis_user_prompt_text
+User_Analysis：分析指令由 POST llm-analysis 的 body 傳入；analysis_prompt_text 為該次快照。
+Quiz_Analysis：不支援自訂分析指令；analysis_prompt_text 不使用。
 """
 
 from __future__ import annotations
@@ -16,12 +15,6 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from services.analysis_setting import resolve_login_person_id
-from utils.course_setting import (
-    COURSE_SETTING_QUIZ_ANALYSIS_USER_PROMPT_TEXT_KEY,
-    COURSE_SETTING_USER_ANALYSIS_USER_PROMPT_TEXT_KEY,
-    fetch_course_setting_text,
-)
 from utils.supabase import get_supabase
 from utils.taipei_time import now_taipei_iso
 
@@ -67,13 +60,6 @@ def _update_user_analysis_row(
             "User_Analysis update failed user_analysis_id=%s", user_analysis_id
         )
     return None
-
-
-def fetch_user_analysis_user_prompt_for_llm(course_id: int | str) -> str:
-    """LLM 用教師指令（Course_Setting key=user_analysis_user_prompt_text）。"""
-    return fetch_course_setting_text(
-        COURSE_SETTING_USER_ANALYSIS_USER_PROMPT_TEXT_KEY, int(course_id)
-    )
 
 
 def fetch_user_analyses_by_person(
@@ -242,13 +228,6 @@ def _update_quiz_analysis_row(
             "Quiz_Analysis update failed quiz_analysis_id=%s", quiz_analysis_id
         )
     return None
-
-
-def fetch_quiz_analysis_user_prompt_for_llm(course_id: int | str) -> str:
-    """LLM 用教師指令（Course_Setting key=quiz_analysis_user_prompt_text）。"""
-    return fetch_course_setting_text(
-        COURSE_SETTING_QUIZ_ANALYSIS_USER_PROMPT_TEXT_KEY, int(course_id)
-    )
 
 
 def fetch_quiz_analyses_by_course(

@@ -18,7 +18,6 @@ from utils.quiz_llm_key import (
     quiz_api_key_exists,
 )
 from routers.llm_settings import build_llm_settings_router
-from routers.quiz_module_analysis_prompts import register_quiz_module_analysis_prompt_routes
 
 router = build_llm_settings_router(
     prefix="quiz",
@@ -33,4 +32,3 @@ router = build_llm_settings_router(
     fetch_api_key_setting_row=fetch_quiz_api_key_setting_row,
     fetch_llm_model_setting_row=fetch_quiz_llm_model_setting_row,
 )
-register_quiz_module_analysis_prompt_routes(router)

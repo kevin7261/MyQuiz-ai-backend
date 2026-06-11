@@ -144,7 +144,7 @@ CREATE TABLE public."User_Analysis" (
   person_id            varchar(255) null default ''::character varying,
   course_id            bigint null default '0'::bigint,
   analysis_name        varchar(255) null default ''::character varying,
-  -- 產生報告當下的教師指令快照（Course_Setting key=user_analysis_user_prompt_text）
+  -- 產生報告當下使用者於 llm-analysis body 輸入的指令快照
   analysis_prompt_text text null,
   -- LLM 產生之弱點報告 Markdown；POST /add 先建空字串、llm-analysis 後寫入
   analysis_text        text null,
@@ -168,7 +168,7 @@ CREATE TABLE public."Quiz_Analysis" (
   person_id            varchar(255) null default ''::character varying,
   course_id            bigint null default '0'::bigint,
   analysis_name        varchar(255) null default ''::character varying,
-  -- 產生報告當下的教師指令快照（Course_Setting key=quiz_analysis_user_prompt_text）
+  -- 保留欄位；quiz-analyses 不支援自訂分析指令，程式不寫入
   analysis_prompt_text text null,
   -- LLM 產生之分析報告 Markdown；POST /add 先建空字串、llm-analysis 後寫入
   analysis_text        text null,
