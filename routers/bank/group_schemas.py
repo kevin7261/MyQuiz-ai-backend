@@ -32,9 +32,9 @@ class CreateBankGroupRequest(BaseModel):
         "", description="連續出題的規定（織入出題 system prompt，最高優先；如越來越難、勿重複）"
     )
     question_user_prompt_text: str = Field("", description="出題規定（出題 user prompt）")
-    question_llm_model: str = Field("", description="出題 LLM 模型；空則用課程 llm-model 設定")
+    question_llm_model: str = Field("", description="出題 LLM 模型；空則用課程 bank-llm-model 設定")
     answer_user_prompt_text: str = Field("", description="批改規定（批改 user prompt）")
-    answer_llm_model: str = Field("", description="批改 LLM 模型；空則用課程 llm-model 設定")
+    answer_llm_model: str = Field("", description="批改 LLM 模型；空則用課程 bank-llm-model 設定")
     for_exam: bool = Field(False, description="是否標記為測驗用")
 
 
