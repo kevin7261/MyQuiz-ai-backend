@@ -71,8 +71,6 @@ def quiz_has_answer(quiz: dict) -> bool:
     """有作答、評語或已標記 quiz_rate（±1）才納入弱點分析。"""
     if (quiz.get("answer_content") or "").strip():
         return True
-    if (quiz.get("quiz_answer") or "").strip():
-        return True
     if quiz.get("answer_critique"):
         return True
     rate = quiz.get("quiz_rate")
@@ -95,14 +93,6 @@ def analysis_prompt_templates(analysis_label: str) -> dict[str, str]:
     return {
         "system": _system_prompt_weakness_report(analysis_label),
         "user": _user_prompt_weakness_report(analysis_label),
-    }
-
-
-def _synthetic_answer_from_quiz(quiz: dict) -> dict:
-    return {
-        "exam_quiz_id": quiz.get("exam_quiz_id"),
-        "quiz_answer": quiz.get("answer_content"),
-        "answer_critique": quiz.get("answer_critique"),
     }
 
 
@@ -157,8 +147,8 @@ def _feedback_lines_from_metadata_dict(data: dict) -> list[str]:
 def _collect_weaknesses_from_quizzes(quizzes: list[dict]) -> list[str]:
     all_weaknesses: list[str] = []
     for quiz in quizzes or []:
-        ans = _synthetic_answer_from_quiz(quiz)
-        meta = _metadata_for_weaknesses(ans)
+        # 弱點來源僅 answer_critique；quiz 列已含該欄位，直接取用。
+        meta = _metadata_for_weaknesses(quiz)
         if not meta or not isinstance(meta, dict):
             continue
         all_weaknesses.extend(_feedback_lines_from_metadata_dict(meta))
@@ -245,14 +235,6 @@ def build_weakness_report_prompts(
     return system_content, user_content
 
 
-def serialize_weakness_report_llm_prompt(system_content: str, user_content: str) -> str:
-    """將 system／user 訊息序列化為 JSON 字串（僅供除錯／日後擴充，不寫入 DB analysis_prompt_text）。"""
-    return json.dumps(
-        {"system": system_content, "user": user_content},
-        ensure_ascii=False,
-    )
-
-
 def generate_weakness_report_md(
     quizzes: list[dict],
     api_key: str,
@@ -260,11 +242,11 @@ def generate_weakness_report_md(
     *,
     analysis_label: str,
     llm_model: str | None = None,
-) -> tuple[Optional[str], Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str]]:
     """
     呼叫 LLM 產生弱點報告 Markdown。
     analysis_label：個人分析、課程分析（對應 user prompt 區段標題與 system 說明）。
-    回傳 (analysis_text, llm_prompt_json, llm_error)；失敗或無素材時 analysis_text 為 None，llm_error 說明原因。
+    回傳 (analysis_text, llm_error)；失敗或無素材時 analysis_text 為 None，llm_error 說明原因。
     DB 的 analysis_prompt_text 僅存教師指令（對應 answer_user_prompt_text）；完整 LLM prompt 模板在程式碼中組裝。
     """
     built = build_weakness_report_prompts(
@@ -274,10 +256,9 @@ def generate_weakness_report_md(
     )
     if not built:
         if not (quizzes or []):
-            return None, None, "無已作答或已評級題目，無法產生弱點報告"
-        return None, None, "無可分析素材，無法產生弱點報告"
+            return None, "無已作答或已評級題目，無法產生弱點報告"
+        return None, "無可分析素材，無法產生弱點報告"
     system_content, user_content = built
-    prompt_text = serialize_weakness_report_llm_prompt(system_content, user_content)
     client = OpenAI(api_key=api_key)
     try:
         r = client.chat.completions.create(
@@ -290,9 +271,9 @@ def generate_weakness_report_md(
         )
         msg = r.choices[0].message
         if msg is None or not (msg.content or "").strip():
-            return None, prompt_text, "LLM 回傳內容為空"
-        return msg.content, prompt_text, None
+            return None, "LLM 回傳內容為空"
+        return msg.content, None
     except Exception as e:
         if is_llm_call_error(e):
-            return None, prompt_text, format_llm_error(e)
-        return None, prompt_text, str(e) or "弱點分析 LLM 呼叫失敗"
+            return None, format_llm_error(e)
+        return None, str(e) or "弱點分析 LLM 呼叫失敗"

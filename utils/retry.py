@@ -26,6 +26,8 @@ def call_with_transient_http_retry(
     base_delay_sec: float = 0.08,
 ) -> T:
     """執行 fn；若為暫時性讀寫／連線錯誤則指數退避重試。"""
+    if attempts < 1:
+        raise ValueError(f"attempts 必須 >= 1（傳入 {attempts}）")
     last: BaseException | None = None
     for i in range(attempts):
         try:

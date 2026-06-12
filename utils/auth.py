@@ -4,7 +4,8 @@ Bearer token 簽發與驗證（HMAC-SHA256 自簽 token，無外部依賴）。
 - POST /v1/auth/login 成功後簽發 access_token
 - dependencies.person_id 於每次請求驗證 Authorization: Bearer <token>
 - 密鑰來源：env AUTH_TOKEN_SECRET（建議於 .env／部署平台設定）；
-  未設定時退回 SUPABASE_SERVICE_ROLE_KEY 衍生值（開發環境方便用）。
+  未設定時退回 SUPABASE_SERVICE_ROLE_KEY 衍生值。兩者皆未設定時 fail-closed
+  （直接 raise，不再退回寫死的開發密鑰，避免正式環境漏設時可被已知密鑰偽造 token）。
 
 token 格式：base64url(JSON payload).base64url(HMAC-SHA256 簽章)
 payload：{"sub": person_id, "iat": 簽發時間, "exp": 到期時間}
@@ -16,12 +17,9 @@ import base64
 import hashlib
 import hmac
 import json
-import logging
 import os
 import time
 from typing import Optional
-
-logger = logging.getLogger(__name__)
 
 AUTH_TOKEN_SECRET_ENV = "AUTH_TOKEN_SECRET"
 # 預設 30 天；可用 env AUTH_TOKEN_TTL_SECONDS 覆寫
@@ -33,11 +31,12 @@ def _secret() -> bytes:
     if not s:
         s = (os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     if not s:
-        logger.warning(
-            "AUTH_TOKEN_SECRET 與 SUPABASE_SERVICE_ROLE_KEY 皆未設定，"
-            "使用內建開發密鑰（請勿用於正式環境）"
+        # fail-closed：過去退回寫死的開發密鑰，正式環境若漏設兩個 env，
+        # 任何人都能用該已知密鑰自簽 token 繞過認證。改為直接拒絕簽發／驗證。
+        raise RuntimeError(
+            "未設定 AUTH_TOKEN_SECRET 或 SUPABASE_SERVICE_ROLE_KEY，無法簽發／驗證 token。"
+            "請於環境變數設定 AUTH_TOKEN_SECRET（建議）或 SUPABASE_SERVICE_ROLE_KEY。"
         )
-        s = "myquiz-ai-dev-only-secret"
     return hashlib.sha256(s.encode("utf-8")).digest()
 
 

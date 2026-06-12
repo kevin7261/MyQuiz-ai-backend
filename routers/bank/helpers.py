@@ -686,10 +686,33 @@ def _persist_rag_build_metadata(body: PackRequest, pid: str, course_id: int, res
         if output.get("rag_error"):
             continue
         unit_row = _bank_unit_row_from_build_output(output, body, pid, course_id)
+        fc = (unit_row.get("folder_combination") or "").strip()
         try:
-            insert_bank_child_row("Bank_Unit", unit_row)
+            # 去重：同一 tab 重跑 build-zip（補建、改 chunk size）時，若同
+            # bank_page_id + folder_combination 的未刪除單元已存在，改用 UPDATE，
+            # 否則每次都 insert 會在 list_bank 產生重複單元。
+            existing = (
+                supabase.table("Bank_Unit")
+                .select("bank_unit_id")
+                .eq("bank_page_id", body.bank_page_id)
+                .eq("person_id", pid)
+                .eq("course_id", course_id)
+                .eq("folder_combination", fc)
+                .eq("deleted", False)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                uid = existing.data[0].get("bank_unit_id")
+                update_fields = {k: v for k, v in unit_row.items() if k != "created_at"}
+                update_fields["updated_at"] = ts
+                supabase.table("Bank_Unit").update(update_fields).eq("bank_unit_id", uid).execute()
+            else:
+                insert_bank_child_row("Bank_Unit", unit_row)
         except Exception:
-            pass
+            _logger.warning(
+                "寫入 Bank_Unit 失敗 bank_page_id=%s folder=%s", body.bank_page_id, fc, exc_info=True
+            )
 
 
 def _create_bank_record(

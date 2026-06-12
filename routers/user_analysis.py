@@ -380,7 +380,7 @@ def user_llm_analysis(
             )
         elif not llm_error:
             setting_prompt = fetch_user_analysis_user_prompt_for_llm(course_id)
-            weakness_report, _, llm_err = generate_weakness_report_md(
+            weakness_report, llm_err = generate_weakness_report_md(
                 to_json_safe(qas_with_answers),
                 api_key,
                 setting_prompt,

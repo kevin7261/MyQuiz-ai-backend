@@ -332,7 +332,7 @@ def course_llm_analysis(
             llm_error = "未設定 API Key：PUT /v1/course-analyses/llm-api-key（Course_Setting key=course-analysis-api-key，依 course_id）"
         elif not llm_error:
             setting_prompt = fetch_course_analysis_user_prompt_for_llm(course_id)
-            weakness_report, _, llm_err = generate_weakness_report_md(
+            weakness_report, llm_err = generate_weakness_report_md(
                 to_json_safe(quizzes_with_answers),
                 api_key,
                 setting_prompt,

@@ -81,9 +81,9 @@ def register_analysis_llm_api_key_routes(
         response_model=AnalysisApiKeyExistsResponse,
         summary="Get llm_api_key exists",
         operation_id=f"{operation_id_prefix}_llm_api_key_exists",
+        description=f"查詢 {title} LLM API Key 是否已設定（Course_Setting key={setting_key}）；不回傳 key 內容。",
     )
     def get_analysis_api_key_exists(person_id: PersonId, course_id: CourseId):
-        f"""查詢 {title} LLM API Key 是否已設定（Course_Setting key={setting_key}）；不回傳 key 內容。"""
         _require_active_person(person_id)
         return AnalysisApiKeyExistsResponse(
             course_id=int(course_id),
@@ -95,9 +95,9 @@ def register_analysis_llm_api_key_routes(
         response_model=AnalysisApiKeyResponse,
         summary="Get llm_api_key",
         operation_id=f"{operation_id_prefix}_get_llm_api_key",
+        description=f"讀取 {title} LLM API Key（Course_Setting key={setting_key}，依 course_id）。",
     )
     def get_analysis_api_key_setting(person_id: PersonId, course_id: CourseId):
-        f"""讀取 {title} LLM API Key（Course_Setting key={setting_key}，依 course_id）。"""
         _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
         row = fetch_api_key_setting_row(setting_key, course_id)
         if not row:
@@ -114,13 +114,13 @@ def register_analysis_llm_api_key_routes(
         response_model=AnalysisApiKeyResponse,
         summary="Put llm_api_key",
         operation_id=f"{operation_id_prefix}_put_llm_api_key",
+        description=f"寫入 {title} LLM API Key（Course_Setting key={setting_key}，依 course_id）。",
     )
     def put_analysis_api_key_setting(
         body: openapi_body(PutAnalysisApiKeyRequest, {"api_key": "sk-..."}),
         person_id: PersonId,
         course_id: CourseId,
     ):
-        f"""寫入 {title} LLM API Key（Course_Setting key={setting_key}，依 course_id）。"""
         _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
         value_to_save = (body.api_key or "").strip()
         try:
@@ -159,9 +159,9 @@ def register_analysis_llm_model_routes(
         response_model=AnalysisLlmModelResponse,
         summary="Get llm_model",
         operation_id=f"{operation_id_prefix}_get_llm_model",
+        description=f"讀取 {title} LLM 模型（Course_Setting key={setting_key}，依 course_id）。",
     )
     def get_analysis_llm_model_setting(person_id: PersonId, course_id: CourseId):
-        f"""讀取 {title} LLM 模型（Course_Setting key={setting_key}，依 course_id）。"""
         _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
         row = fetch_llm_model_setting_row(int(course_id))
         if not row:
@@ -178,13 +178,13 @@ def register_analysis_llm_model_routes(
         response_model=AnalysisLlmModelResponse,
         summary="Put llm_model",
         operation_id=f"{operation_id_prefix}_put_llm_model",
+        description=f"寫入 {title} LLM 模型（Course_Setting key={setting_key}，依 course_id）。",
     )
     def put_analysis_llm_model_setting(
         body: openapi_body(PutAnalysisLlmModelRequest, {"llm_model": "gpt-5.4"}),
         person_id: PersonId,
         course_id: CourseId,
     ):
-        f"""寫入 {title} LLM 模型（Course_Setting key={setting_key}，依 course_id）。"""
         _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
         value_to_save = (body.llm_model or "").strip()
         try:
@@ -222,9 +222,9 @@ def register_analysis_user_prompt_routes(
         response_model=AnalysisUserPromptTextResponse,
         summary="Get analysis_user_prompt_text",
         operation_id=f"{operation_id_prefix}_get_analysis_user_prompt_text",
+        description=f"讀取分析指令（Course_Setting key={setting_key}，依 course_id）。",
     )
     def get_analysis_user_prompt_text(person_id: PersonId, course_id: CourseId):
-        f"""讀取分析指令（Course_Setting key={setting_key}，依 course_id）。"""
         _require_active_person(person_id)
         try:
             text = fetch_course_setting_text(setting_key, course_id)
@@ -242,6 +242,7 @@ def register_analysis_user_prompt_routes(
         response_model=AnalysisUserPromptTextResponse,
         summary="Update analysis_user_prompt_text",
         operation_id=f"{operation_id_prefix}_put_analysis_user_prompt_text",
+        description=f"寫入分析指令至 Course_Setting（key={setting_key}，依 course_id upsert；傳空字串可清除）。",
     )
     def put_analysis_user_prompt_text(
         body: openapi_body(
@@ -251,7 +252,6 @@ def register_analysis_user_prompt_routes(
         person_id: PersonId,
         course_id: CourseId,
     ):
-        f"""寫入分析指令至 Course_Setting（key={setting_key}，依 course_id upsert；傳空字串可清除）。"""
         _require_developer_or_manager_for_analysis_prompt_write(person_id, course_id)
         value_to_save = (body.analysis_user_prompt_text or "").strip()
         try:

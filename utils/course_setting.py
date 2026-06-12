@@ -144,18 +144,31 @@ def upsert_course_setting_and_get_row(
     )
     if resp.data and len(resp.data) > 0:
         row_id = resp.data[0].get("course_setting_id")
-        supabase.table(COURSE_SETTING_TABLE).update({
+        written = supabase.table(COURSE_SETTING_TABLE).update({
             "value": value,
             "updated_at": now,
         }).eq("course_setting_id", row_id).execute()
+        if not getattr(written, "data", None):
+            # PostgREST update 預設回傳受影響的列；data 為空代表沒寫進去
+            # （常見：未設定 SUPABASE_SERVICE_ROLE_KEY 而以 anon 遭 RLS 擋）。
+            # 過去吞掉此情況、靠下方重讀回舊值，使呼叫端誤判為寫入成功。改為明確失敗。
+            raise RuntimeError(
+                f"更新 Course_Setting 失敗（key={key}, course_id={course_id}）："
+                "未影響任何列，可能遭 RLS 擋或 service_role key 未設定"
+            )
     else:
-        supabase.table(COURSE_SETTING_TABLE).insert({
+        written = supabase.table(COURSE_SETTING_TABLE).insert({
             "course_id": course_id,
             "key": key,
             "value": value,
             "updated_at": now,
             "created_at": now,
         }).execute()
+        if not getattr(written, "data", None):
+            raise RuntimeError(
+                f"新增 Course_Setting 失敗（key={key}, course_id={course_id}）："
+                "未回傳任何列，可能遭 RLS 擋或 service_role key 未設定"
+            )
     resp2 = (
         supabase.table(COURSE_SETTING_TABLE)
         .select(COURSE_SETTING_COLUMNS)

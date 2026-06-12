@@ -407,7 +407,6 @@ def infer_unit_type_when_unspecified(declared_unit_type: int, zip_bytes: bytes) 
                     return 3
             if aud:
                 return 0
-            text_rows = _transcript_text_members_in_zip(z)
             if len(text_rows) != 1:
                 return 0
             raw, dec = text_rows[0]
