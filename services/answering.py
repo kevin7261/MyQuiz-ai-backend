@@ -536,17 +536,13 @@ def run_answer_job_background(
             _logger.warning("批改 LLM 已完成但寫入答案表失敗 job_id=%s：%s", job_id, err_detail)
             results_store[job_id] = {"status": "error", "result": None, "error": err_detail, "llm_error": None}
     except LlmCallError as e:
+        # LLM 批改失敗屬「批改未完成」，與「LLM 完成但寫入 DB 失敗」一致回 status=error，
+        # 避免前端把 status=ready + 空 quiz_comments 誤判為「批改成功但無評語」。
         msg = format_llm_error(e)
-        err_result: dict[str, Any] = {"llm_error": msg, "quiz_comments": []}
-        if rag_quiz_id is not None and rag_quiz_id > 0:
-            err_result["rag_quiz_id"] = rag_quiz_id
-            err_result["rag_answer_id"] = rag_quiz_id
-        if exam_quiz_id is not None and exam_quiz_id > 0:
-            err_result["exam_quiz_id"] = exam_quiz_id
         results_store[job_id] = {
-            "status": "ready",
-            "result": err_result,
-            "error": None,
+            "status": "error",
+            "result": None,
+            "error": msg,
             "llm_error": msg,
         }
         _logger.error("批改 LLM 失敗 job_id=%s: %s", job_id, msg)
