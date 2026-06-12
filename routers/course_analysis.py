@@ -142,7 +142,7 @@ class CourseLlmAnalysisResponse(BaseModel):
     )
     analysis_llm_model: str = Field(
         ...,
-        description="本次弱點分析實際使用的 LLM 模型（Course_Setting key=llm-model）。API Key 為 rag-api-key",
+        description="本次弱點分析實際使用的 LLM 模型（Course_Setting key=llm-model）。API Key 為 course-analysis-api-key",
     )
 
 
@@ -329,7 +329,7 @@ def course_llm_analysis(
             llm_error = "無已作答或已評級題目，無法產生弱點報告（未寫入 Course_Analysis）"
         api_key = get_course_analysis_api_key(course_id)
         if not llm_error and not api_key:
-            llm_error = "未設定 API Key：PUT /v1/rag/llm-api-key（Course_Setting key=rag-api-key，依 course_id）"
+            llm_error = "未設定 API Key：PUT /v1/course-analyses/llm-api-key（Course_Setting key=course-analysis-api-key，依 course_id）"
         elif not llm_error:
             setting_prompt = fetch_course_analysis_user_prompt_for_llm(course_id)
             weakness_report, _, llm_err = generate_weakness_report_md(

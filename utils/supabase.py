@@ -16,6 +16,7 @@ Key 優先順序（use_service_role=True）：
 import functools
 import io
 import os
+import threading
 import warnings
 from typing import TYPE_CHECKING, Optional
 
@@ -29,6 +30,11 @@ _client_anon: Optional["Client"] = None
 # postgrest／storage3 重試 patch 只做一次
 _transient_retry_patched = False
 
+# FastAPI 以 threadpool 跑同步端點：首次並發呼叫若無鎖，會重複建立 client，
+# 並讓兩條執行緒同時跑 monkey-patch 迴圈而把 execute 包成巢狀重試。以鎖序列化建立／patch。
+# get_supabase 持鎖時會呼叫 _patch_...，故用可重入鎖避免自我死鎖。
+_init_lock = threading.RLock()
+
 
 def _patch_supabase_transient_retry() -> None:
     """
@@ -40,6 +46,14 @@ def _patch_supabase_transient_retry() -> None:
     if _transient_retry_patched:
         return
 
+    with _init_lock:
+        if _transient_retry_patched:
+            return
+        _do_patch_supabase_transient_retry()
+        _transient_retry_patched = True
+
+
+def _do_patch_supabase_transient_retry() -> None:
     from postgrest._sync import request_builder as _rb
     from storage3._sync.file_api import SyncBucketActionsMixin as _bucket
 
@@ -53,6 +67,10 @@ def _patch_supabase_transient_retry() -> None:
         _rb.SyncSingleRequestBuilder,
         _rb.SyncExplainRequestBuilder,
     ):
+        # 只包各類別「自有」的 execute；若某類別是繼承父類的 execute（已被包過），
+        # cls.execute 取到的會是包好的版本，再包一次就變巢狀重試，故略過。
+        if "execute" not in cls.__dict__:
+            continue
         original = cls.execute
 
         @functools.wraps(original)
@@ -80,8 +98,6 @@ def _patch_supabase_transient_retry() -> None:
 
     _bucket._request = request_with_retry
 
-    _transient_retry_patched = True
-
 
 def get_supabase(use_service_role: bool = True):
     """
@@ -92,14 +108,28 @@ def get_supabase(use_service_role: bool = True):
     """
     global _client_service, _client_anon
 
-    if use_service_role:
-        if _client_service is not None:
-            return _client_service
-        key_name = "SUPABASE_SERVICE_ROLE_KEY"
-    else:
-        if _client_anon is not None:
-            return _client_anon
-        key_name = "SUPABASE_ANON_KEY"
+    # 無鎖快取命中：已建立則直接回，避免每次都進鎖。
+    if use_service_role and _client_service is not None:
+        return _client_service
+    if not use_service_role and _client_anon is not None:
+        return _client_anon
+
+    # 未建立時序列化建立，避免並發重複建 client / 重複 patch。
+    with _init_lock:
+        if use_service_role:
+            if _client_service is not None:
+                return _client_service
+            key_name = "SUPABASE_SERVICE_ROLE_KEY"
+        else:
+            if _client_anon is not None:
+                return _client_anon
+            key_name = "SUPABASE_ANON_KEY"
+
+        return _create_supabase_client(use_service_role, key_name)
+
+
+def _create_supabase_client(use_service_role: bool, key_name: str):
+    global _client_service, _client_anon
 
     url = (os.environ.get("SUPABASE_URL") or "").strip()
     key = (os.environ.get(key_name) or "").strip()

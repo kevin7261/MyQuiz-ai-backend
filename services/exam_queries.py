@@ -370,24 +370,14 @@ def nest_follow_up_quizzes(quizzes: list[dict]) -> None:
 def filter_to_chain_roots(quizzes: list[dict]) -> list[dict]:
     """只回傳 chain root 為頂層：follow_up_exam_quiz_id 為 0／空者（含 follow_up=true 但無前一題）。
     其餘 follow_up_exam_quiz_id>0 者嵌於前一題的 follow_up_quiz；前一題已軟刪（不在 quizzes）者一併略過。"""
-    by_id: dict[int, dict] = {}
-    for q in quizzes:
-        qid = q.get("exam_quiz_id")
-        if qid is None:
-            continue
-        try:
-            by_id[int(qid)] = q
-        except (TypeError, ValueError):
-            pass
     out: list[dict] = []
     for q in quizzes:
         try:
             prev_id = int(q.get("follow_up_exam_quiz_id") or 0)
         except (TypeError, ValueError):
             prev_id = 0
+        # prev_id>0：此題嵌於前一題的 follow_up_quiz，或前一題已軟刪——兩種情況都不列為頂層。
         if prev_id > 0:
-            if prev_id in by_id:
-                continue
             continue
         out.append(q)
     return out

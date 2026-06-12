@@ -282,8 +282,8 @@ def bank_llm_regenerate_qa_impl(
     """重新產生**同一題**（原地覆寫同一 bank_qa_id）。
 
     與 llm-generate 不同：不刪除、不新增任何 Bank_QA，亦不改動 question_series_index；只把這一題的
-    question_* 內容用 LLM 重新產生並 UPDATE 回原列。「勿重複」清單為題組內**其他**題（排除本題），
-    因此不會與其餘題目重覆。重出後本題舊的作答／批改失效，一併清空。不檢查 qa_count 上限
+    question_* 內容用 LLM 重新產生並 UPDATE 回原列。「勿重複」清單為題組內**序號在本題之前**的題
+    （question_series_index 較小者；與逐題出題一致，第 N 題只看 1..N-1）。重出後本題舊的作答／批改失效，一併清空。不檢查 qa_count 上限
     （重出佔用既有名額，非新增）。
     """
     supabase = get_supabase()

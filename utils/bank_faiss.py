@@ -20,6 +20,7 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from utils.bank_zip_utils import fix_encoding
+from utils.fs import safe_extract_path
 
 UNIT_TYPE_DEFAULT = 0
 UNIT_TYPE_RAG = 1
@@ -166,7 +167,10 @@ def process_zip_to_docs(zip_path: Path, extract_dir: Path, unit_type: int = UNIT
             decoded = fix_encoding(raw_name)
             if "__MACOSX" in decoded or ".DS_Store" in decoded:
                 continue
-            safe_path = extract_dir / decoded.replace("..", "_")
+            # 防止路徑穿越：絕對路徑／.. 逃逸出 extract_dir 的成員直接略過
+            safe_path = safe_extract_path(extract_dir, decoded)
+            if safe_path is None:
+                continue
             safe_path.parent.mkdir(parents=True, exist_ok=True)
             safe_path.write_bytes(z.read(raw_name))
 
