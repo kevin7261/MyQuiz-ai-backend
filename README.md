@@ -227,7 +227,7 @@ sequenceDiagram
 
 ### 2.4 Storage 檔案放哪
 
-Bucket：RAG 用 `SUPABASE_RAG_BUCKET`（預設 `MyQuiz-ai`）；Bank 用 `SUPABASE_BANK_BUCKET`（未設時沿用 RAG bucket），但路徑加 `bank/` 命名空間。
+Bucket：RAG 用 `SUPABASE_RAG_BUCKET`（預設 `myQUIZ.ai`）；Bank 用 `SUPABASE_BANK_BUCKET`（未設時沿用 RAG bucket），但路徑加 `bank/` 命名空間。
 
 ```
 RAG：
@@ -789,7 +789,7 @@ uvicorn main:app --reload
 | `SUPABASE_URL` | ✅ | Supabase 專案 URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | ✅* | 後端用（略過 RLS） |
 | `SUPABASE_ANON_KEY` | ✅* | 至少需其一 |
-| `SUPABASE_RAG_BUCKET` | 選 | 預設 `MyQuiz-ai` |
+| `SUPABASE_RAG_BUCKET` | 選 | 預設 `myQUIZ.ai` |
 | `SUPABASE_BANK_BUCKET` | 選 | Bank 專用 bucket；未設沿用 RAG bucket（`bank/` 前綴隔離） |
 | `AUTH_TOKEN_SECRET` | 建議 | token 簽章密鑰（正式環境必設） |
 | `AUTH_TOKEN_TTL_SECONDS` | 選 | 預設 30 天 |

@@ -1,6 +1,6 @@
 """
 上傳檔案的儲存與解析模組（Supabase Storage 版本）。
-所有 ZIP 存於 Supabase Storage bucket（環境變數 SUPABASE_RAG_BUCKET，預設 "MyQuiz-ai"）。
+所有 ZIP 存於 Supabase Storage bucket（環境變數 SUPABASE_RAG_BUCKET，預設 "myQUIZ.ai"）。
 
 Bucket 內路徑結構：
   upload: {person_id}/{page_id}/upload/{page_id}.zip（物件名僅 ASCII；原始檔名存在 metadata.filename）
@@ -62,8 +62,8 @@ def generate_page_id(person_id: str | None = None) -> str:
 
 
 def _get_bucket_name() -> str:
-    """取得 Supabase Storage bucket 名稱（環境變數 SUPABASE_RAG_BUCKET，預設 "MyQuiz-ai"）。"""
-    return os.environ.get("SUPABASE_RAG_BUCKET", "MyQuiz-ai")
+    """取得 Supabase Storage bucket 名稱（環境變數 SUPABASE_RAG_BUCKET，預設 "myQUIZ.ai"）。"""
+    return os.environ.get("SUPABASE_RAG_BUCKET", "myQUIZ.ai")
 
 
 def _get_storage():

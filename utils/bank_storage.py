@@ -1,7 +1,7 @@
 """
 Bank 專屬上傳檔案儲存（自 utils.zip_storage 複製，與 rag 無關）。
 
-所有 ZIP 存於 Supabase Storage bucket（環境變數 SUPABASE_BANK_BUCKET；未設定則沿用 SUPABASE_RAG_BUCKET，預設 "MyQuiz-ai"），
+所有 ZIP 存於 Supabase Storage bucket（環境變數 SUPABASE_BANK_BUCKET；未設定則沿用 SUPABASE_RAG_BUCKET，預設 "myQUIZ.ai"），
 並一律加上 `bank/` 路徑前綴與獨立的 `_bank_metadata.json`，與 rag 的物件完全分開、不會衝突。
 
 Bucket 內路徑結構：
@@ -51,7 +51,7 @@ def generate_page_id(person_id: str | None = None) -> str:
 
 
 def _get_bucket_name() -> str:
-    return os.environ.get("SUPABASE_BANK_BUCKET") or os.environ.get("SUPABASE_RAG_BUCKET", "MyQuiz-ai")
+    return os.environ.get("SUPABASE_BANK_BUCKET") or os.environ.get("SUPABASE_RAG_BUCKET", "myQUIZ.ai")
 
 
 def _get_storage():

@@ -34,7 +34,6 @@ COURSE_SETTING_USER_ANALYSIS_USER_PROMPT_TEXT = "user_analysis_user_prompt_text"
 COURSE_SETTING_QUIZ_ANALYSIS_USER_PROMPT_TEXT = "quiz_analysis_user_prompt_text"
 # User／Course／Quiz Analysis 專屬 LLM API Key／模型（與 quiz-/rag-/exam- 出題設定分開）
 COURSE_SETTING_USER_ANALYSIS_API_KEY = "user-analysis-api-key"
-COURSE_SETTING_COURSE_ANALYSIS_API_KEY = "course-analysis-api-key"
 COURSE_SETTING_QUIZ_ANALYSIS_API_KEY = "quiz-analysis-api-key"
 COURSE_SETTING_USER_ANALYSIS_LLM_MODEL = "user-analysis-llm-model"
 COURSE_SETTING_QUIZ_ANALYSIS_LLM_MODEL = "quiz-analysis-llm-model"
