@@ -36,7 +36,7 @@ from services.quiz_asking import (
     run_quiz_ask_job,
     run_quiz_ask_transcript_only,
 )
-from utils.bank_llm_error import format_llm_error, is_llm_call_error, llm_error_json_response
+from utils.llm_error import format_llm_error, is_llm_call_error, llm_error_json_response
 from utils.bank_course import (
     execute_with_course_id_fallback,
     select_without_course_id_if_needed,

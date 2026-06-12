@@ -22,7 +22,7 @@ from services.bank_answering import (
     answer_critique_plain_text_from_result,
     run_bank_answer_job_background,
 )
-from utils.bank_llm_error import format_llm_error, is_llm_call_error, llm_error_json_response
+from utils.llm_error import format_llm_error, is_llm_call_error, llm_error_json_response
 from utils.bank_llm_key import get_bank_api_key, get_bank_llm_model
 from utils.qa_count import normalize_qa_count
 from utils.taipei_time import now_taipei_iso

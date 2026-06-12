@@ -22,7 +22,7 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from openai import OpenAI
 
-from utils.bank_llm_error import LlmCallError, format_llm_error, is_llm_call_error
+from utils.llm_error import LlmCallError, format_llm_error, is_llm_call_error
 from utils.bank_faiss import process_zip_to_docs
 from services.bank_generation import BANK_QUIZ_LLM_MODEL, context_as_markdown_fenced
 

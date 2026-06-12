@@ -10,7 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Iterator
 
-from utils.bank_media import parse_youtube_video_id
+from utils.media import parse_youtube_video_id
 from utils.bank_storage import UPLOAD_DEFAULT_PERSON, get_zip_path, get_zip_path_by_person
 from utils.bank_zip_utils import fix_encoding
 

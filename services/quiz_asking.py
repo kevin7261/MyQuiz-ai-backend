@@ -6,7 +6,7 @@ Quiz（試卷／Test）追問回答管線 service（POST /v1/quiz/groups/{quiz_g
 回傳純 Markdown 答案字串（**非** JSON）。
 
 **quiz 專屬**：自 services/asking.py（exam/rag 管線）的設計仿作，但完全獨立、僅依賴 bank 管線
-（services.bank_answering 的 embedding／檢索常數、utils.bank_faiss、utils.bank_llm_error），
+（services.bank_answering 的 embedding／檢索常數、utils.bank_faiss、utils.llm_error），
 與 exam／rag 程式無共用。同步執行；呼叫端取得答案字串後 INSERT 一列 public."Quiz_Ask"。
 
 追問定位在**題組**（非單題）：prompt 帶題組之出題 user prompt（教學脈絡）、本題組全部測驗題紀錄
@@ -33,7 +33,7 @@ from services.bank_answering import (
     _answer_field_display,
 )
 from services.bank_generation import context_as_markdown_fenced
-from utils.bank_llm_error import LlmCallError, format_llm_error, is_llm_call_error
+from utils.llm_error import LlmCallError, format_llm_error, is_llm_call_error
 from utils.bank_faiss import process_zip_to_docs
 
 _logger = logging.getLogger(__name__)

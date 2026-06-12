@@ -30,7 +30,7 @@ from utils.bank_course import (
     select_without_course_id_if_needed,
 )
 from utils.bank_stem import transcript_from_row
-from utils.bank_media import audio_media_type_for_suffix
+from utils.media import audio_media_type_for_suffix
 from utils.bank_transcript import (
     pick_audio_from_upload_zip,
     pick_audio_from_upload_zip_with_folder_fallback,
