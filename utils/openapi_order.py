@@ -139,11 +139,17 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/exam/llm-api-key/exists",
     # --- user analysis（Quiz 個人弱點分析）---
     "/v1/user-analyses",
+    "/v1/user-analyses/llm-api-key",
+    "/v1/user-analyses/llm-api-key/exists",
+    "/v1/user-analyses/llm-model",
     "/v1/user-analyses/analysis-user-prompt-text",
     "/v1/user-analyses/{user_analysis_id}",
     "/v1/user-analyses/{user_analysis_id}/llm-analysis",
     # --- quiz analysis（Quiz 測驗課程分析）---
     "/v1/quiz-analyses",
+    "/v1/quiz-analyses/llm-api-key",
+    "/v1/quiz-analyses/llm-api-key/exists",
+    "/v1/quiz-analyses/llm-model",
     "/v1/quiz-analyses/analysis-user-prompt-text",
     "/v1/quiz-analyses/{quiz_analysis_id}",
     "/v1/quiz-analyses/{quiz_analysis_id}/llm-analysis",

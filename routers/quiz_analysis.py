@@ -4,8 +4,8 @@
 定位等同 course_analysis 之於 Exam_Quiz，差異在於：
 - 資料來源：Quiz_QA（bank 出題試卷），而非 Exam_Quiz（RAG 出題試卷）
 - 結果表：Quiz_Analysis（非 Course_Analysis）
-- API Key：quiz-api-key（非 rag-api-key）
-- LLM 模型：quiz-llm-model
+- API Key：quiz-analysis-api-key（非 quiz-api-key）
+- LLM 模型：quiz-analysis-llm-model
 
 對齊「一列一 page、按 id 操作」模式：
 - 一列＝一筆分析紀錄；POST 新增、PATCH 改名、DELETE 刪除、POST /{id}/llm-analysis 寫入報告。
@@ -23,7 +23,11 @@ from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
 from dependencies.person_id import PersonId
-from routers.analysis_prompt_settings import register_analysis_user_prompt_routes
+from routers.analysis_prompt_settings import (
+    register_analysis_llm_api_key_routes,
+    register_analysis_llm_model_routes,
+    register_analysis_user_prompt_routes,
+)
 from services.analysis_setting import resolve_login_person_id
 from services.quiz_analysis_setting import (
     add_quiz_analysis_row,
@@ -37,13 +41,36 @@ from services.quiz_analysis_setting import (
 from services.quiz_queries import quiz_qas_by_course_id, quizzes_with_qas_response
 from services.weakness_report import generate_weakness_report_md, quiz_has_answer
 from utils.openapi import openapi_body
-from utils.quiz_llm_key import get_quiz_api_key, get_quiz_llm_model
-from utils.course_setting import COURSE_SETTING_QUIZ_ANALYSIS_USER_PROMPT_TEXT
+from utils.analysis_llm_key import (
+    fetch_quiz_analysis_llm_model_setting_row,
+    get_quiz_analysis_api_key,
+    get_quiz_analysis_llm_model,
+    quiz_analysis_api_key_exists,
+)
+from utils.course_setting import (
+    COURSE_SETTING_QUIZ_ANALYSIS_API_KEY,
+    COURSE_SETTING_QUIZ_ANALYSIS_LLM_MODEL,
+    COURSE_SETTING_QUIZ_ANALYSIS_USER_PROMPT_TEXT,
+)
 from utils.serialization import to_json_safe
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/quiz-analyses", tags=["quiz analysis"])
 
+register_analysis_llm_api_key_routes(
+    router,
+    setting_key=COURSE_SETTING_QUIZ_ANALYSIS_API_KEY,
+    operation_id_prefix="quiz_analysis",
+    title="Quiz Analysis",
+    api_key_exists=quiz_analysis_api_key_exists,
+)
+register_analysis_llm_model_routes(
+    router,
+    setting_key=COURSE_SETTING_QUIZ_ANALYSIS_LLM_MODEL,
+    operation_id_prefix="quiz_analysis",
+    title="Quiz Analysis",
+    fetch_llm_model_setting_row=fetch_quiz_analysis_llm_model_setting_row,
+)
 register_analysis_user_prompt_routes(
     router,
     setting_key=COURSE_SETTING_QUIZ_ANALYSIS_USER_PROMPT_TEXT,
@@ -155,7 +182,7 @@ class QuizLlmAnalysisResponse(BaseModel):
     )
     analysis_llm_model: str = Field(
         ...,
-        description="本次分析實際使用的 LLM 模型（Course_Setting key=quiz-llm-model）。API Key 為 quiz-api-key",
+        description="本次分析實際使用的 LLM 模型（Course_Setting key=quiz-analysis-llm-model）。API Key 為 quiz-analysis-api-key",
     )
 
 
@@ -316,7 +343,7 @@ def quiz_llm_analysis(
     分析指令自 Course_Setting key=quiz_analysis_user_prompt_text 讀取
     （GET/PUT /quiz-analyses/analysis-user-prompt-text）。
     彙整課程內所有學生的 Quiz_QA 作答紀錄，使用 LLM 產生測驗課程分析報告並寫入指定 Quiz_Analysis 列。
-    API Key 使用 Course_Setting key=quiz-api-key；模型使用 key=quiz-llm-model。
+    API Key 使用 Course_Setting key=quiz-analysis-api-key；模型使用 key=quiz-analysis-llm-model。
     """
     try:
         caller = _caller_person_id_or_404(person_id)
@@ -337,7 +364,7 @@ def quiz_llm_analysis(
         qas = quiz_qas_by_course_id(course_id)
         qas_with_answers = [q for q in qas if quiz_has_answer(q)]
         quizzes_data = to_json_safe(quizzes_with_qas_response(qas_with_answers))
-        analysis_llm_model = get_quiz_llm_model(course_id)
+        analysis_llm_model = get_quiz_analysis_llm_model(course_id)
 
         weakness_report: Optional[str] = None
         llm_error: Optional[str] = None
@@ -345,11 +372,11 @@ def quiz_llm_analysis(
         if not qas_with_answers:
             llm_error = "無已作答或已評級 Quiz_QA，無法產生分析報告（未寫入 Quiz_Analysis）"
 
-        api_key = get_quiz_api_key(course_id)
+        api_key = get_quiz_analysis_api_key(course_id)
         if not llm_error and not api_key:
             llm_error = (
-                "未設定 API Key：PUT /v1/quiz/llm-api-key"
-                "（Course_Setting key=quiz-api-key，依 course_id）"
+                "未設定 API Key：PUT /v1/quiz-analyses/llm-api-key"
+                "（Course_Setting key=quiz-analysis-api-key，依 course_id）"
             )
         elif not llm_error:
             setting_prompt = fetch_quiz_analysis_user_prompt_for_llm(course_id)

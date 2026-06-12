@@ -11,7 +11,7 @@ URL 採業界常見慣例（與 rag 一致）：**建立／列表**巢狀於 par
 - 刪單題：DELETE /bank/qa/{bank_qa_id}
 
 對應 rag 的 Rag_Quiz 出題／批改，但以「題組」為單位、無追問。
-LLM API Key／模型沿用 rag 課程設定（/v1/rag/llm-api-key、/v1/rag/llm-model）；題組亦可指定 question_llm_model／answer_llm_model。
+LLM API Key／模型用 bank 專屬課程設定（/v1/bank/llm-api-key、/v1/bank/llm-model；Course_Setting key=bank-api-key／bank-llm-model），與 rag、exam 完全分開；題組亦可指定 question_llm_model／answer_llm_model。
 """
 
 import logging
