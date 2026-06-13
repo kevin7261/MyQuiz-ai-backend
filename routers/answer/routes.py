@@ -6,7 +6,7 @@ from typing import Any
 from utils.openapi import openapi_body
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from dependencies.person_id import PersonId
+from dependencies.person_id import CurrentUser, PersonId
 from dependencies.course_id import CourseId
 from fastapi.responses import JSONResponse
 
@@ -547,9 +547,9 @@ async def get_answer_result(job_id: str, _person_id: PersonId, course_id: Course
 
 
 @router.get("/llm-api-key/exists", response_model=RagApiKeyExistsResponse)
-def get_rag_api_key_exists(person_id: PersonId, course_id: CourseId):
+def get_rag_api_key_exists(caller: CurrentUser, course_id: CourseId):
     """查詢 RAG LLM API Key 是否已設定（Course_Setting key=rag-api-key，依 course_id）；不回傳 key 內容。"""
-    _require_active_person(person_id)
+    _require_active_person(caller.person_id, caller.college_id)
     return RagApiKeyExistsResponse(
         course_id=course_id,
         exists=course_api_key_exists(COURSE_SETTING_RAG_API_KEY, course_id),

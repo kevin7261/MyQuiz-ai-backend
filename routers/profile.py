@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from dependencies.person_id import PersonId
+from dependencies.person_id import CurrentUser, PersonId
 from pydantic import BaseModel, Field
 
 from utils.auth import issue_token, token_ttl_seconds
@@ -37,6 +37,13 @@ USER_TABLE_COLUMNS = "user_id, person_id, college_id, college_name, name, delete
 
 def _normalize_college_id(raw: Any) -> str:
     return str(raw or "").strip()
+
+
+def _scope_user_query_by_college(query, college_id: Any):
+    """身分 = person_id + college_id：token 帶 college_id 時補上學校範圍，
+    確保跨校同 person_id 只命中該學校那一列。舊版無 cid 的 token 不加範圍（請重新登入取得新 token）。"""
+    cid = _normalize_college_id(college_id)
+    return query.eq("college_id", cid) if cid else query
 
 
 def _fetch_colleges_by_ids(supabase, college_ids: list[str]) -> dict[str, str]:
@@ -189,9 +196,11 @@ class ListUsersResponse(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    """POST /auth/login 請求：person_id + password。"""
+    """POST /auth/login 請求：person_id + password + college_id（皆必填）。
+    college_id 為學校（學院）id；後端會驗證該帳號確實屬於此學校，不符回 403。"""
     person_id: str
     password: str
+    college_id: int = Field(..., description="必填；學校（學院）id，登入時驗證帳號屬於此學校")
 
 
 class UserCourseItem(BaseModel):
@@ -311,20 +320,22 @@ class ProfileResponse(BaseModel):
 
 
 @router.get("/users/me", response_model=ProfileResponse)
-def get_my_profile(person_id: PersonId):
+def get_my_profile(caller: CurrentUser):
     """
     回傳呼叫者自己的 profile（呼叫者由 Authorization token 解析），不含 password。
+    身分為 person_id + college_id；跨校同 person_id 時僅回傳登入學校那一筆。
     欄位與 login 回傳的 user 相同；登入後若需重新取得最新使用者／選課資料時使用。
     """
+    person_id = caller.person_id
     try:
         supabase = get_supabase()
-        resp = (
+        query = (
             supabase.table(USER_TABLE)
             .select(USER_TABLE_COLUMNS)
             .eq("person_id", person_id)
-            .or_(ACTIVE_DELETED_FILTER)
-            .execute()
         )
+        query = _scope_user_query_by_college(query, caller.college_id)
+        resp = query.or_(ACTIVE_DELETED_FILTER).execute()
         if not resp.data:
             raise HTTPException(status_code=404, detail=f"找不到使用者 person_id={person_id}")
         row = resp.data[0]
@@ -361,24 +372,26 @@ class RefreshTokenResponse(BaseModel):
 @router.put("/users/me/password", response_model=UpdateMyPasswordResponse)
 def update_my_password(
     body: openapi_body(UpdateMyPasswordRequest, {"password": "string"}),
-    person_id: PersonId,
+    caller: CurrentUser,
 ):
     """
     修改呼叫者自己的密碼（呼叫者由 Authorization token 解析，body 只需新密碼）。
+    身分為 person_id + college_id；僅更新登入學校那一筆，不會動到跨校同 person_id 的其他帳號。
     """
+    person_id = caller.person_id
     pwd = (body.password or "").strip()
     if not pwd:
         raise HTTPException(status_code=400, detail="請傳入 password")
     try:
         supabase = get_supabase()
         ts = now_taipei_iso()
-        resp = (
+        query = (
             supabase.table(USER_TABLE)
             .update({"password": pwd, "updated_at": ts})
             .eq("person_id", person_id)
-            .or_(ACTIVE_DELETED_FILTER)
-            .execute()
         )
+        query = _scope_user_query_by_college(query, caller.college_id)
+        resp = query.or_(ACTIVE_DELETED_FILTER).execute()
         if not resp.data:
             raise HTTPException(status_code=404, detail=f"找不到使用者 person_id={person_id}")
         return UpdateMyPasswordResponse(
@@ -393,23 +406,28 @@ def update_my_password(
 
 
 @router.post("/auth/refresh", response_model=RefreshTokenResponse)
-def refresh_access_token(person_id: PersonId):
+def refresh_access_token(caller: CurrentUser):
     """
     以仍有效的 token 換發新 token（延長效期）；token 已過期會回 401，需重新登入。
+    新 token 沿用原 token 的 person_id 與 college_id（身分情境不變）。
     前端可於 token 接近到期（見 expires_in）時呼叫，避免使用中途被登出。
     """
     return RefreshTokenResponse(
-        access_token=issue_token(person_id),
+        access_token=issue_token(caller.person_id, caller.college_id),
         expires_in=token_ttl_seconds(),
     )
 
 
 @router.post("/auth/login", response_model=LoginResponse)
 def login(
-    body: openapi_body(LoginRequest, {"person_id": "string", "password": "string"}),
+    body: openapi_body(
+        LoginRequest,
+        {"person_id": "string", "password": "string", "college_id": 0},
+    ),
 ):
     """
-    以 person_id 與 password 驗證登入（唯一不需要 token 的端點）。
+    以 person_id、password 與 college_id（學校id）驗證登入（唯一不需要 token 的端點）；三者皆必填。
+    後端會驗證該帳號屬於 college_id 此學校，不符回 403。
     成功回傳使用者資訊（不含 password）、課程列表與 access_token；
     之後所有 API 請帶 `Authorization: Bearer <access_token>`。
     """
@@ -427,9 +445,18 @@ def login(
             .or_(ACTIVE_DELETED_FILTER)
             .execute()
         )
-        if not resp.data or len(resp.data) == 0:
+        rows = resp.data or []
+        if not rows:
             raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
-        row = resp.data[0]
+        # 身分 = person_id + college_id：同 person_id 可能跨多校多筆，先挑出指定學校那一筆再驗密碼，
+        # 不可只取 rows[0]（否則第一筆非該校時會誤判密碼／學校）。
+        target_cid = _normalize_college_id(body.college_id)
+        row = next(
+            (r for r in rows if _normalize_college_id(r.get("college_id")) == target_cid),
+            None,
+        )
+        if row is None:
+            raise HTTPException(status_code=403, detail="此帳號不屬於指定的學校（college_id）")
         if (row.get("password") or "").strip() != pwd:
             raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
         uid = row.get("user_id")
@@ -439,7 +466,7 @@ def login(
         return LoginResponse(
             user=user,
             courses=courses,
-            access_token=issue_token(person_id),
+            access_token=issue_token(person_id, _normalize_college_id(row.get("college_id"))),
             expires_in=token_ttl_seconds(),
         )
     except HTTPException:

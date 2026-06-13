@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
-from dependencies.person_id import PersonId
+from dependencies.person_id import CurrentUser, PersonId
 from routers.course_settings import (
     _require_active_person,
     _require_developer_or_manager_for_analysis_prompt_write,
@@ -83,8 +83,8 @@ def register_analysis_llm_api_key_routes(
         operation_id=f"{operation_id_prefix}_llm_api_key_exists",
         description=f"查詢 {title} LLM API Key 是否已設定（Course_Setting key={setting_key}）；不回傳 key 內容。",
     )
-    def get_analysis_api_key_exists(person_id: PersonId, course_id: CourseId):
-        _require_active_person(person_id)
+    def get_analysis_api_key_exists(caller: CurrentUser, course_id: CourseId):
+        _require_active_person(caller.person_id, caller.college_id)
         return AnalysisApiKeyExistsResponse(
             course_id=int(course_id),
             exists=api_key_exists(int(course_id)),
@@ -224,8 +224,8 @@ def register_analysis_user_prompt_routes(
         operation_id=f"{operation_id_prefix}_get_analysis_user_prompt_text",
         description=f"讀取分析指令（Course_Setting key={setting_key}，依 course_id）。",
     )
-    def get_analysis_user_prompt_text(person_id: PersonId, course_id: CourseId):
-        _require_active_person(person_id)
+    def get_analysis_user_prompt_text(caller: CurrentUser, course_id: CourseId):
+        _require_active_person(caller.person_id, caller.college_id)
         try:
             text = fetch_course_setting_text(setting_key, course_id)
             return AnalysisUserPromptTextResponse(

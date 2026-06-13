@@ -8,7 +8,9 @@ Bearer token 簽發與驗證（HMAC-SHA256 自簽 token，無外部依賴）。
   （直接 raise，不再退回寫死的開發密鑰，避免正式環境漏設時可被已知密鑰偽造 token）。
 
 token 格式：base64url(JSON payload).base64url(HMAC-SHA256 簽章)
-payload：{"sub": person_id, "iat": 簽發時間, "exp": 到期時間}
+payload：{"sub": person_id, "cid": college_id, "iat": 簽發時間, "exp": 到期時間}
+（cid 為登入時的學校 college_id；身分以 person_id + college_id 共同辨識。
+  舊版 token 可能無 cid，verify 時以 None 表示。）
 """
 
 from __future__ import annotations
@@ -65,18 +67,23 @@ def _sign(payload_b64: str) -> str:
     return _b64url_encode(sig)
 
 
-def issue_token(person_id: str) -> str:
-    """為登入成功的 person_id 簽發 Bearer token。"""
+def issue_token(person_id: str, college_id: Optional[object] = None) -> str:
+    """為登入成功的 person_id + college_id 簽發 Bearer token。
+    college_id 為登入學校 id（身分 = person_id + college_id）；省略時 token 不帶 cid。"""
     now = int(time.time())
     payload = {"sub": str(person_id), "iat": now, "exp": now + token_ttl_seconds()}
+    cid = "" if college_id is None else str(college_id).strip()
+    if cid:
+        payload["cid"] = cid
     payload_b64 = _b64url_encode(
         json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     )
     return f"{payload_b64}.{_sign(payload_b64)}"
 
 
-def verify_token(token: str) -> Optional[str]:
-    """驗證 token；成功回傳 person_id，失敗（格式錯誤／簽章不符／過期）回 None。"""
+def verify_token_identity(token: str) -> Optional[dict]:
+    """驗證 token；成功回傳 {"person_id": str, "college_id": Optional[str]}，
+    失敗（格式錯誤／簽章不符／過期）回 None。舊版無 cid 的 token college_id 為 None。"""
     try:
         payload_b64, sig = (token or "").strip().split(".", 1)
         if not hmac.compare_digest(sig, _sign(payload_b64)):
@@ -85,14 +92,34 @@ def verify_token(token: str) -> Optional[str]:
         if int(payload.get("exp") or 0) < int(time.time()):
             return None
         sub = str(payload.get("sub") or "").strip()
-        return sub or None
+        if not sub:
+            return None
+        cid = str(payload.get("cid") or "").strip()
+        return {"person_id": sub, "college_id": cid or None}
     except Exception:
         return None
 
 
-def person_id_from_authorization_header(authorization: Optional[str]) -> Optional[str]:
-    """從 `Authorization: Bearer <token>` 標頭解出 person_id；無標頭或非 Bearer 回 None。"""
+def verify_token(token: str) -> Optional[str]:
+    """驗證 token；成功回傳 person_id，失敗回 None。（向後相容；身分含 college_id 請用 verify_token_identity）"""
+    ident = verify_token_identity(token)
+    return ident["person_id"] if ident else None
+
+
+def _token_from_authorization(authorization: Optional[str]) -> Optional[str]:
     value = (authorization or "").strip()
     if not value.lower().startswith("bearer "):
         return None
-    return verify_token(value[7:].strip())
+    return value[7:].strip()
+
+
+def person_id_from_authorization_header(authorization: Optional[str]) -> Optional[str]:
+    """從 `Authorization: Bearer <token>` 標頭解出 person_id；無標頭或非 Bearer 回 None。"""
+    tok = _token_from_authorization(authorization)
+    return verify_token(tok) if tok else None
+
+
+def identity_from_authorization_header(authorization: Optional[str]) -> Optional[dict]:
+    """從 `Authorization: Bearer <token>` 標頭解出 {"person_id", "college_id"}；無標頭或非 Bearer 回 None。"""
+    tok = _token_from_authorization(authorization)
+    return verify_token_identity(tok) if tok else None

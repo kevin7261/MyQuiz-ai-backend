@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Path as PathParam
 from fastapi.responses import JSONResponse
 from postgrest.exceptions import APIError
 
-from dependencies.person_id import PersonId
+from dependencies.person_id import CurrentUser, PersonId
 from dependencies.course_id import CourseId
 
 from utils.openapi import openapi_body
@@ -1212,9 +1212,9 @@ def delete_exam_quiz(
 
 
 @router.get("/llm-api-key/exists", response_model=ExamApiKeyExistsResponse)
-def get_exam_api_key_exists(person_id: PersonId, course_id: CourseId):
+def get_exam_api_key_exists(caller: CurrentUser, course_id: CourseId):
     """查詢 Exam LLM API Key 是否已設定（Course_Setting key=exam-api-key，依 course_id）；不回傳 key 內容。"""
-    _require_active_person(person_id)
+    _require_active_person(caller.person_id, caller.college_id)
     return ExamApiKeyExistsResponse(
         course_id=course_id,
         exists=course_api_key_exists(COURSE_SETTING_EXAM_API_KEY, course_id),

@@ -20,7 +20,7 @@ from fastapi import APIRouter, Body, HTTPException, Path
 from pydantic import BaseModel, Field
 
 from dependencies.course_id import CourseId
-from dependencies.person_id import PersonId
+from dependencies.person_id import CurrentUser, PersonId
 from utils.course_setting import (
     COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY,
     COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY,
@@ -70,21 +70,23 @@ def _user_type_for_active_person(person_id: str, course_id: int) -> Optional[int
         return None
 
 
-def _require_active_person(person_id: str) -> None:
-    """person_id 須對應有效 User（未刪除）。"""
+def _require_active_person(person_id: str, college_id: Optional[object] = None) -> None:
+    """person_id 須對應有效 User（未刪除）。身分 = person_id + college_id：
+    帶 college_id 時限定為「該學校」的有效帳號（跨校同 person_id 只認登入學校那一筆）。"""
     pid = (person_id or "").strip()
     if not pid:
         raise HTTPException(status_code=404, detail="找不到該使用者")
+    cid = str(college_id or "").strip()
     try:
         supabase = get_supabase()
-        resp = (
+        query = (
             supabase.table(USER_TABLE)
             .select("user_id")
             .eq("person_id", pid)
-            .or_(ACTIVE_DELETED_FILTER)
-            .limit(1)
-            .execute()
         )
+        if cid:
+            query = query.eq("college_id", cid)
+        resp = query.or_(ACTIVE_DELETED_FILTER).limit(1).execute()
         if not resp.data:
             raise HTTPException(status_code=404, detail="找不到該使用者")
     except HTTPException:
@@ -511,9 +513,9 @@ def _fetch_course_members(supabase, course_id: int) -> list[CourseMemberItem]:
 
 
 @router.get("/course-members", response_model=ListCourseMembersResponse)
-def list_course_members(person_id: PersonId, course_id: CourseId):
+def list_course_members(caller: CurrentUser, course_id: CourseId):
     """List course members：依 course_id 列出該課程所有使用者（User_Course_Relation + User，不含已刪除）。"""
-    _require_active_person(person_id)
+    _require_active_person(caller.person_id, caller.college_id)
     try:
         supabase = get_supabase()
         members = _fetch_course_members(supabase, course_id)
@@ -685,9 +687,9 @@ def soft_delete_course_member(
 
 
 @router.get("/person-analysis-user-prompt-text", response_model=PersonAnalysisUserPromptTextResponse)
-def get_person_analysis_user_prompt_text_setting(person_id: PersonId, course_id: CourseId):
+def get_person_analysis_user_prompt_text_setting(caller: CurrentUser, course_id: CourseId):
     """取得個人分析指令（Course_Setting key=person_analysis_user_prompt_text，依 course_id）。"""
-    _require_active_person(person_id)
+    _require_active_person(caller.person_id, caller.college_id)
     try:
         text = fetch_course_setting_text(
             COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY, course_id
@@ -734,9 +736,9 @@ def put_person_analysis_user_prompt_text_setting(
 
 
 @router.get("/course-analysis-user-prompt-text", response_model=CourseAnalysisUserPromptTextResponse)
-def get_course_analysis_user_prompt_text_setting(person_id: PersonId, course_id: CourseId):
+def get_course_analysis_user_prompt_text_setting(caller: CurrentUser, course_id: CourseId):
     """取得課程分析指令（Course_Setting key=course_analysis_user_prompt_text，依 course_id）。"""
-    _require_active_person(person_id)
+    _require_active_person(caller.person_id, caller.college_id)
     try:
         text = fetch_course_setting_text(
             COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY, course_id

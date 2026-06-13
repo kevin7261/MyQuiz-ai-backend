@@ -14,7 +14,7 @@ from typing import Callable, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import Field, create_model
 
-from dependencies.person_id import PersonId
+from dependencies.person_id import CurrentUser, PersonId
 from dependencies.course_id import CourseId
 
 from utils.openapi import openapi_body
@@ -92,8 +92,8 @@ def _add_course_setting_prompt_routes(
     )
     op_suffix = field
 
-    def get_setting(person_id: PersonId, course_id: CourseId):
-        _require_active_person(person_id)
+    def get_setting(caller: CurrentUser, course_id: CourseId):
+        _require_active_person(caller.person_id, caller.college_id)
         text = fetch_course_setting_text(setting_key, course_id)
         return resp_model(**{"course_id": course_id, field: text or None})
 
@@ -177,8 +177,8 @@ def build_llm_settings_router(
         llm_model=(str, Field("", description=f"{title} 出題／批改 LLM 模型（寫入 Course_Setting key={llm_model_setting_key}）")),
     )
 
-    def get_api_key_exists(person_id: PersonId, course_id: CourseId):
-        _require_active_person(person_id)
+    def get_api_key_exists(caller: CurrentUser, course_id: CourseId):
+        _require_active_person(caller.person_id, caller.college_id)
         return ApiKeyExistsResponse(course_id=course_id, exists=api_key_exists(course_id))
 
     _register(

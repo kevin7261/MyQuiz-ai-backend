@@ -8,7 +8,6 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from dependencies.person_id import PersonId
 from utils.db_schema import ACTIVE_DELETED_FILTER, COLLEGE_TABLE, COURSE_TABLE, USER_TABLE
 from utils.supabase import get_supabase
 from utils.taipei_time import to_taipei_iso
@@ -112,8 +111,11 @@ def _college_public_dict(
 
 
 @router.get("/colleges", response_model=ListCollegesResponse)
-def list_colleges(_person_id: PersonId):
-    """列出 College 表內容；僅回傳未刪除之列，並附所屬課程與該學院 User 數（user_count，未刪除）。"""
+def list_colleges():
+    """列出 College 表內容；僅回傳未刪除之列，並附所屬課程與該學院 User 數（user_count，未刪除）。
+
+    公開端點（免 token）：供登入頁學校下拉清單使用，未登入即可呼叫。
+    """
     try:
         supabase = get_supabase()
         resp = (
