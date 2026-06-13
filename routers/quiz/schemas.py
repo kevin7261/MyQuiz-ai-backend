@@ -108,7 +108,7 @@ class ListQuizBankGroupsResponse(BaseModel):
 
     groups: list[dict] = Field(
         ...,
-        description="Bank_Group 列（含 bank_group_id、bank_page_id、bank_unit_id、unit_name、unit_type、group_name、qa_count）",
+        description="Bank_Group 列（含 bank_group_id、bank_page_id、tab_name（題庫名）、bank_unit_id、unit_name、unit_type、group_name、qa_count）",
     )
     count: int
 

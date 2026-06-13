@@ -206,7 +206,10 @@ def delete_quiz(
 
 @router.get("/bank-groups", response_model=ListQuizBankGroupsResponse, summary="List Bank Groups for Quiz", operation_id="quiz_list_bank_groups")
 def list_quiz_bank_groups(_person_id: PersonId, course_id: CourseId):
-    """列出可加入試卷的 Bank_Group（for_exam=true、未刪除），附其單元 unit_name／unit_type。"""
+    """列出可加入試卷的 Bank_Group（for_exam=true、未刪除），附其題庫 tab_name 與單元 unit_name／unit_type。
+
+    回傳該 course 全部 for_exam 題組，不分建立者。
+    """
     groups = to_json_safe(list_bank_groups_for_quiz(course_id))
     return ListQuizBankGroupsResponse(groups=groups, count=len(groups))
 

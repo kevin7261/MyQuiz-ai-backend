@@ -222,7 +222,7 @@ def fetch_bank_group_for_snapshot(supabase, bank_group_id: int, course_id: int) 
 
 
 def list_bank_groups_for_quiz(course_id: int) -> list[dict]:
-    """列出可選用的 Bank_Group（for_exam=true、未刪除），附其單元 unit_name／unit_type。"""
+    """列出可選用的 Bank_Group（for_exam=true、未刪除），附其題庫 tab_name 與單元 unit_name／unit_type。"""
     supabase = get_supabase()
 
     def build(with_course_filter: bool):
@@ -263,11 +263,34 @@ def list_bank_groups_for_quiz(course_id: int) -> list[dict]:
             if uid is not None:
                 units_by_id[int(uid)] = u
 
+    # 補上各題組所屬題庫的 tab_name（題庫名，供前端顯示「題庫 › 單元 › 題組」）
+    page_ids = list(dict.fromkeys(
+        (g.get("bank_page_id") or "").strip() for g in groups if (g.get("bank_page_id") or "").strip()
+    ))
+    tab_name_by_page_id: dict[str, str] = {}
+    if page_ids:
+        def build_banks(with_course_filter: bool):
+            q = (
+                supabase.table("Bank")
+                .select("bank_page_id, tab_name, course_id")
+                .in_("bank_page_id", page_ids)
+                .eq("deleted", False)
+            )
+            if with_course_filter and course_id is not None:
+                q = q.eq("course_id", course_id)
+            return q
+
+        for b in execute_with_course_id_fallback("Bank", build_banks, course_id).data or []:
+            pid = (b.get("bank_page_id") or "").strip()
+            if pid:
+                tab_name_by_page_id[pid] = (b.get("tab_name") or "").strip()
+
     for g in groups:
         uid = g.get("bank_unit_id")
         unit = units_by_id.get(int(uid)) if uid is not None else None
         g["unit_name"] = (unit or {}).get("unit_name") or ""
         g["unit_type"] = (unit or {}).get("unit_type") or 0
+        g["tab_name"] = tab_name_by_page_id.get((g.get("bank_page_id") or "").strip(), "")
     return groups
 
 
