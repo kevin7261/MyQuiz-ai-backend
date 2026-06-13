@@ -8,7 +8,7 @@
 - question_user_prompt_text   → quiz_user_prompt_text（出題 user prompt）
 - 同題組既有題目的題幹        → quiz_history_list_prompt_text（已出過題目，連續出題勿重複）
 - answer_user_prompt_text     → 批改 user prompt
-- 無「追問」概念；以 qa_count 為逐題產生之上限。
+- 無「追問」概念。題庫不受 qa_count 限制、可一直出題（qa_count 僅為測驗快照用設定；受限的是測驗）。
 """
 
 import json
@@ -187,11 +187,8 @@ def bank_llm_generate_qa_impl(
     existing = _bank_qa_rows_for_group(
         supabase, bank_group_id, course_id, cols="bank_qa_id, question_series_index, question_content, course_id"
     )
-    if len(existing) >= qa_count:
-        raise HTTPException(
-            status_code=409,
-            detail=f"本題組已達 qa_count 上限（{qa_count} 題），無法再出題",
-        )
+    # 題庫不受 qa_count 限制：可一直出題下去（qa_count 僅為「要出幾題」設定值，供測驗快照時決定測驗的出題上限；
+    # 受 qa_count 限制的是測驗逐題出題，見 routers/quiz/helpers.py）。
 
     api_key, llm_model, qup, qsp = _resolve_bank_quiz_llm_params(group, course_id)
 

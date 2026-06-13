@@ -6,7 +6,7 @@ URL 採業界常見慣例（與 rag 一致）：**建立／列表**巢狀於 par
 
 - 建題組／列題組：POST／GET /bank/pages/{bank_page_id}/units/{bank_unit_id}/groups
 - 單一題組：GET／PATCH／DELETE /bank/groups/{bank_group_id}、PUT /bank/groups/{bank_group_id}/for-exam
-- 題組內出題：POST /bank/groups/{bank_group_id}/qa/llm-generate（上限 qa_count）
+- 題組內出題：POST /bank/groups/{bank_group_id}/qa/llm-generate（題庫不受 qa_count 限制、可一直出題）
 - 單題批改：POST /bank/qa/{bank_qa_id}/llm-answer → GET /bank/qa/answer-result/{job_id}
 - 刪單題：DELETE /bank/qa/{bank_qa_id}
 
@@ -480,7 +480,7 @@ def bank_llm_generate_qa(
     """
     在題組內產生**下一題**（LLM，同步）。一律自 Bank_Group 讀取 question_system_prompt_text（連續出題規定）
     與 question_user_prompt_text（出題 user prompt）；同題組既有題目題幹會作為「已出過題目（勿重複）」一併送入。
-    已產生題數達 `qa_count` 上限時回 409。出題成功後新增一筆 Bank_QA 並回傳。無 request body。
+    題庫不受 `qa_count` 限制，可一直出題（`qa_count` 僅為測驗快照用設定；受限的是測驗）。出題成功後新增一筆 Bank_QA 並回傳。無 request body。
     """
     return bank_llm_generate_qa_impl(
         bank_group_id=bank_group_id,
