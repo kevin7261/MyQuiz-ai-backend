@@ -201,7 +201,7 @@ def fetch_quiz_analysis_user_prompt_for_llm(course_id: int | str) -> str:
 def save_user_analysis_result(
     user_analysis_id: int,
     analysis_text: str,
-    analysis_prompt_text: Optional[str],
+    analysis_prompt_text: Optional[str] = "",
 ) -> Optional[dict[str, Any]]:
     """POST /{id}/llm-analysis：按主鍵將報告與當次規則快照寫入指定結果列。"""
     if not (analysis_text or "").strip():
@@ -362,7 +362,7 @@ def soft_delete_quiz_analysis(quiz_analysis_id: int) -> Optional[dict[str, Any]]
 def save_quiz_analysis_result(
     quiz_analysis_id: int,
     analysis_text: str,
-    analysis_prompt_text: Optional[str],
+    analysis_prompt_text: Optional[str] = "",
 ) -> Optional[dict[str, Any]]:
     """POST /{id}/llm-analysis：按主鍵將報告與當次規則快照寫入指定結果列。"""
     if not (analysis_text or "").strip():

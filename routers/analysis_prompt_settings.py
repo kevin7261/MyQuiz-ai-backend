@@ -57,13 +57,13 @@ class AnalysisUserPromptTextResponse(BaseModel):
     """GET/PUT /{prefix}/analysis-user-prompt-text 回應（資料來自 Course_Setting）。"""
 
     course_id: int
-    analysis_user_prompt_text: Optional[str] = Field(...)
+    analysis_user_prompt_text: Optional[str] = ""
 
 
 class PutAnalysisUserPromptTextRequest(BaseModel):
     """PUT /{prefix}/analysis-user-prompt-text 的 body。"""
 
-    analysis_user_prompt_text: str = Field(..., description="分析教師指令")
+    analysis_user_prompt_text: str = Field("", description="分析教師指令")
 
 
 def register_analysis_llm_api_key_routes(

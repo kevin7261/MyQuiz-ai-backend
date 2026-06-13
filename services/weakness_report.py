@@ -200,7 +200,7 @@ def _build_quiz_context_block(quizzes: list[dict]) -> str:
 
 def build_weakness_report_prompts(
     quizzes: list[dict],
-    analysis_user_prompt_text: str,
+    analysis_user_prompt_text: str = "",
     *,
     analysis_label: str,
 ) -> Optional[tuple[str, str]]:
@@ -238,7 +238,7 @@ def build_weakness_report_prompts(
 def generate_weakness_report_md(
     quizzes: list[dict],
     api_key: str,
-    analysis_user_prompt_text: str,
+    analysis_user_prompt_text: str = "",
     *,
     analysis_label: str,
     llm_model: str | None = None,

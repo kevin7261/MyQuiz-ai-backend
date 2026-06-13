@@ -331,7 +331,7 @@ def get_quiz_group_question_system_prompt_text(
 def put_quiz_group_question_system_prompt_text(
     body: openapi_body(
         PutQuizGroupQuestionSystemPromptTextRequest,
-        {"question_system_prompt_text": "請連續出題，題目越來越深入且彼此不重複。"},
+        {"question_system_prompt_text": ""},
     ),
     caller_person_id: PersonId,
     course_id: CourseId,
@@ -377,7 +377,7 @@ def get_quiz_group_question_user_prompt_text(
 def put_quiz_group_question_user_prompt_text(
     body: openapi_body(
         PutQuizGroupQuestionUserPromptTextRequest,
-        {"question_user_prompt_text": "請就課程內容出一道問答題。"},
+        {"question_user_prompt_text": ""},
     ),
     caller_person_id: PersonId,
     course_id: CourseId,
@@ -423,7 +423,7 @@ def get_quiz_group_answer_user_prompt_text(
 def put_quiz_group_answer_user_prompt_text(
     body: openapi_body(
         PutQuizGroupAnswerUserPromptTextRequest,
-        {"answer_user_prompt_text": "請依參考答案批改，指出學生答得不足之處。"},
+        {"answer_user_prompt_text": ""},
     ),
     caller_person_id: PersonId,
     course_id: CourseId,
@@ -452,10 +452,10 @@ def update_quiz_group(
         {
             "group_name": "新名稱",
             "qa_count": 8,
-            "question_system_prompt_text": "請連續出題，題目越來越深入且彼此不重複。",
-            "question_user_prompt_text": "請就課程內容出一道問答題。",
+            "question_system_prompt_text": "",
+            "question_user_prompt_text": "",
             "question_llm_model": "",
-            "answer_user_prompt_text": "請依參考答案批改，指出學生答得不足之處。",
+            "answer_user_prompt_text": "",
             "answer_llm_model": "",
         },
     ),
@@ -475,13 +475,13 @@ def update_quiz_group(
             update_payload["group_name"] = body.group_name.strip()
         if body.qa_count is not None:
             update_payload["qa_count"] = int(body.qa_count)
-        if body.question_system_prompt_text is not None:
+        if "question_system_prompt_text" in body.model_fields_set:
             update_payload["question_system_prompt_text"] = body.question_system_prompt_text
-        if body.question_user_prompt_text is not None:
+        if "question_user_prompt_text" in body.model_fields_set:
             update_payload["question_user_prompt_text"] = body.question_user_prompt_text
         if body.question_llm_model is not None:
             update_payload["question_llm_model"] = body.question_llm_model.strip()
-        if body.answer_user_prompt_text is not None:
+        if "answer_user_prompt_text" in body.model_fields_set:
             update_payload["answer_user_prompt_text"] = body.answer_user_prompt_text
         if body.answer_llm_model is not None:
             update_payload["answer_llm_model"] = body.answer_llm_model.strip()
@@ -575,7 +575,7 @@ def quiz_llm_regenerate_qa(
 
 @router.post("/groups/{quiz_group_id}/llm-ask", summary="Quiz LLM Ask (course content)", operation_id="quiz_llm_ask")
 def quiz_llm_ask(
-    body: openapi_body(QuizAskRequest, {"ask_user_prompt_text": "想再問：粒線體與葉綠體的內共生證據有哪些？"}),
+    body: openapi_body(QuizAskRequest, {"ask_user_prompt_text": ""}),
     caller_person_id: PersonId,
     course_id: CourseId,
     quiz_group_id: int = PathParam(..., gt=0, description="Quiz_Group 主鍵"),

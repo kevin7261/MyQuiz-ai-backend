@@ -105,7 +105,7 @@ SYSTEM_PROMPT_QUIZ = textwrap.dedent("""
     - `quiz_answer_reference`：該題參考答案（Markdown 字串）
     """).strip()
 
-def _compose_quiz_system_prompt(base_system: str, *, quiz_system_prompt_text: str) -> str:
+def _compose_quiz_system_prompt(base_system: str, *, quiz_system_prompt_text: str = "") -> str:
     """
     將教師自訂之 system 層指令（quiz_system_prompt_text）直接織入主 system prompt 的
     「指令優先級」區塊（`{quiz_system_prompt_text}` 佔位），成為一條最高優先指令；空則不出現任何內容。
@@ -261,7 +261,7 @@ def _empty_quiz_history_body() -> str:
 
 def _quiz_history_body_for_prompt(
     *,
-    quiz_history_list_prompt_text: str,
+    quiz_history_list_prompt_text: str = "",
     quiz_history_list: list[str] | None = None,
 ) -> str:
     """優先使用 API 傳入之 quiz_history_list_prompt_text；否則由題幹陣列格式化（Exam 等相容）。"""
@@ -274,10 +274,10 @@ def _quiz_history_body_for_prompt(
 def _format_quiz_user_message(
     template: str,
     *,
-    quiz_user_prompt_text: str,
+    quiz_user_prompt_text: str = "",
     context_md: str,
     quiz_history_list: list[str] | None = None,
-    quiz_history_list_prompt_text: str,
+    quiz_history_list_prompt_text: str = "",
 ) -> str:
     """組 user 訊息：出題 user prompt（獨立區塊）→ 已出過題目（獨立區塊，可空）→ 課程內容。"""
     return template.format(
@@ -375,7 +375,7 @@ def format_quiz_history_prompt_for_llm(
 
 def _quiz_history_qa_body_for_prompt(
     *,
-    quiz_history_list_prompt_text: str,
+    quiz_history_list_prompt_text: str = "",
     quiz_history_list: list[dict[str, str]] | None = None,
 ) -> str:
     """優先使用 API 傳入之 quiz_history_list_prompt_text；否則由物件陣列格式化（Exam 等相容）。"""
@@ -387,10 +387,10 @@ def _quiz_history_qa_body_for_prompt(
 
 def _format_quiz_followup_user_message(
     *,
-    quiz_user_prompt_text: str,
+    quiz_user_prompt_text: str = "",
     context_md: str,
     quiz_history_list: list[dict[str, str]] | None = None,
-    quiz_history_list_prompt_text: str,
+    quiz_history_list_prompt_text: str = "",
 ) -> str:
     return USER_PROMPT_COURSE_FOLLOWUP.format(
         quiz_user_prompt_text=(quiz_user_prompt_text or "").strip(),
@@ -456,10 +456,10 @@ def _generate_quiz_from_context(
     api_key: str,
     context_text: str,
     *,
-    quiz_user_prompt_text: str,
-    quiz_system_prompt_text: str,
+    quiz_user_prompt_text: str = "",
+    quiz_system_prompt_text: str = "",
     quiz_history_list: list[str] | None = None,
-    quiz_history_list_prompt_text: str,
+    quiz_history_list_prompt_text: str = "",
     llm_model: str | None = None,
 ) -> dict:
     """FAISS 與逐字稿共用：組 USER_PROMPT_COURSE → 呼叫 LLM。"""
@@ -495,10 +495,10 @@ def _generate_quiz_followup_from_context(
     api_key: str,
     context_text: str,
     *,
-    quiz_user_prompt_text: str,
-    quiz_system_prompt_text: str,
+    quiz_user_prompt_text: str = "",
+    quiz_system_prompt_text: str = "",
     quiz_history_list: list[dict[str, str]] | None = None,
-    quiz_history_list_prompt_text: str,
+    quiz_history_list_prompt_text: str = "",
     llm_model: str | None = None,
 ) -> dict:
     """追問出題：組 USER_PROMPT_COURSE_FOLLOWUP → 呼叫 LLM。"""
@@ -539,9 +539,9 @@ def generate_quiz_transcript_only(
     quiz_history_list: list[str] | None = None,
     llm_model: str | None = None,
     *,
-    quiz_user_prompt_text: str,
-    quiz_history_list_prompt_text: str,
-    quiz_system_prompt_text: str,
+    quiz_user_prompt_text: str = "",
+    quiz_history_list_prompt_text: str = "",
+    quiz_system_prompt_text: str = "",
 ) -> dict:
     """
     無 FAISS：與 generate_quiz 相同訊息結構——system 為出題規範；逐字稿置於 user「課程內容」。
@@ -576,9 +576,9 @@ def generate_quiz(
     quiz_history_list: list[str] | None = None,
     llm_model: str | None = None,
     *,
-    quiz_user_prompt_text: str,
-    quiz_history_list_prompt_text: str,
-    quiz_system_prompt_text: str,
+    quiz_user_prompt_text: str = "",
+    quiz_history_list_prompt_text: str = "",
+    quiz_system_prompt_text: str = "",
 ) -> dict:
     """
     有 FAISS RAG ZIP：解壓 → 載入向量庫 → 檢索 → 組 Markdown user → LLM。
@@ -649,9 +649,9 @@ def generate_quiz_followup_transcript_only(
     quiz_history_list: list[dict[str, str]] | None = None,
     llm_model: str | None = None,
     *,
-    quiz_user_prompt_text: str,
-    quiz_history_list_prompt_text: str,
-    quiz_system_prompt_text: str,
+    quiz_user_prompt_text: str = "",
+    quiz_history_list_prompt_text: str = "",
+    quiz_system_prompt_text: str = "",
 ) -> dict:
     """
     追問出題（無 FAISS）：答不好追問弱點，答好出新題；quiz_history_list 為先前問答（題幹＋作答）列表。
@@ -676,9 +676,9 @@ def generate_quiz_followup(
     quiz_history_list: list[dict[str, str]] | None = None,
     llm_model: str | None = None,
     *,
-    quiz_user_prompt_text: str,
-    quiz_history_list_prompt_text: str,
-    quiz_system_prompt_text: str,
+    quiz_user_prompt_text: str = "",
+    quiz_history_list_prompt_text: str = "",
+    quiz_system_prompt_text: str = "",
 ) -> dict:
     """追問出題（有 FAISS RAG ZIP）：答不好追問弱點，答好出新題。"""
     if not api_key or not api_key.strip():

@@ -21,14 +21,6 @@ COURSE_SETTING_BANK_LLM_MODEL = "bank-llm-model"
 # Quiz（試卷／Test，搭配 bank 出題）專屬金鑰與模型（與 bank-/exam-/rag- 完全分開）
 COURSE_SETTING_QUIZ_API_KEY = "quiz-api-key"
 COURSE_SETTING_QUIZ_LLM_MODEL = "quiz-llm-model"
-# Bank 題組預設出題／批改 prompt（Course_Setting.key；對應 Bank_Group 欄位名）
-COURSE_SETTING_BANK_QUESTION_SYSTEM_PROMPT_TEXT = "bank_question_system_prompt_text"
-COURSE_SETTING_BANK_QUESTION_USER_PROMPT_TEXT = "bank_question_user_prompt_text"
-COURSE_SETTING_BANK_ANSWER_USER_PROMPT_TEXT = "bank_answer_user_prompt_text"
-# Quiz 題組預設出題／批改 prompt（對應 Quiz_Group 欄位名；與 bank 分開儲存）
-COURSE_SETTING_QUIZ_QUESTION_SYSTEM_PROMPT_TEXT = "quiz_question_system_prompt_text"
-COURSE_SETTING_QUIZ_QUESTION_USER_PROMPT_TEXT = "quiz_question_user_prompt_text"
-COURSE_SETTING_QUIZ_ANSWER_USER_PROMPT_TEXT = "quiz_answer_user_prompt_text"
 # Quiz 模組弱點／課程分析指令（對應 User_Analysis／Quiz_Analysis llm-analysis）
 COURSE_SETTING_USER_ANALYSIS_USER_PROMPT_TEXT = "user_analysis_user_prompt_text"
 COURSE_SETTING_QUIZ_ANALYSIS_USER_PROMPT_TEXT = "quiz_analysis_user_prompt_text"
@@ -37,51 +29,6 @@ COURSE_SETTING_USER_ANALYSIS_API_KEY = "user-analysis-api-key"
 COURSE_SETTING_QUIZ_ANALYSIS_API_KEY = "quiz-analysis-api-key"
 COURSE_SETTING_USER_ANALYSIS_LLM_MODEL = "user-analysis-llm-model"
 COURSE_SETTING_QUIZ_ANALYSIS_LLM_MODEL = "quiz-analysis-llm-model"
-DEFAULT_QUESTION_SYSTEM_PROMPT_TEXT = "請連續出題，題目越來越深入且彼此不重複。"
-DEFAULT_QUESTION_USER_PROMPT_TEXT = "請就課程內容出一道問答題。"
-DEFAULT_ANSWER_USER_PROMPT_TEXT = "請依參考答案批改，指出學生答得不足之處。"
-
-
-def fetch_group_prompt_texts(
-    course_id: int,
-    *,
-    system_key: str,
-    user_key: str,
-    answer_key: str,
-) -> dict[str, str]:
-    """讀取題組三項 prompt 課程預設；無設定時回傳空字串。"""
-    return {
-        "question_system_prompt_text": fetch_course_setting_text(system_key, course_id),
-        "question_user_prompt_text": fetch_course_setting_text(user_key, course_id),
-        "answer_user_prompt_text": fetch_course_setting_text(answer_key, course_id),
-    }
-
-
-def resolve_group_prompt_texts(
-    *,
-    body_system: str,
-    body_user: str,
-    body_answer: str,
-    course_id: int,
-    system_key: str,
-    user_key: str,
-    answer_key: str,
-) -> dict[str, str]:
-    """建題組時：body 非空用 body，否則用 Course_Setting，再否則用程式預設。"""
-    defaults = fetch_group_prompt_texts(
-        course_id, system_key=system_key, user_key=user_key, answer_key=answer_key
-    )
-    return {
-        "question_system_prompt_text": (body_system or "").strip()
-        or defaults["question_system_prompt_text"]
-        or DEFAULT_QUESTION_SYSTEM_PROMPT_TEXT,
-        "question_user_prompt_text": (body_user or "").strip()
-        or defaults["question_user_prompt_text"]
-        or DEFAULT_QUESTION_USER_PROMPT_TEXT,
-        "answer_user_prompt_text": (body_answer or "").strip()
-        or defaults["answer_user_prompt_text"]
-        or DEFAULT_ANSWER_USER_PROMPT_TEXT,
-    }
 
 
 def fetch_course_setting_text(key: str, course_id: int) -> str:

@@ -631,7 +631,7 @@ def update_quiz_qa_with_answer(
     *,
     quiz_qa_id: int,
     answer_llm_model: str = "",
-    answer_user_prompt_text: str,
+    answer_user_prompt_text: str = "",
 ) -> tuple[str, int] | None:
     """背景批改完成後更新 Quiz_QA：寫 answer_content、answer_critique，並把本次批改**實際使用**的
     answer_llm_model／answer_user_prompt_text 寫回（QA 列記「這一題各次呼叫實際用了什麼」：
@@ -792,7 +792,7 @@ async def enqueue_quiz_qa_answer_job(
 def quiz_llm_ask_impl(
     *,
     quiz_group_id: int,
-    ask_user_prompt_text: str,
+    ask_user_prompt_text: str = "",
     caller_person_id: str,
     course_id: int,
 ):

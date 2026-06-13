@@ -225,9 +225,9 @@ def _quiz_ask_llm(api_key: str, user_msg: str, llm_model: str | None) -> str:
 def run_quiz_ask_transcript_only(
     api_key: str,
     transcript: str,
-    ask_user_prompt_text: str,
+    ask_user_prompt_text: str = "",
     *,
-    question_user_prompt_text: str,
+    question_user_prompt_text: str = "",
     quiz_qa_history_body: str = "",
     ask_history_body: str = "",
     quiz_group_id: int | None = None,
@@ -256,9 +256,9 @@ def run_quiz_ask_transcript_only(
 def run_quiz_ask_job(
     work_dir: Path,
     api_key: str,
-    ask_user_prompt_text: str,
+    ask_user_prompt_text: str = "",
     *,
-    question_user_prompt_text: str,
+    question_user_prompt_text: str = "",
     quiz_qa_history_body: str = "",
     ask_history_body: str = "",
     quiz_group_id: int | None = None,

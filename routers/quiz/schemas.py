@@ -63,10 +63,10 @@ class UpdateQuizGroupRequest(BaseModel):
     qa_count: Optional[int] = Field(
         None, ge=QA_COUNT_MIN, le=QA_COUNT_MAX, description="新的題數上限（1–20）"
     )
-    question_system_prompt_text: Optional[str] = Field(None, description="新的連續出題規定")
-    question_user_prompt_text: Optional[str] = Field(None, description="新的出題 user prompt")
+    question_system_prompt_text: Optional[str] = Field("", description="新的連續出題規定")
+    question_user_prompt_text: Optional[str] = Field("", description="新的出題 user prompt")
     question_llm_model: Optional[str] = Field(None, description="新的出題 LLM 模型")
-    answer_user_prompt_text: Optional[str] = Field(None, description="新的批改 user prompt")
+    answer_user_prompt_text: Optional[str] = Field("", description="新的批改 user prompt")
     answer_llm_model: Optional[str] = Field(None, description="新的批改 LLM 模型")
 
 
@@ -74,33 +74,33 @@ class QuizGroupQuestionSystemPromptTextResponse(BaseModel):
     """GET/PUT /quiz/groups/{quiz_group_id}/question-system-prompt-text 回應。"""
 
     quiz_group_id: int
-    question_system_prompt_text: str
+    question_system_prompt_text: str = ""
 
 
 class PutQuizGroupQuestionSystemPromptTextRequest(BaseModel):
-    question_system_prompt_text: str = Field(..., description="Quiz_Group.question_system_prompt_text")
+    question_system_prompt_text: str = Field("", description="Quiz_Group.question_system_prompt_text")
 
 
 class QuizGroupQuestionUserPromptTextResponse(BaseModel):
     """GET/PUT /quiz/groups/{quiz_group_id}/question-user-prompt-text 回應。"""
 
     quiz_group_id: int
-    question_user_prompt_text: str
+    question_user_prompt_text: str = ""
 
 
 class PutQuizGroupQuestionUserPromptTextRequest(BaseModel):
-    question_user_prompt_text: str = Field(..., description="Quiz_Group.question_user_prompt_text")
+    question_user_prompt_text: str = Field("", description="Quiz_Group.question_user_prompt_text")
 
 
 class QuizGroupAnswerUserPromptTextResponse(BaseModel):
     """GET/PUT /quiz/groups/{quiz_group_id}/answer-user-prompt-text 回應。"""
 
     quiz_group_id: int
-    answer_user_prompt_text: str
+    answer_user_prompt_text: str = ""
 
 
 class PutQuizGroupAnswerUserPromptTextRequest(BaseModel):
-    answer_user_prompt_text: str = Field(..., description="Quiz_Group.answer_user_prompt_text")
+    answer_user_prompt_text: str = Field("", description="Quiz_Group.answer_user_prompt_text")
 
 
 class ListQuizBankGroupsResponse(BaseModel):

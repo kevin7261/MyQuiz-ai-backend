@@ -29,13 +29,6 @@ from utils.taipei_time import now_taipei_iso
 from utils.supabase import get_supabase
 from utils.bank_course import execute_with_course_id_fallback, insert_bank_child_row
 
-from utils.course_setting import (
-    COURSE_SETTING_BANK_ANSWER_USER_PROMPT_TEXT,
-    COURSE_SETTING_BANK_QUESTION_SYSTEM_PROMPT_TEXT,
-    COURSE_SETTING_BANK_QUESTION_USER_PROMPT_TEXT,
-    resolve_group_prompt_texts,
-)
-
 from .group_schemas import (
     BankGroupAnswerUserPromptTextResponse,
     BankGroupForExamRequest,
@@ -83,10 +76,10 @@ def create_bank_group(
         {
             "group_name": "第一回測驗",
             "qa_count": 5,
-            "question_system_prompt_text": "請連續出題，題目越來越深入且彼此不重複。",
-            "question_user_prompt_text": "請就課程內容出一道問答題。",
+            "question_system_prompt_text": "",
+            "question_user_prompt_text": "",
             "question_llm_model": "",
-            "answer_user_prompt_text": "請依參考答案批改，指出學生答得不足之處。",
+            "answer_user_prompt_text": "",
             "answer_llm_model": "",
             "for_exam": False,
         },
@@ -111,26 +104,17 @@ def create_bank_group(
         page_id = (unit.get("bank_page_id") or bank_page_id or "").strip()
 
         ts = now_taipei_iso()
-        prompt_texts = resolve_group_prompt_texts(
-            body_system=body.question_system_prompt_text,
-            body_user=body.question_user_prompt_text,
-            body_answer=body.answer_user_prompt_text,
-            course_id=course_id,
-            system_key=COURSE_SETTING_BANK_QUESTION_SYSTEM_PROMPT_TEXT,
-            user_key=COURSE_SETTING_BANK_QUESTION_USER_PROMPT_TEXT,
-            answer_key=COURSE_SETTING_BANK_ANSWER_USER_PROMPT_TEXT,
-        )
         group_row: dict[str, Any] = {
             "bank_page_id": page_id,
             "bank_unit_id": bank_unit_id,
             "person_id": pid,
             "course_id": course_id,
             "group_name": (body.group_name or "").strip() or (unit.get("unit_name") or "").strip(),
-            "question_system_prompt_text": prompt_texts["question_system_prompt_text"],
-            "question_user_prompt_text": prompt_texts["question_user_prompt_text"],
+            "question_system_prompt_text": (body.question_system_prompt_text or "").strip(),
+            "question_user_prompt_text": (body.question_user_prompt_text or "").strip(),
             "qa_count": body.qa_count,
             "question_llm_model": (body.question_llm_model or "").strip(),
-            "answer_user_prompt_text": prompt_texts["answer_user_prompt_text"],
+            "answer_user_prompt_text": (body.answer_user_prompt_text or "").strip(),
             "answer_llm_model": (body.answer_llm_model or "").strip(),
             "for_exam": bool(body.for_exam),
             "deleted": False,
@@ -244,7 +228,7 @@ def get_bank_group_question_system_prompt_text(
 def put_bank_group_question_system_prompt_text(
     body: openapi_body(
         PutBankGroupQuestionSystemPromptTextRequest,
-        {"question_system_prompt_text": "請連續出題，題目越來越深入且彼此不重複。"},
+        {"question_system_prompt_text": ""},
     ),
     caller_person_id: PersonId,
     course_id: CourseId,
@@ -290,7 +274,7 @@ def get_bank_group_question_user_prompt_text(
 def put_bank_group_question_user_prompt_text(
     body: openapi_body(
         PutBankGroupQuestionUserPromptTextRequest,
-        {"question_user_prompt_text": "請就課程內容出一道問答題。"},
+        {"question_user_prompt_text": ""},
     ),
     caller_person_id: PersonId,
     course_id: CourseId,
@@ -336,7 +320,7 @@ def get_bank_group_answer_user_prompt_text(
 def put_bank_group_answer_user_prompt_text(
     body: openapi_body(
         PutBankGroupAnswerUserPromptTextRequest,
-        {"answer_user_prompt_text": "請依參考答案批改，指出學生答得不足之處。"},
+        {"answer_user_prompt_text": ""},
     ),
     caller_person_id: PersonId,
     course_id: CourseId,
@@ -365,10 +349,10 @@ def update_bank_group(
         {
             "group_name": "新名稱",
             "qa_count": 8,
-            "question_system_prompt_text": "請連續出題，題目越來越深入且彼此不重複。",
-            "question_user_prompt_text": "請就課程內容出一道問答題。",
+            "question_system_prompt_text": "",
+            "question_user_prompt_text": "",
             "question_llm_model": "",
-            "answer_user_prompt_text": "請依參考答案批改，指出學生答得不足之處。",
+            "answer_user_prompt_text": "",
             "answer_llm_model": "",
         },
     ),
@@ -391,13 +375,13 @@ def update_bank_group(
             update_payload["group_name"] = body.group_name.strip()
         if body.qa_count is not None:
             update_payload["qa_count"] = int(body.qa_count)
-        if body.question_system_prompt_text is not None:
+        if "question_system_prompt_text" in body.model_fields_set:
             update_payload["question_system_prompt_text"] = body.question_system_prompt_text
-        if body.question_user_prompt_text is not None:
+        if "question_user_prompt_text" in body.model_fields_set:
             update_payload["question_user_prompt_text"] = body.question_user_prompt_text
         if body.question_llm_model is not None:
             update_payload["question_llm_model"] = body.question_llm_model.strip()
-        if body.answer_user_prompt_text is not None:
+        if "answer_user_prompt_text" in body.model_fields_set:
             update_payload["answer_user_prompt_text"] = body.answer_user_prompt_text
         if body.answer_llm_model is not None:
             update_payload["answer_llm_model"] = body.answer_llm_model.strip()

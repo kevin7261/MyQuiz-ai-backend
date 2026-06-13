@@ -29,11 +29,11 @@ class CreateBankGroupRequest(BaseModel):
         description="本題組預定要出的題數上限（1–20）；逐題產生時不會超過此數",
     )
     question_system_prompt_text: str = Field(
-        ..., description="連續出題的規定（織入出題 system prompt，最高優先；如越來越難、勿重複）"
+        "", description="連續出題的規定（織入出題 system prompt，最高優先；如越來越難、勿重複）"
     )
-    question_user_prompt_text: str = Field(..., description="出題規定（出題 user prompt）")
+    question_user_prompt_text: str = Field("", description="出題規定（出題 user prompt）")
     question_llm_model: str = Field("", description="出題 LLM 模型；空則用課程 bank-llm-model 設定")
-    answer_user_prompt_text: str = Field(..., description="批改規定（批改 user prompt）")
+    answer_user_prompt_text: str = Field("", description="批改規定（批改 user prompt）")
     answer_llm_model: str = Field("", description="批改 LLM 模型；空則用課程 bank-llm-model 設定")
     for_exam: bool = Field(False, description="是否標記為測驗用")
 
@@ -45,10 +45,10 @@ class UpdateBankGroupRequest(BaseModel):
     qa_count: Optional[int] = Field(
         None, ge=QA_COUNT_MIN, le=QA_COUNT_MAX, description="新的題數上限（1–20）"
     )
-    question_system_prompt_text: Optional[str] = Field(None, description="新的連續出題規定")
-    question_user_prompt_text: Optional[str] = Field(None, description="新的出題 user prompt")
+    question_system_prompt_text: Optional[str] = Field("", description="新的連續出題規定")
+    question_user_prompt_text: Optional[str] = Field("", description="新的出題 user prompt")
     question_llm_model: Optional[str] = Field(None, description="新的出題 LLM 模型")
-    answer_user_prompt_text: Optional[str] = Field(None, description="新的批改 user prompt")
+    answer_user_prompt_text: Optional[str] = Field("", description="新的批改 user prompt")
     answer_llm_model: Optional[str] = Field(None, description="新的批改 LLM 模型")
 
 
@@ -68,30 +68,30 @@ class BankGroupQuestionSystemPromptTextResponse(BaseModel):
     """GET/PUT /bank/groups/{bank_group_id}/question-system-prompt-text 回應。"""
 
     bank_group_id: int
-    question_system_prompt_text: str
+    question_system_prompt_text: str = ""
 
 
 class PutBankGroupQuestionSystemPromptTextRequest(BaseModel):
-    question_system_prompt_text: str = Field(..., description="Bank_Group.question_system_prompt_text")
+    question_system_prompt_text: str = Field("", description="Bank_Group.question_system_prompt_text")
 
 
 class BankGroupQuestionUserPromptTextResponse(BaseModel):
     """GET/PUT /bank/groups/{bank_group_id}/question-user-prompt-text 回應。"""
 
     bank_group_id: int
-    question_user_prompt_text: str
+    question_user_prompt_text: str = ""
 
 
 class PutBankGroupQuestionUserPromptTextRequest(BaseModel):
-    question_user_prompt_text: str = Field(..., description="Bank_Group.question_user_prompt_text")
+    question_user_prompt_text: str = Field("", description="Bank_Group.question_user_prompt_text")
 
 
 class BankGroupAnswerUserPromptTextResponse(BaseModel):
     """GET/PUT /bank/groups/{bank_group_id}/answer-user-prompt-text 回應。"""
 
     bank_group_id: int
-    answer_user_prompt_text: str
+    answer_user_prompt_text: str = ""
 
 
 class PutBankGroupAnswerUserPromptTextRequest(BaseModel):
-    answer_user_prompt_text: str = Field(..., description="Bank_Group.answer_user_prompt_text")
+    answer_user_prompt_text: str = Field("", description="Bank_Group.answer_user_prompt_text")

@@ -104,7 +104,7 @@ SYSTEM_PROMPT_BANK_QUIZ = textwrap.dedent("""
 
 
 def _compose_bank_quiz_system_prompt(
-    base_system: str, *, quiz_system_prompt_text: str, quiz_history_body: str = ""
+    base_system: str, *, quiz_system_prompt_text: str = "", quiz_history_body: str = ""
 ) -> str:
     """將題組 question_system_prompt_text 織入「指令優先級」、出題歷史織入「出題歷史」區塊；皆於 system。"""
     extra = (quiz_system_prompt_text or "").strip()
@@ -179,7 +179,7 @@ def format_bank_quiz_history_prompt_for_llm(items: list[dict[str, Any]] | None) 
     return _format_bank_quiz_history_body(stems)
 
 
-def _quiz_history_body_for_prompt(*, quiz_history_list_prompt_text: str, quiz_history_list: list[str] | None = None) -> str:
+def _quiz_history_body_for_prompt(*, quiz_history_list_prompt_text: str = "", quiz_history_list: list[str] | None = None) -> str:
     pt = (quiz_history_list_prompt_text or "").strip()
     if pt:
         return pt
@@ -188,7 +188,7 @@ def _quiz_history_body_for_prompt(*, quiz_history_list_prompt_text: str, quiz_hi
 
 def _format_bank_quiz_user_message(
     *,
-    quiz_user_prompt_text: str,
+    quiz_user_prompt_text: str = "",
     context_md: str,
     ask_history_body: str = "",
 ) -> str:
@@ -245,10 +245,10 @@ def _generate_bank_quiz_from_context(
     api_key: str,
     context_text: str,
     *,
-    quiz_user_prompt_text: str,
-    quiz_system_prompt_text: str,
+    quiz_user_prompt_text: str = "",
+    quiz_system_prompt_text: str = "",
     quiz_history_list: list[str] | None = None,
-    quiz_history_list_prompt_text: str,
+    quiz_history_list_prompt_text: str = "",
     ask_history_body: str = "",
     llm_model: str | None = None,
 ) -> dict:
@@ -293,9 +293,9 @@ def generate_bank_quiz_transcript_only(
     ask_history_body: str = "",
     llm_model: str | None = None,
     *,
-    quiz_user_prompt_text: str,
-    quiz_history_list_prompt_text: str,
-    quiz_system_prompt_text: str,
+    quiz_user_prompt_text: str = "",
+    quiz_history_list_prompt_text: str = "",
+    quiz_system_prompt_text: str = "",
 ) -> dict:
     """無 FAISS（unit_type 2／3／4）：逐字稿置於 user 課程內容區塊。回傳 quiz_content/quiz_hint/quiz_answer_reference。"""
     raw_tc = transcript if transcript is not None else ""
@@ -320,9 +320,9 @@ def generate_bank_quiz(
     ask_history_body: str = "",
     llm_model: str | None = None,
     *,
-    quiz_user_prompt_text: str,
-    quiz_history_list_prompt_text: str,
-    quiz_system_prompt_text: str,
+    quiz_user_prompt_text: str = "",
+    quiz_history_list_prompt_text: str = "",
+    quiz_system_prompt_text: str = "",
 ) -> dict:
     """有 FAISS RAG ZIP（unit_type=1）：解壓 → 載入向量庫 → 檢索 → 組 user → LLM。"""
     if not api_key or not api_key.strip():
