@@ -5,6 +5,9 @@
 不記錄 OPTIONS／HEAD：瀏覽器跨域會先送 CORS preflight（OPTIONS），沒有 JSON body，
 若一併記錄會變成「前端呼叫 1 次卻出現 2 筆 log、且 parameters 只有 person_id」。
 Swagger／OpenAPI 文件路徑亦不記錄。寫入失敗不影響原請求回應。
+
+Log 寫入採「背景非阻塞」：先 call_next 回應請求，再排程寫入 Supabase，
+不讓 Log 的網路來回延遲卡在每支 API 的關鍵路徑上。
 """
 
 from __future__ import annotations
@@ -18,6 +21,17 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 _logger = logging.getLogger(__name__)
+
+# 背景 Log 寫入的 task 參考池：asyncio.create_task 不持有強參考，
+# 不留著會被 GC 提前回收導致寫入中斷，故在此保存、完成後自動移除。
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background_log(**kwargs: Any) -> None:
+    """非阻塞排程一筆 Log 寫入，不擋住請求回應路徑。"""
+    task = asyncio.create_task(_log_request_async(**kwargs))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 # 不寫入 Log 的 HTTP 方法（CORS preflight、探測用）
 _SKIP_HTTP_METHODS = frozenset({"OPTIONS", "HEAD"})
@@ -206,7 +220,11 @@ class APILogMiddleware(BaseHTTPMiddleware):
         parameters = _build_parameters(query_params, body_flat)
         course_id = _resolve_course_id(query_params, body_flat)
 
-        await _log_request_async(
+        # 先執行真正的 API，Log 寫入移到背景非阻塞排程：
+        # Supabase 寫入不再卡在請求關鍵路徑上，慢／抖動也不會拖垮所有端點。
+        response = await call_next(request)
+
+        _spawn_background_log(
             person_id=person_id,
             course_id=course_id,
             api_url=api_url,
@@ -214,4 +232,4 @@ class APILogMiddleware(BaseHTTPMiddleware):
             parameters=parameters,
         )
 
-        return await call_next(request)
+        return response
