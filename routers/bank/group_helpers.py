@@ -29,7 +29,9 @@ from utils.taipei_time import now_taipei_iso
 from utils.bank_course import (
     execute_with_course_id_fallback,
     insert_bank_child_row,
+    require_bank_course_manager,
     select_without_course_id_if_needed,
+    touch_bank_updater,
 )
 from utils.supabase import get_supabase
 from utils.serialization import to_json_safe
@@ -81,12 +83,15 @@ def require_bank_group_owner(
     cols: str = "*",
     forbidden_detail: str = "無權存取該 Bank_Group",
 ) -> dict:
-    """取 Bank_Group 並驗證擁有者；不存在回 404、非擁有者回 403（detail 依呼叫情境傳入）。"""
+    """取 Bank_Group 並驗證權限；不存在回 404。
+
+    權限模型已改為「課程管理者（user_type 1／2）皆可操作課程內任何題庫」，故不再比對建立者，
+    改驗證呼叫者為課程管理者（非管理者回 403）。forbidden_detail 保留參數相容。
+    """
     group = _fetch_bank_group_row(supabase, bank_group_id, course_id, cols=cols)
     if not group:
         raise HTTPException(status_code=404, detail=f"找不到 bank_group_id={bank_group_id} 的 Bank_Group，或已刪除")
-    if (group.get("person_id") or "").strip() != caller_person_id:
-        raise HTTPException(status_code=403, detail=forbidden_detail)
+    require_bank_course_manager(caller_person_id, course_id)
     return group
 
 
@@ -233,6 +238,9 @@ def bank_llm_generate_qa_impl(
             "answer_user_prompt_text": (group.get("answer_user_prompt_text") or ""),
             "answer_content": "",
             "answer_critique": None,
+            # creator＝實際出題者（呼叫者），updater 同；person_id 維持題庫建立者以利歸屬。
+            "creator": caller_person_id,
+            "updater": caller_person_id,
             "deleted": False,
             "updated_at": ts,
             "created_at": ts,
@@ -241,6 +249,8 @@ def bank_llm_generate_qa_impl(
         if not ins.data:
             raise HTTPException(status_code=500, detail="寫入 Bank_QA 失敗（無回傳資料）")
         created = ins.data[0]
+        # 出題屬「修改題庫內容」→ bump 父 Bank.updater 為出題者。
+        touch_bank_updater((group.get("bank_page_id") or "").strip(), course_id, caller_person_id)
         out = {
             "question_llm_model": llm_model,
             "qa_count": qa_count,
@@ -339,11 +349,14 @@ def bank_llm_regenerate_qa_impl(
             "answer_critique": None,
             "answer_llm_model": None,
             "answer_user_prompt_text": (group.get("answer_user_prompt_text") or ""),
+            "updater": caller_person_id,
             "updated_at": ts,
         }
         supabase.table("Bank_QA").update(update_row).eq("bank_qa_id", bank_qa_id).eq(
             "deleted", False
         ).execute()
+        # 重出屬「修改題庫內容」→ bump 父 Bank.updater 為重出者。
+        touch_bank_updater((group.get("bank_page_id") or "").strip(), course_id, caller_person_id)
         updated = _fetch_bank_qa_row(supabase, bank_qa_id, course_id, cols="*") or {**qa, **update_row}
         qa_count = normalize_qa_count(group.get("qa_count"))
         out = {
@@ -448,15 +461,19 @@ async def enqueue_bank_qa_answer_job(
         bank_qa_id,
         course_id,
         cols=(
-            "bank_qa_id, bank_group_id, bank_unit_id, person_id, question_content, "
+            "bank_qa_id, bank_page_id, bank_group_id, bank_unit_id, person_id, question_content, "
             "question_user_prompt_text, answer_user_prompt_text, answer_llm_model, course_id"
         ),
     )
     if not qa:
         return JSONResponse(status_code=404, content={"error": f"找不到 bank_qa_id={bank_qa_id} 的 Bank_QA"})
-    pid = (qa.get("person_id") or "").strip()
-    if pid != caller_person_id:
-        return JSONResponse(status_code=403, content={"error": "無權批改該 Bank_QA"})
+    # 權限：課程管理者皆可批改課程內任何題庫的題目。
+    try:
+        require_bank_course_manager(caller_person_id, course_id)
+    except HTTPException as e:
+        return JSONResponse(status_code=e.status_code, content={"error": e.detail})
+    # 批改寫回 Bank_QA 之 answer_* 欄位屬內容變更 → bump 父 Bank.updater 為批改者。
+    touch_bank_updater((qa.get("bank_page_id") or "").strip(), course_id, caller_person_id)
 
     quiz_content = (qa.get("question_content") or "").strip()
     if not quiz_content:

@@ -25,9 +25,10 @@ from utils.taipei_time import now_taipei_iso
 from utils.supabase import get_supabase
 from utils.bank_course import (
     execute_with_course_id_fallback,
-    require_bank_tab_owner,
+    require_bank_course_manager,
     resolve_bank_tab_owner_person_id,
     select_without_course_id_if_needed,
+    touch_bank_updater,
 )
 from utils.bank_stem import transcript_from_row
 from utils.media import audio_media_type_for_suffix
@@ -69,6 +70,7 @@ from .helpers import (
     _fetch_user_type,
     _ndjson_line,
     _persist_rag_build_metadata,
+    _person_names_for_course,
     _bank_table_select,
     _rag_zip_build_counts,
     _unit_name_overrides_per_task,
@@ -109,10 +111,12 @@ def list_bank(
     course_id: CourseId,
 ):
     """
-    列出 Bank 表內容（deleted=False），須傳 course_id，僅回傳該課程的 Bank／Bank_Unit；
-    且僅回傳與 query person_id 相符之列。
+    列出 Bank 表內容（deleted=False），須傳 course_id，回傳該課程**所有人**建立的 Bank／Bank_Unit
+    （不再以呼叫者 person_id 過濾清單；token 僅用於驗證身分）。
     回傳列依 created_at 由舊到新排序。
-    每筆 Bank 含 units（Bank_Unit 列表）。
+    每筆 Bank 含 units（Bank_Unit 列表），並含建立者／最後修改者：
+    creator（建立者 person_id，不變）、creator_name（顯示名）、
+    updater（最後修改者 person_id）、updater_name（顯示名）；person_id 保留 = creator。
     音訊單元（unit_type=3）且 mp3_file_name 非空時，另含 mp3_audio_url：相對於 API 根路徑的 GET /bank/units/{bank_unit_id}/mp3-file 查詢字串（`bank_page_id`，不需 person_id），可接在後端 origin 後作為 `<audio src>`。
     YouTube 單元（unit_type=4）且 youtube_url 非空時，另含 youtube_url_api：相對於 API 根路徑的 GET /bank/units/{bank_unit_id}/youtube-url 查詢字串（`bank_page_id`，不需 person_id）。
     """
@@ -122,8 +126,8 @@ def list_bank(
             exclude_deleted=True,
             course_id=course_id,
         )
-        pid = person_id.strip()
-        data = [r for r in data if (r.get("person_id") or "").strip() == pid]
+        # 方案 A：回傳該課程所有人建立的題庫，不再用呼叫者 person_id 過濾清單。
+        names_by_pid = _person_names_for_course(course_id)
 
         bank_page_ids = list(dict.fromkeys(
             r.get("bank_page_id") for r in data if r.get("bank_page_id")
@@ -135,6 +139,13 @@ def list_bank(
 
         for row in data:
             page_id = row.get("bank_page_id")
+            # 建立者／最後修改者：creator 不變、updater 為最後修改者；空值回退至 person_id。
+            creator = (row.get("creator") or row.get("person_id") or "").strip()
+            updater = (row.get("updater") or creator).strip()
+            row["creator"] = creator
+            row["updater"] = updater
+            row["creator_name"] = names_by_pid.get(creator, "")
+            row["updater_name"] = names_by_pid.get(updater, "")
             units = units_by_tab.get(page_id, []) if page_id else []
             for unit in units:
                 uid = unit.get("bank_unit_id")
@@ -194,7 +205,8 @@ def update_unit_tab_name(
 ):
     """
     更新既有 Bank 的 tab_name。以 bank_page_id 比對；僅更新 deleted=false 的列。
-    回傳 bank_id、bank_page_id、person_id、tab_name、updated_at。
+    僅課程管理者（user_type 1／2）可修改；creator 不變、updater 記為本次呼叫者。
+    回傳 bank_id、bank_page_id、person_id、creator、updater、tab_name、updated_at。
     """
     fid = (bank_page_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
@@ -202,11 +214,12 @@ def update_unit_tab_name(
     tab_name = (body.tab_name or "").strip()
     if not tab_name:
         raise HTTPException(status_code=400, detail="請傳入 tab_name")
+    require_bank_course_manager(caller_person_id, course_id)
     try:
         supabase = get_supabase()
         sel = (
             supabase.table("Bank")
-            .select("bank_id, bank_page_id, person_id, course_id")
+            .select("bank_id, bank_page_id, person_id, creator, course_id")
             .eq("bank_page_id", fid)
             .eq("course_id", course_id)
             .eq("deleted", False)
@@ -218,14 +231,17 @@ def update_unit_tab_name(
         row = sel.data[0]
         bank_id = row.get("bank_id")
         pid = row.get("person_id")
-        if ((pid or "").strip() != caller_person_id):
-            raise HTTPException(status_code=403, detail="無權修改該 Bank")
+        creator = (row.get("creator") or pid or "").strip()
         ts = now_taipei_iso()
-        supabase.table("Bank").update({"tab_name": tab_name, "updated_at": ts}).eq("bank_page_id", fid).eq("course_id", course_id).eq("deleted", False).execute()
+        supabase.table("Bank").update(
+            {"tab_name": tab_name, "updater": caller_person_id, "updated_at": ts}
+        ).eq("bank_page_id", fid).eq("course_id", course_id).eq("deleted", False).execute()
         return {
             "bank_id": bank_id,
             "bank_page_id": fid,
             "person_id": pid,
+            "creator": creator,
+            "updater": caller_person_id,
             "tab_name": tab_name,
             "updated_at": ts,
         }
@@ -237,17 +253,19 @@ def update_unit_tab_name(
 
 @router.delete("/pages/{bank_page_id}", status_code=200, summary="Delete Bank File", operation_id="bank_tab_delete")
 def delete_bank_file(
-    _person_id: PersonId,
+    caller_person_id: PersonId,
     course_id: CourseId,
     bank_page_id: str = PathParam(..., description="要刪除的 bank_page_id"),
 ):
     """
     DELETE /bank/pages/{bank_page_id}。
+    僅課程管理者（user_type 1／2）可刪除（可刪課程內任何題庫）。
     軟刪除：將 Bank 表該 bank_page_id 之未刪除列 deleted 設為 true，同時軟刪除所有對應 Bank_Unit，並刪除 storage 資料夾。
     """
     fid = (bank_page_id or "").strip()
     if not fid or "/" in fid or "\\" in fid:
         raise HTTPException(status_code=400, detail="無效的 bank_page_id")
+    require_bank_course_manager(caller_person_id, course_id)
     folder_deleted, pid = _do_delete_bank_file_by_page_id(fid, course_id)
     return {
         "message": "已將 Bank 資料標記為刪除並刪除儲存資料夾",
@@ -270,11 +288,13 @@ async def create_upload_zip(
     """
     建立 Bank 並上傳 ZIP。
     multipart/form-data：file、bank_page_id、tab_name；person_id 選填（未傳以 token 呼叫者為準）。
-    須傳 query course_id。
+    須傳 query course_id。僅課程管理者（user_type 1／2）可建立；creator 記為呼叫者。
     回傳 create 欄位與 file_metadata。
     """
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="請上傳 .zip 檔案")
+
+    require_bank_course_manager(caller_person_id, course_id)
 
     fid, pid, name = _validate_bank_tab_create_fields(
         bank_page_id=bank_page_id,
@@ -359,12 +379,13 @@ def build_bank_zip(
     `POST /bank/pages/{bank_page_id}/build-zip-stream` 與本端點相同，僅自 OpenAPI 隱藏，供舊客戶端相容。
     """
     body.bank_page_id = (bank_page_id or "").strip()
-    # person_id 選填：未傳以 token 呼叫者為準；有傳須一致（過渡期相容檢查）
-    pid = (body.person_id or "").strip() or caller_person_id
-    if pid != caller_person_id:
-        raise HTTPException(status_code=400, detail="body 的 person_id 與呼叫者（token）不一致")
-
-    require_bank_tab_owner(pid, body.bank_page_id, course_id)
+    # 權限：課程管理者皆可建置課程內任何題庫（不再限本人）。
+    require_bank_course_manager(caller_person_id, course_id)
+    # 儲存路徑（上傳 ZIP／repack／rag）皆以題庫建立者(owner) person_id 為準，
+    # 故跨人建置時須解析 owner pid，而非用呼叫者。同時驗證 Bank 存在／屬於此 course。
+    owner_pid = resolve_bank_tab_owner_person_id(body.bank_page_id, course_id)
+    body.person_id = owner_pid
+    pid = owner_pid
 
     path = _fetch_source_upload_zip_with_retries(pid, body.bank_page_id)
 
@@ -381,7 +402,8 @@ def build_bank_zip(
         raise HTTPException(status_code=400, detail="unit_list 為空或格式錯誤，例：220222+220301")
 
     api_key = get_bank_api_key(course_id)
-    user_type_val = _fetch_user_type(pid, course_id)
+    # FAISS 建置權限依「執行建置者」（呼叫者）的 user_type 判定，非題庫建立者。
+    user_type_val = _fetch_user_type(caller_person_id, course_id)
 
     # 允許 FAISS：user_type==1 且未強制關閉；即使允許，unit_type==1 才真正觸發建置
     if repack_only or body.build_faiss is False:
@@ -478,6 +500,8 @@ def build_bank_zip(
             }
             if success:
                 _persist_rag_build_metadata(body, pid, course_id, response)
+                # 最後修改者＝執行建置者（呼叫者），bump 父 Bank.updater 供清單顯示。
+                touch_bank_updater(body.bank_page_id, course_id, caller_person_id)
             complete_ev: dict[str, Any] = {
                 "type": "complete",
                 "success": success,
@@ -920,13 +944,14 @@ def bank_page_unit_preview_text(
 ):
     """
     **建置前預覽**（Bank_Unit 尚未建立、無 bank_unit_id 時用）：自 upload ZIP 內指定資料夾讀取**恰好一個**文字檔全文作為 `transcript`（unit_type=2，與 build-zip 一致）。
-    呼叫者（Bearer token）須為該 `bank_page_id` 之 Bank.person_id。
+    呼叫者（Bearer token）須為該課程管理者（user_type 1／2）；可預覽課程內任何題庫。
     已建置之單元請改用 GET /bank/units/{bank_unit_id}/text。
     """
-    require_bank_tab_owner(caller_person_id, bank_page_id, course_id)
+    require_bank_course_manager(caller_person_id, course_id)
+    owner_pid = resolve_bank_tab_owner_person_id(bank_page_id, course_id)
     tab = (bank_page_id or "").strip()
     folder = (folder_name or "").strip()
-    zip_bytes = _read_upload_zip_bytes_or_http_error(caller_person_id, bank_page_id)
+    zip_bytes = _read_upload_zip_bytes_or_http_error(owner_pid, bank_page_id)
 
     try:
         transcript, inner_path = read_single_transcript_text_from_upload_zip(zip_bytes, folder)
@@ -960,13 +985,14 @@ def bank_page_unit_preview_mp3_file(
 ):
     """
     **建置前預覽**：自 upload ZIP 內指定資料夾擷取音訊（base64）與**恰好一個**文字檔全文作為 `transcript`（unit_type=3，須音訊＋逐字稿，與 build-zip 一致）。
-    呼叫者（Bearer token）須為該 `bank_page_id` 之 Bank.person_id。**永遠回 JSON**。
+    呼叫者（Bearer token）須為該課程管理者（user_type 1／2）；可預覽課程內任何題庫。**永遠回 JSON**。
     已建置之單元請改用 GET /bank/units/{bank_unit_id}/mp3-file。
     """
-    require_bank_tab_owner(caller_person_id, bank_page_id, course_id)
+    require_bank_course_manager(caller_person_id, course_id)
+    owner_pid = resolve_bank_tab_owner_person_id(bank_page_id, course_id)
     tab = (bank_page_id or "").strip()
     folder = (folder_name or "").strip()
-    zip_bytes = _read_upload_zip_bytes_or_http_error(caller_person_id, bank_page_id)
+    zip_bytes = _read_upload_zip_bytes_or_http_error(owner_pid, bank_page_id)
 
     try:
         contents, suffix, inner_path = pick_audio_from_upload_zip(zip_bytes, folder)
@@ -1003,13 +1029,14 @@ def bank_page_unit_preview_youtube_url(
 ):
     """
     **建置前預覽**：自 upload ZIP 內指定資料夾讀取**恰好一個**文字檔：第一行為 YouTube URL，第二行起為 `transcript`（unit_type=4，與 build-zip 一致）。
-    呼叫者（Bearer token）須為該 `bank_page_id` 之 Bank.person_id。
+    呼叫者（Bearer token）須為該課程管理者（user_type 1／2）；可預覽課程內任何題庫。
     已建置之單元請改用 GET /bank/units/{bank_unit_id}/youtube-url。
     """
-    require_bank_tab_owner(caller_person_id, bank_page_id, course_id)
+    require_bank_course_manager(caller_person_id, course_id)
+    owner_pid = resolve_bank_tab_owner_person_id(bank_page_id, course_id)
     tab = (bank_page_id or "").strip()
     folder = (folder_name or "").strip()
-    zip_bytes = _read_upload_zip_bytes_or_http_error(caller_person_id, bank_page_id)
+    zip_bytes = _read_upload_zip_bytes_or_http_error(owner_pid, bank_page_id)
 
     try:
         vid, inner_path = read_youtube_video_id_from_upload_zip(zip_bytes, folder)

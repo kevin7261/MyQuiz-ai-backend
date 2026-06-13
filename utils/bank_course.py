@@ -6,7 +6,12 @@ from typing import Any
 from fastapi import HTTPException
 from postgrest.exceptions import APIError
 
+from utils.db_schema import ACTIVE_DELETED_FILTER, USER_COURSE_RELATION_TABLE
 from utils.supabase import get_supabase
+from utils.taipei_time import now_taipei_iso
+
+# 課程管理者身分：1 管理者、2 教師（皆可設定／編輯／出題／刪除課程內任何題庫）
+BANK_MANAGER_USER_TYPES = (1, 2)
 
 # Bank_Unit／Bank_Group／Bank_QA 是否已有 course_id 欄位（None=尚未探測）
 _course_id_column_cache: dict[str, bool | None] = {
@@ -86,6 +91,67 @@ def assert_row_course_id(row: dict[str, Any], course_id: int, entity_label: str 
         )
 
 
+def _user_type_in_course(person_id: str, course_id: int) -> int | None:
+    """查 User_Course_Relation.user_type（未刪除）；無列或非有效帳號時回傳 None。"""
+    pid = (person_id or "").strip()
+    if not pid:
+        return None
+    try:
+        resp = (
+            get_supabase()
+            .table(USER_COURSE_RELATION_TABLE)
+            .select("user_type")
+            .eq("person_id", pid)
+            .eq("course_id", course_id)
+            .or_(ACTIVE_DELETED_FILTER)
+            .order("course_user_id")
+            .limit(1)
+            .execute()
+        )
+        if not resp.data:
+            return None
+        ut = resp.data[0].get("user_type")
+        return int(ut) if ut is not None else None
+    except Exception:
+        return None
+
+
+def require_bank_course_manager(caller_person_id: str, course_id: int) -> None:
+    """寫入類題庫端點權限：呼叫者須為該課程管理者（user_type 1／2），否則 403。
+
+    題庫權限模型：同課程所有管理者皆可設定／編輯／出題／刪除課程內任何題庫，不再限本人。
+    """
+    ut = _user_type_in_course(caller_person_id, course_id)
+    if ut is None:
+        raise HTTPException(status_code=404, detail="找不到該使用者")
+    if ut not in BANK_MANAGER_USER_TYPES:
+        raise HTTPException(status_code=403, detail="僅課程管理者或教師可設定題庫")
+
+
+def touch_bank_updater(bank_page_id: str, course_id: int, updater_person_id: str) -> None:
+    """將 Bank 該未刪除列的 updater + updated_at 更新為最後修改者。
+
+    供所有 bank-scoped 寫入（含題庫內容：出題／編輯 prompt／批改／刪單元題組 QA）收尾呼叫，
+    讓清單反映「最後修改任何欄位的人」。失敗不阻斷主流程。
+    """
+    rid = (bank_page_id or "").strip()
+    pid = (updater_person_id or "").strip()
+    if not rid or not pid:
+        return
+    try:
+        (
+            get_supabase()
+            .table("Bank")
+            .update({"updater": pid, "updated_at": now_taipei_iso()})
+            .eq("bank_page_id", rid)
+            .eq("course_id", course_id)
+            .eq("deleted", False)
+            .execute()
+        )
+    except Exception:
+        pass
+
+
 def require_bank_tab_owner(
     person_id: str,
     bank_page_id: str,
@@ -93,29 +159,30 @@ def require_bank_tab_owner(
     *,
     require_person_match: bool = True,
 ) -> dict[str, Any]:
-    """確認 Bank 列存在、course_id 一致；require_person_match 時 person_id 須一致。回傳 Bank 列。"""
+    """確認 Bank 列存在、course_id 一致。回傳 Bank 列。
+
+    權限模型已改為「課程管理者皆可操作任何題庫」，故 person 不再作為擁有者過濾條件；
+    require_person_match 保留參數相容，但不再用於 SQL 過濾（呼叫端應另以
+    require_bank_course_manager 驗證權限）。
+    """
     rid = (bank_page_id or "").strip()
     if not rid or "/" in rid or "\\" in rid:
         raise HTTPException(status_code=400, detail="無效的 bank_page_id")
     supabase = get_supabase()
-    q = (
+    sel = (
         supabase.table("Bank")
         .select("bank_page_id, person_id, course_id")
         .eq("bank_page_id", rid)
         .eq("course_id", course_id)
         .eq("deleted", False)
         .limit(1)
+        .execute()
     )
-    if require_person_match:
-        q = q.eq("person_id", person_id)
-    sel = q.execute()
     if not sel.data:
-        detail = (
-            "找不到該 bank_page_id，或已刪除／不屬於此 course_id"
-            if not require_person_match
-            else "找不到該 bank_page_id，或已刪除／不屬於此 person_id／course_id"
+        raise HTTPException(
+            status_code=404,
+            detail="找不到該 bank_page_id，或已刪除／不屬於此 course_id",
         )
-        raise HTTPException(status_code=404, detail=detail)
     return sel.data[0]
 
 

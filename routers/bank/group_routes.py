@@ -27,7 +27,12 @@ from utils.openapi import openapi_body
 from utils.serialization import to_json_safe
 from utils.taipei_time import now_taipei_iso
 from utils.supabase import get_supabase
-from utils.bank_course import execute_with_course_id_fallback, insert_bank_child_row
+from utils.bank_course import (
+    execute_with_course_id_fallback,
+    insert_bank_child_row,
+    require_bank_course_manager,
+    touch_bank_updater,
+)
 
 from .group_schemas import (
     BankGroupAnswerUserPromptTextResponse,
@@ -91,23 +96,24 @@ def create_bank_group(
 ):
     """
     在指定單元下新增一個測試題組（Bank_Group），**不呼叫 LLM**。
+    僅課程管理者（user_type 1／2）可新增；可對課程內任何題庫出題。
     設定 `qa_count`（題數上限）與出題／批改 prompt 後，再以 POST /bank/groups/{id}/qa/llm-generate 逐題產生。
     """
     try:
         supabase = get_supabase()
+        require_bank_course_manager(caller_person_id, course_id)
         unit = fetch_bank_unit_in_page(
             supabase, bank_page_id=bank_page_id, bank_unit_id=bank_unit_id, course_id=course_id
         )
-        pid = (unit.get("person_id") or "").strip()
-        if pid != caller_person_id:
-            raise HTTPException(status_code=403, detail="無權於該 Bank_Unit 新增題組")
+        # person_id 維持題庫建立者以利歸屬；creator／updater 記為實際建立題組者（呼叫者）。
+        owner_pid = (unit.get("person_id") or "").strip()
         page_id = (unit.get("bank_page_id") or bank_page_id or "").strip()
 
         ts = now_taipei_iso()
         group_row: dict[str, Any] = {
             "bank_page_id": page_id,
             "bank_unit_id": bank_unit_id,
-            "person_id": pid,
+            "person_id": owner_pid,
             "course_id": course_id,
             "group_name": (body.group_name or "").strip() or (unit.get("unit_name") or "").strip(),
             "question_system_prompt_text": (body.question_system_prompt_text or "").strip(),
@@ -117,6 +123,8 @@ def create_bank_group(
             "answer_user_prompt_text": (body.answer_user_prompt_text or "").strip(),
             "answer_llm_model": (body.answer_llm_model or "").strip(),
             "for_exam": bool(body.for_exam),
+            "creator": caller_person_id,
+            "updater": caller_person_id,
             "deleted": False,
             "updated_at": ts,
             "created_at": ts,
@@ -124,6 +132,8 @@ def create_bank_group(
         ins = insert_bank_child_row("Bank_Group", group_row)
         if not ins.data:
             raise HTTPException(status_code=500, detail="寫入 Bank_Group 失敗（無回傳資料）")
+        # 新增題組屬「修改題庫內容」→ bump 父 Bank.updater。
+        touch_bank_updater(page_id, course_id, caller_person_id)
         return to_json_safe(ins.data[0])
     except HTTPException:
         raise
@@ -194,13 +204,16 @@ def _put_bank_group_prompt_field(
     value: str,
 ) -> dict[str, Any]:
     supabase = get_supabase()
-    require_bank_group_owner(
-        supabase, bank_group_id, course_id, caller_person_id, cols="bank_group_id, person_id, course_id"
+    group = require_bank_group_owner(
+        supabase, bank_group_id, course_id, caller_person_id,
+        cols="bank_group_id, bank_page_id, person_id, course_id",
     )
     supabase.table("Bank_Group").update({
         field: value,
+        "updater": caller_person_id,
         "updated_at": now_taipei_iso(),
     }).eq("bank_group_id", bank_group_id).eq("deleted", False).execute()
+    touch_bank_updater((group.get("bank_page_id") or "").strip(), course_id, caller_person_id)
     return _get_bank_group_prompt_field(bank_group_id, course_id, field)
 
 
@@ -234,7 +247,7 @@ def put_bank_group_question_system_prompt_text(
     course_id: CourseId,
     bank_group_id: int = PathParam(..., gt=0, description="Bank_Group 主鍵"),
 ):
-    """寫入 Bank_Group.question_system_prompt_text。僅 person_id 一致者可更新。"""
+    """寫入 Bank_Group.question_system_prompt_text。僅課程管理者（user_type 1／2）可更新。"""
     try:
         return BankGroupQuestionSystemPromptTextResponse(**_put_bank_group_prompt_field(
             bank_group_id=bank_group_id,
@@ -280,7 +293,7 @@ def put_bank_group_question_user_prompt_text(
     course_id: CourseId,
     bank_group_id: int = PathParam(..., gt=0, description="Bank_Group 主鍵"),
 ):
-    """寫入 Bank_Group.question_user_prompt_text。僅 person_id 一致者可更新。"""
+    """寫入 Bank_Group.question_user_prompt_text。僅課程管理者（user_type 1／2）可更新。"""
     try:
         return BankGroupQuestionUserPromptTextResponse(**_put_bank_group_prompt_field(
             bank_group_id=bank_group_id,
@@ -326,7 +339,7 @@ def put_bank_group_answer_user_prompt_text(
     course_id: CourseId,
     bank_group_id: int = PathParam(..., gt=0, description="Bank_Group 主鍵"),
 ):
-    """寫入 Bank_Group.answer_user_prompt_text。僅 person_id 一致者可更新。"""
+    """寫入 Bank_Group.answer_user_prompt_text。僅課程管理者（user_type 1／2）可更新。"""
     try:
         return BankGroupAnswerUserPromptTextResponse(**_put_bank_group_prompt_field(
             bank_group_id=bank_group_id,
@@ -362,12 +375,13 @@ def update_bank_group(
 ):
     """
     更新題組設定（僅更新有傳入的欄位；可更新 group_name、qa_count、question_system_prompt_text、
-    question_user_prompt_text、question_llm_model、answer_user_prompt_text、answer_llm_model）。僅 person_id 一致者可更新。
+    question_user_prompt_text、question_llm_model、answer_user_prompt_text、answer_llm_model）。僅課程管理者（user_type 1／2）可更新。
     """
     try:
         supabase = get_supabase()
-        require_bank_group_owner(
-            supabase, bank_group_id, course_id, caller_person_id, cols="bank_group_id, person_id, course_id"
+        group = require_bank_group_owner(
+            supabase, bank_group_id, course_id, caller_person_id,
+            cols="bank_group_id, bank_page_id, person_id, course_id",
         )
 
         update_payload: dict[str, Any] = {}
@@ -387,9 +401,11 @@ def update_bank_group(
             update_payload["answer_llm_model"] = body.answer_llm_model.strip()
         if not update_payload:
             raise HTTPException(status_code=400, detail="未提供任何要更新的欄位")
+        update_payload["updater"] = caller_person_id
         update_payload["updated_at"] = now_taipei_iso()
 
         supabase.table("Bank_Group").update(update_payload).eq("bank_group_id", bank_group_id).eq("deleted", False).execute()
+        touch_bank_updater((group.get("bank_page_id") or "").strip(), course_id, caller_person_id)
         read = _fetch_bank_group_row(supabase, bank_group_id, course_id, cols="*")
         return to_json_safe(read or {})
     except HTTPException:
@@ -406,14 +422,16 @@ def mark_bank_group_for_exam(
     course_id: CourseId,
     bank_group_id: int = PathParam(..., gt=0, description="Bank_Group 主鍵"),
 ):
-    """更新 Bank_Group.for_exam（true＝測驗用、false＝取消）。僅 person_id 一致者可更新。"""
+    """更新 Bank_Group.for_exam（true＝測驗用、false＝取消）。僅課程管理者（user_type 1／2）可更新。"""
     try:
         supabase = get_supabase()
-        require_bank_group_owner(
-            supabase, bank_group_id, course_id, caller_person_id, cols="bank_group_id, person_id, course_id"
+        group = require_bank_group_owner(
+            supabase, bank_group_id, course_id, caller_person_id,
+            cols="bank_group_id, bank_page_id, person_id, course_id",
         )
         ts = now_taipei_iso()
-        supabase.table("Bank_Group").update({"for_exam": body.for_exam, "updated_at": ts}).eq("bank_group_id", bank_group_id).eq("deleted", False).execute()
+        supabase.table("Bank_Group").update({"for_exam": body.for_exam, "updater": caller_person_id, "updated_at": ts}).eq("bank_group_id", bank_group_id).eq("deleted", False).execute()
+        touch_bank_updater((group.get("bank_page_id") or "").strip(), course_id, caller_person_id)
         read = _fetch_bank_group_row(supabase, bank_group_id, course_id, cols="*")
         return to_json_safe(read or {})
     except HTTPException:
@@ -429,14 +447,16 @@ def delete_bank_group(
     course_id: CourseId,
     bank_group_id: int = PathParam(..., gt=0, description="Bank_Group 主鍵"),
 ):
-    """軟刪除題組（僅將此題組 deleted=true，不動其 Bank_QA）。僅 person_id 一致者可刪除。"""
+    """軟刪除題組（僅將此題組 deleted=true，不動其 Bank_QA）。僅課程管理者（user_type 1／2）可刪除。"""
     try:
         supabase = get_supabase()
         group = require_bank_group_owner(
-            supabase, bank_group_id, course_id, caller_person_id, cols="bank_group_id, person_id, course_id"
+            supabase, bank_group_id, course_id, caller_person_id,
+            cols="bank_group_id, bank_page_id, person_id, course_id",
         )
         ts = now_taipei_iso()
-        supabase.table("Bank_Group").update({"deleted": True, "updated_at": ts}).eq("bank_group_id", bank_group_id).eq("deleted", False).execute()
+        supabase.table("Bank_Group").update({"deleted": True, "updater": caller_person_id, "updated_at": ts}).eq("bank_group_id", bank_group_id).eq("deleted", False).execute()
+        touch_bank_updater((group.get("bank_page_id") or "").strip(), course_id, caller_person_id)
         return {
             "message": "已將 Bank_Group 標記為刪除",
             "bank_group_id": bank_group_id,
@@ -578,18 +598,18 @@ def delete_bank_qa(
     course_id: CourseId,
     bank_qa_id: int = PathParam(..., gt=0, description="Bank_QA 主鍵"),
 ):
-    """軟刪除單一題目（Bank_QA.deleted=true）。僅 person_id 一致者可刪除。"""
+    """軟刪除單一題目（Bank_QA.deleted=true）。僅課程管理者（user_type 1／2）可刪除。"""
     try:
         supabase = get_supabase()
         qa = _fetch_bank_qa_row(
-            supabase, bank_qa_id, course_id, cols="bank_qa_id, bank_group_id, person_id, course_id"
+            supabase, bank_qa_id, course_id, cols="bank_qa_id, bank_page_id, bank_group_id, person_id, course_id"
         )
         if not qa:
             raise HTTPException(status_code=404, detail=f"找不到 bank_qa_id={bank_qa_id} 的 Bank_QA，或已刪除")
-        if (qa.get("person_id") or "").strip() != caller_person_id:
-            raise HTTPException(status_code=403, detail="無權刪除該 Bank_QA")
+        require_bank_course_manager(caller_person_id, course_id)
         ts = now_taipei_iso()
-        supabase.table("Bank_QA").update({"deleted": True, "updated_at": ts}).eq("bank_qa_id", bank_qa_id).eq("deleted", False).execute()
+        supabase.table("Bank_QA").update({"deleted": True, "updater": caller_person_id, "updated_at": ts}).eq("bank_qa_id", bank_qa_id).eq("deleted", False).execute()
+        touch_bank_updater((qa.get("bank_page_id") or "").strip(), course_id, caller_person_id)
         return {
             "message": "已將 Bank_QA 標記為刪除",
             "bank_qa_id": bank_qa_id,

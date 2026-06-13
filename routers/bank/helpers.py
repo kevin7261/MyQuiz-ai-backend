@@ -34,6 +34,7 @@ from utils.db_schema import (
     ACTIVE_DELETED_FILTER,
     BANK_COURSE_ID_DEFAULT,
     USER_COURSE_RELATION_TABLE,
+    USER_TABLE,
 )
 from utils.bank_course import (
     execute_with_course_id_fallback,
@@ -97,6 +98,56 @@ def _fetch_user_type(person_id: str, course_id: int) -> int:
             return 0
     except Exception:
         return 0
+
+
+def _person_names_for_course(course_id: int) -> dict[str, str]:
+    """建該課程 person_id → 顯示名 對照（供清單解析 creator_name／updater_name）。
+
+    以 User_Course_Relation（該課程未刪除成員）為主，名稱優先取 User.name，
+    其次取關聯列上的 name。一次查詢批次解析，避免逐筆查。
+    """
+    try:
+        supabase = get_supabase()
+        rel_resp = (
+            supabase.table(USER_COURSE_RELATION_TABLE)
+            .select("person_id, user_id, name")
+            .eq("course_id", course_id)
+            .or_(ACTIVE_DELETED_FILTER)
+            .execute()
+        )
+        rels = rel_resp.data or []
+        if not rels:
+            return {}
+        user_ids = list({
+            int(r["user_id"]) for r in rels if r.get("user_id") is not None
+        })
+        name_by_user_id: dict[int, str] = {}
+        if user_ids:
+            user_resp = (
+                supabase.table(USER_TABLE)
+                .select("user_id, name")
+                .in_("user_id", user_ids)
+                .or_(ACTIVE_DELETED_FILTER)
+                .execute()
+            )
+            for u in (user_resp.data or []):
+                uid = u.get("user_id")
+                if uid is None:
+                    continue
+                name_by_user_id[int(uid)] = (u.get("name") or "").strip()
+        names: dict[str, str] = {}
+        for r in rels:
+            pid = (r.get("person_id") or "").strip()
+            if not pid:
+                continue
+            uid = r.get("user_id")
+            name = name_by_user_id.get(int(uid)) if uid is not None else ""
+            name = name or (r.get("name") or "").strip()
+            if name:
+                names[pid] = name
+        return names
+    except Exception:
+        return {}
 
 
 def _unit_types_per_task(unit_types_csv: str, task_count: int) -> list[int]:
@@ -187,14 +238,18 @@ def _bank_default_row(
 ) -> dict[str, Any]:
     """Bank 表一筆新增時的預設欄位；鍵順序同 public.Bank（bank_page_id→person_id→course_id→…；不含 bank_id；created_at／updated_at 為台北時間）。"""
     ts = now_taipei_iso()
+    pid = person_id if person_id is not None else ""
     row: dict[str, Any] = {
         "bank_page_id": bank_page_id,
-        "person_id": person_id if person_id is not None else "",
+        "person_id": pid,
         "course_id": course_id,
         "tab_name": tab_name if tab_name is not None else "",
         "file_metadata": file_metadata,
     }
     # rag_metadata／rag_chunk_size 等欄位在 Bank_Unit 層管理，建立時不主動寫入以避免 schema 未同步時 500
+    # creator＝第一個建立者（不變）；updater＝最後修改者，建立時與 creator 相同。
+    row["creator"] = pid
+    row["updater"] = pid
     row["deleted"] = False
     row["created_at"] = ts
     row["updated_at"] = ts
@@ -237,6 +292,8 @@ def _bank_unit_default_row(
         "text_file_name": text_file_name,
         "mp3_file_name": mp3_file_name,
         "youtube_url": youtube_url,
+        "creator": person_id,
+        "updater": person_id,
         "deleted": False,
         "created_at": ts,
         "updated_at": ts,

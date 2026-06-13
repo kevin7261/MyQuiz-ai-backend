@@ -14,7 +14,8 @@
   （`access_token` 由 `POST /v1/auth/login` 取得、`POST /v1/auth/refresh` 換發）。未帶或失效 → **401**。
   後端用 token 解析出呼叫者 `person_id`，**不需**在 query／body 自己帶。
 - **course_id**：每支 API 都**必填** query 參數 `?course_id=<int>`。未帶 → **400**。
-- **擁有權**：只有資源的 `person_id == token 持有者` 才能讀寫，否則 **403**。
+- **權限模型**：題庫採「課程共管」。**讀取**（列清單、看詳情、單元內容）：課程內有效登入者皆可，且清單回傳該課程**所有人**建立的題庫。**寫入**（建立／編輯／上傳／建置／出題／編輯 prompt／批改／刪除）：須為該課程**管理者（`user_type` 1 管理者或 2 教師）**，可操作課程內**任何**題庫，非管理者 → **403**。
+- **creator／updater**：`creator` = 第一個建立者（不變）；`updater` = 最後修改任何欄位（含題庫內容：出題、編輯 prompt、批改、刪單元題組）的人。清單每筆另附 `creator_name`／`updater_name` 顯示名。
 - **軟刪**：刪除都是 `deleted=true`，不是真的刪列。
 - **常見錯誤碼**：`400` 參數錯、`401` 未登入、`403` 無權、`404` 找不到/已刪、`409` 超過題數上限、`500` 伺服器錯、`502/503` 儲存或 LLM 暫時失敗。
 
@@ -50,7 +51,7 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 
 ### 1.1 列出題庫頁面 `GET /v1/bank/pages`
 
-回傳該 `course_id`、該登入者、`deleted=false` 的所有 Bank，**巢狀**帶出 units → groups → qas。
+回傳該 `course_id` 下**所有人**建立、`deleted=false` 的 Bank（不再只限呼叫者本人），**巢狀**帶出 units → groups → qas。每筆另含 `creator`／`creator_name`／`updater`／`updater_name`（`person_id` 保留 = `creator`，前端可用來判斷「是不是我建的」）。
 
 **Query**：`course_id`（必）
 
@@ -62,6 +63,10 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
       "bank_id": 1,
       "bank_page_id": "abc",
       "person_id": "u_123",
+      "creator": "u_123",
+      "creator_name": "王小明",
+      "updater": "u_456",
+      "updater_name": "李大華",
       "course_id": 10,
       "tab_name": "第一章",
       "file_size": 1.2,
@@ -119,8 +124,8 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 
 ### 1.3 更新頁面名稱 `PATCH /v1/bank/pages/{bank_page_id}`
 
-**Query**：`course_id`　**Body**：`{ "tab_name": "新名稱" }`
-**Response 200**：`{ bank_id, bank_page_id, person_id, tab_name, updated_at }`
+**Query**：`course_id`　**Body**：`{ "tab_name": "新名稱" }`（僅課程管理者可改，可改任何題庫）
+**Response 200**：`{ bank_id, bank_page_id, person_id, creator, updater, tab_name, updated_at }`
 
 ### 1.4 刪除頁面 `DELETE /v1/bank/pages/{bank_page_id}`
 
@@ -178,7 +183,7 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 | `GET /v1/bank/pages/{bank_page_id}/unit-preview/mp3-file` | `audio_base64`, `media_type`, `filename`, `text_file_name`, `transcript` |
 | `GET /v1/bank/pages/{bank_page_id}/unit-preview/youtube-url` | `youtube_url`, `text_file_name`, `transcript` |
 
-**Query（共通）**：`course_id`（必）、`folder_name`（必，upload ZIP 內資料夾名）。呼叫者須為該頁面擁有者。
+**Query（共通）**：`course_id`（必）、`folder_name`（必，upload ZIP 內資料夾名）。呼叫者須為該課程管理者（可預覽任何題庫）。
 
 ---
 
@@ -196,10 +201,10 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 {
   "group_name": "第一回測驗",
   "qa_count": 5,
-  "question_system_prompt_text": "請連續出題，題目越來越深入且彼此不重複。",
-  "question_user_prompt_text": "請就課程內容出一道問答題。",
+  "question_system_prompt_text": "",
+  "question_user_prompt_text": "",
   "question_llm_model": "",
-  "answer_user_prompt_text": "請依參考答案批改，指出學生答得不足之處。",
+  "answer_user_prompt_text": "",
   "answer_llm_model": "",
   "for_exam": false
 }
@@ -245,10 +250,10 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 {
   "group_name": "新名稱",
   "qa_count": 8,
-  "question_system_prompt_text": "請連續出題，題目越來越深入且彼此不重複。",
-  "question_user_prompt_text": "請就課程內容出一道問答題。",
+  "question_system_prompt_text": "",
+  "question_user_prompt_text": "",
   "question_llm_model": "",
-  "answer_user_prompt_text": "請依參考答案批改，指出學生答得不足之處。",
+  "answer_user_prompt_text": "",
   "answer_llm_model": ""
 }
 ```
@@ -353,11 +358,16 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 
 ## 4. 欄位參考
 
+> 四個 Bank* 表皆含 `creator`（建立者，不變）與 `updater`（最後修改者）欄位。
+
+### Bank
+`bank_id, bank_page_id, person_id, creator, updater, course_id, tab_name, file_size, file_metadata, rag_metadata, deleted, updated_at, created_at`
+
 ### Bank_Group
-`bank_group_id, bank_page_id, bank_unit_id, person_id, course_id, group_name, question_system_prompt_text, question_user_prompt_text, qa_count, question_llm_model, answer_user_prompt_text, answer_llm_model, for_exam, deleted, updated_at, created_at`
+`bank_group_id, bank_page_id, bank_unit_id, person_id, creator, updater, course_id, group_name, question_system_prompt_text, question_user_prompt_text, qa_count, question_llm_model, answer_user_prompt_text, answer_llm_model, for_exam, deleted, updated_at, created_at`
 
 ### Bank_QA
-`bank_qa_id, bank_page_id, bank_unit_id, bank_group_id, person_id, course_id, question_series_index, question_system_prompt_text, question_user_prompt_text, question_content, question_hint, question_answer_reference, question_reason, question_llm_model, answer_user_prompt_text, answer_llm_model, answer_content, answer_critique, deleted, updated_at, created_at`
+`bank_qa_id, bank_page_id, bank_unit_id, bank_group_id, person_id, creator, updater, course_id, question_series_index, question_system_prompt_text, question_user_prompt_text, question_content, question_hint, question_answer_reference, question_reason, question_llm_model, answer_user_prompt_text, answer_llm_model, answer_content, answer_critique, deleted, updated_at, created_at`
 
 > **prompt 凍結 / model 記錄**（隨 QA 一起回傳：GET pages/units、GET group、llm-generate 回應、answer-result）：
 > - **prompt**：QA 列記「這一題各次 LLM 呼叫**實際用了什麼**」——`question_system_prompt_text`／`question_user_prompt_text` 於**出題／重出當下**寫入本次出題實際用的規則；`answer_user_prompt_text` 出題當下先複製題組值，**批改完成後覆寫為本次批改實際使用的規則**（重出時重置為題組現值）。出題／重出／批改**每次都用題組現值**（批改時重抓 Bank_Group；題組欄位空才回退此題快照，舊資料相容）。
