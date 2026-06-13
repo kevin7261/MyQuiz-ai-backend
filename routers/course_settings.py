@@ -1,17 +1,11 @@
 """
-課程設定（Course_Setting）API 模組，掛載於 /rag。
-- GET /rag/course-members：依 course_id 列出該課程所有使用者；須為有效登入使用者；必填 query course_id。
-- POST /rag/course-members/add：新增一筆課程成員（person_id、name、user_type）；僅 user_type 1／2。
+課程成員管理 API 模組，掛載於 /bank。
+- GET /bank/course-members：依 course_id 列出該課程所有使用者；須為有效登入使用者；必填 query course_id。
+- POST /bank/course-members：新增一筆課程成員（person_id、name、user_type）；僅 user_type 1／2。
   User 表已有相同 college_id + person_id 時僅新增選課，否則先建立 User 再加入課程。
-- POST /rag/course-members/add-batch：批次新增該課程學生（每筆 person_id、name；user_type 固定 3）；僅 user_type 1／2。
-- PUT /rag/course-members/edit/{person_id}：編輯課程成員（name、user_type）；僅 user_type 1／2。
-- PUT /rag/course-members/delete/{person_id}：自課程移除成員（User_Course_Relation deleted=true）；僅 user_type 1／2。
-- GET /rag/person-analysis-user-prompt-text：取得個人分析指令（Course_Setting key=person_analysis_user_prompt_text）；須為有效登入使用者；必填 query course_id。
-- PUT /rag/person-analysis-user-prompt-text：寫入 Course_Setting（依 course_id upsert）；僅 user_type 1／2。
-- GET /rag/course-analysis-user-prompt-text：取得課程分析指令（Course_Setting key=course_analysis_user_prompt_text）；須為有效登入使用者；必填 query course_id。
-- PUT /rag/course-analysis-user-prompt-text：寫入 Course_Setting（依 course_id upsert）；僅 user_type 1／2。
-
-LLM API Key 亦存於 Course_Setting（rag-api-key／exam-api-key）；見 GET/PUT /v1/rag/llm-api-key、/v1/rag/llm-model、/v1/exam/llm-api-key。
+- POST /bank/course-members/batch：批次新增該課程學生（每筆 person_id、name；user_type 固定 3）；僅 user_type 1／2。
+- PATCH /bank/course-members/{member_person_id}：編輯課程成員（name、user_type）；僅 user_type 1／2。
+- DELETE /bank/course-members/{member_person_id}：自課程移除成員（User_Course_Relation deleted=true）；僅 user_type 1／2。
 """
 
 from typing import Annotated, Optional
@@ -22,9 +16,6 @@ from pydantic import BaseModel, Field
 from dependencies.course_id import CourseId
 from dependencies.person_id import CurrentUser, PersonId
 from utils.course_setting import (
-    COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY,
-    COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY,
-    fetch_course_setting_text,
     upsert_course_setting_and_get_row,
 )
 from utils.db_schema import (
@@ -40,7 +31,7 @@ from utils.taipei_time import now_taipei_iso
 
 DEFAULT_NEW_MEMBER_PASSWORD = "0000"
 
-router = APIRouter(prefix="/rag", tags=["rag"])
+router = APIRouter(prefix="/bank", tags=["bank"])
 
 
 def _user_type_for_active_person(person_id: str, course_id: int) -> Optional[int]:
@@ -113,34 +104,8 @@ _require_developer_or_manager_for_analysis_prompt_write = (
 _upsert_setting_and_get_row = upsert_course_setting_and_get_row
 
 
-class PersonAnalysisUserPromptTextResponse(BaseModel):
-    """GET/PUT /rag/person-analysis-user-prompt-text 回應（資料來自 Course_Setting）。"""
-
-    course_id: Optional[int] = None
-    person_analysis_user_prompt_text: Optional[str] = None
-
-
-class PutPersonAnalysisUserPromptTextRequest(BaseModel):
-    """PUT /rag/person-analysis-user-prompt-text 的 body。"""
-
-    person_analysis_user_prompt_text: str = Field(..., description="個人分析使用者 Prompt 文字")
-
-
-class CourseAnalysisUserPromptTextResponse(BaseModel):
-    """GET/PUT /rag/course-analysis-user-prompt-text 回應（資料來自 Course_Setting）。"""
-
-    course_id: Optional[int] = None
-    course_analysis_user_prompt_text: Optional[str] = None
-
-
-class PutCourseAnalysisUserPromptTextRequest(BaseModel):
-    """PUT /rag/course-analysis-user-prompt-text 的 body。"""
-
-    course_analysis_user_prompt_text: str = Field(..., description="課程分析使用者 Prompt 文字")
-
-
 class CourseMemberItem(BaseModel):
-    """GET /rag/course-members 單筆成員。"""
+    """GET /bank/course-members 單筆成員。"""
 
     course_user_id: int
     user_id: int
@@ -152,7 +117,7 @@ class CourseMemberItem(BaseModel):
 
 
 class ListCourseMembersResponse(BaseModel):
-    """GET /rag/course-members 回應。"""
+    """GET /bank/course-members 回應。"""
 
     course_id: int
     members: list[CourseMemberItem]
@@ -160,7 +125,7 @@ class ListCourseMembersResponse(BaseModel):
 
 
 class AddCourseMemberRequest(BaseModel):
-    """POST /rag/course-members/add 的 body。"""
+    """POST /bank/course-members 的 body。"""
 
     person_id: str = Field(..., description="登入帳號（id）")
     name: str = Field(..., description="姓名")
@@ -168,7 +133,7 @@ class AddCourseMemberRequest(BaseModel):
 
 
 class EditCourseMemberRequest(BaseModel):
-    """PUT /rag/course-members/edit/{person_id} 的 body。"""
+    """PATCH /bank/course-members/{member_person_id} 的 body。"""
 
     name: str = Field(..., description="姓名")
     user_type: int = Field(..., description="身份：1 管理者、2 教師、3 學生")
@@ -187,7 +152,7 @@ class BatchCourseMemberFailure(BaseModel):
 
 
 class BatchAddCourseMembersResponse(BaseModel):
-    """POST /rag/course-members/add-batch 回應。"""
+    """POST /bank/course-members/batch 回應。"""
 
     created: list[CourseMemberItem]
     failed: list[BatchCourseMemberFailure]
@@ -628,7 +593,7 @@ def batch_add_course_members(
     "/course-members/{member_person_id}",
     response_model=CourseMemberItem,
     summary="Edit course member",
-    operation_id="rag_course_members_edit",
+    operation_id="bank_course_members_edit",
 )
 def edit_course_member(
     target_person_id: Annotated[
@@ -662,7 +627,7 @@ def edit_course_member(
     "/course-members/{member_person_id}",
     response_model=CourseMemberItem,
     summary="Remove course member",
-    operation_id="rag_course_members_delete",
+    operation_id="bank_course_members_delete",
 )
 def soft_delete_course_member(
     target_person_id: Annotated[
@@ -679,104 +644,6 @@ def soft_delete_course_member(
             supabase,
             course_id=course_id,
             target_person_id=target_person_id,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.get("/person-analysis-user-prompt-text", response_model=PersonAnalysisUserPromptTextResponse)
-def get_person_analysis_user_prompt_text_setting(caller: CurrentUser, course_id: CourseId):
-    """取得個人分析指令（Course_Setting key=person_analysis_user_prompt_text，依 course_id）。"""
-    _require_active_person(caller.person_id, caller.college_id)
-    try:
-        text = fetch_course_setting_text(
-            COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY, course_id
-        )
-        return PersonAnalysisUserPromptTextResponse(
-            course_id=course_id,
-            person_analysis_user_prompt_text=text or None,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.put("/person-analysis-user-prompt-text", response_model=PersonAnalysisUserPromptTextResponse)
-def put_person_analysis_user_prompt_text_setting(
-    body: openapi_body(
-        PutPersonAnalysisUserPromptTextRequest,
-        {"person_analysis_user_prompt_text": "string"},
-    ),
-    person_id: PersonId,
-    course_id: CourseId,
-):
-    """寫入個人分析指令至 Course_Setting（依 course_id upsert；傳空字串可清除）。"""
-    _require_developer_or_manager_for_course_setting_write(person_id, course_id)
-    value_to_save = (body.person_analysis_user_prompt_text or "").strip()
-    try:
-        row = upsert_course_setting_and_get_row(
-            get_supabase(),
-            COURSE_SETTING_PERSON_ANALYSIS_USER_PROMPT_TEXT_KEY,
-            value_to_save,
-            course_id,
-        )
-        if not row:
-            raise HTTPException(status_code=500, detail="寫入 Course_Setting 失敗")
-        return PersonAnalysisUserPromptTextResponse(
-            course_id=course_id,
-            person_analysis_user_prompt_text=value_to_save or None,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.get("/course-analysis-user-prompt-text", response_model=CourseAnalysisUserPromptTextResponse)
-def get_course_analysis_user_prompt_text_setting(caller: CurrentUser, course_id: CourseId):
-    """取得課程分析指令（Course_Setting key=course_analysis_user_prompt_text，依 course_id）。"""
-    _require_active_person(caller.person_id, caller.college_id)
-    try:
-        text = fetch_course_setting_text(
-            COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY, course_id
-        )
-        return CourseAnalysisUserPromptTextResponse(
-            course_id=course_id,
-            course_analysis_user_prompt_text=text or None,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.put("/course-analysis-user-prompt-text", response_model=CourseAnalysisUserPromptTextResponse)
-def put_course_analysis_user_prompt_text_setting(
-    body: openapi_body(
-        PutCourseAnalysisUserPromptTextRequest,
-        {"course_analysis_user_prompt_text": "string"},
-    ),
-    person_id: PersonId,
-    course_id: CourseId,
-):
-    """寫入課程分析指令至 Course_Setting（依 course_id upsert；傳空字串可清除）。"""
-    _require_developer_or_manager_for_course_setting_write(person_id, course_id)
-    value_to_save = (body.course_analysis_user_prompt_text or "").strip()
-    try:
-        row = upsert_course_setting_and_get_row(
-            get_supabase(),
-            COURSE_SETTING_COURSE_ANALYSIS_USER_PROMPT_TEXT_KEY,
-            value_to_save,
-            course_id,
-        )
-        if not row:
-            raise HTTPException(status_code=500, detail="寫入 Course_Setting 失敗")
-        return CourseAnalysisUserPromptTextResponse(
-            course_id=course_id,
-            course_analysis_user_prompt_text=value_to_save or None,
         )
     except HTTPException:
         raise

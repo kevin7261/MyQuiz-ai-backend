@@ -389,7 +389,7 @@ def update_bank_qa_with_answer(
     *,
     bank_qa_id: int,
     answer_llm_model: str = "",
-    answer_user_prompt_text: str = "",
+    answer_user_prompt_text: str,
 ) -> tuple[str, int] | None:
     """背景批改完成後更新 Bank_QA：寫 answer_content、answer_critique，並把本次批改**實際使用**的
     answer_llm_model／answer_user_prompt_text 寫回（QA 列記「這一題各次呼叫實際用了什麼」：
@@ -526,7 +526,7 @@ async def enqueue_bank_qa_answer_job(
         answer_content or "",
         _bank_answer_job_results,
         insert_fn,
-        answer_user_prompt,
+        answer_user_prompt_text=answer_user_prompt,
         bank_qa_id=bank_qa_id,
         unit_type=unit_type,
         transcript_answer=transcript_answer,

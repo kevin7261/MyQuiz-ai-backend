@@ -74,7 +74,7 @@ class QuizGroupQuestionSystemPromptTextResponse(BaseModel):
     """GET/PUT /quiz/groups/{quiz_group_id}/question-system-prompt-text 回應。"""
 
     quiz_group_id: int
-    question_system_prompt_text: str = ""
+    question_system_prompt_text: str
 
 
 class PutQuizGroupQuestionSystemPromptTextRequest(BaseModel):
@@ -85,7 +85,7 @@ class QuizGroupQuestionUserPromptTextResponse(BaseModel):
     """GET/PUT /quiz/groups/{quiz_group_id}/question-user-prompt-text 回應。"""
 
     quiz_group_id: int
-    question_user_prompt_text: str = ""
+    question_user_prompt_text: str
 
 
 class PutQuizGroupQuestionUserPromptTextRequest(BaseModel):
@@ -96,7 +96,7 @@ class QuizGroupAnswerUserPromptTextResponse(BaseModel):
     """GET/PUT /quiz/groups/{quiz_group_id}/answer-user-prompt-text 回應。"""
 
     quiz_group_id: int
-    answer_user_prompt_text: str = ""
+    answer_user_prompt_text: str
 
 
 class PutQuizGroupAnswerUserPromptTextRequest(BaseModel):

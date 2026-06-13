@@ -57,7 +57,7 @@ class AnalysisUserPromptTextResponse(BaseModel):
     """GET/PUT /{prefix}/analysis-user-prompt-text 回應（資料來自 Course_Setting）。"""
 
     course_id: int
-    analysis_user_prompt_text: Optional[str] = None
+    analysis_user_prompt_text: Optional[str] = Field(...)
 
 
 class PutAnalysisUserPromptTextRequest(BaseModel):

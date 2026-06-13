@@ -24,19 +24,14 @@ from fastapi.openapi.utils import get_openapi
 from middleware.api_log_middleware import APILogMiddleware
 from routers.college import router as college_router
 from routers.course import router as course_router
-from routers.course_analysis import router as course_analysis_router
-from routers.exam import router as exam_router
-from routers.answer import router as answer_router
 from routers.bank import router as bank_router
 from routers.quiz import router as quiz_router
 from routers.log import router as log_router
-from routers.person_analysis import router as person_analysis_router
 from routers.user_analysis import router as user_analysis_router
 from routers.quiz_analysis import router as quiz_analysis_router
 from routers.prompt import router as prompt_router
 from routers.course_settings import router as course_settings_router
 from routers.profile import router as profile_router
-from routers.zip import router as zip_router
 from utils.openapi_order import sort_openapi_paths
 
 # ---------------------------------------------------------------------------
@@ -48,12 +43,8 @@ _OPENAPI_TAGS = [
     {"name": "profile"},
     {"name": "bank"},
     {"name": "quiz"},
-    {"name": "rag"},
-    {"name": "exam"},
     {"name": "user analysis"},
     {"name": "quiz analysis"},
-    {"name": "person analysis"},
-    {"name": "course analysis"},
     {"name": "college"},
     {"name": "course"},
     {"name": "prompt"},
@@ -117,18 +108,14 @@ app.add_middleware(APILogMiddleware)
 
 API_PREFIX = "/v1"
 
-# 掛載順序對齊 OpenAPI 區塊：profile → bank → quiz → rag → exam → 分析 → college → course → prompt → log
+# 掛載順序對齊 OpenAPI 區塊：profile → bank → quiz → 分析 → college → course → prompt → log
+# course_settings_router 提供 /bank/course-members（課程成員管理，tag=bank）
 app.include_router(profile_router, prefix=API_PREFIX)
 app.include_router(bank_router, prefix=API_PREFIX)
-app.include_router(quiz_router, prefix=API_PREFIX)
-app.include_router(zip_router, prefix=API_PREFIX)
-app.include_router(answer_router, prefix=API_PREFIX)
 app.include_router(course_settings_router, prefix=API_PREFIX)
-app.include_router(exam_router, prefix=API_PREFIX)
+app.include_router(quiz_router, prefix=API_PREFIX)
 app.include_router(user_analysis_router, prefix=API_PREFIX)
 app.include_router(quiz_analysis_router, prefix=API_PREFIX)
-app.include_router(person_analysis_router, prefix=API_PREFIX)
-app.include_router(course_analysis_router, prefix=API_PREFIX)
 app.include_router(college_router, prefix=API_PREFIX)
 app.include_router(course_router, prefix=API_PREFIX)
 app.include_router(prompt_router, prefix=API_PREFIX)

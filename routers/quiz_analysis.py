@@ -99,10 +99,10 @@ class QuizAnalysisListItem(BaseModel):
         default=None, description="分析名稱（DB 欄位 analysis_name）"
     )
     analysis_user_prompt_text: Optional[str] = Field(
-        default=None, description="產生報告當下的教師指令快照"
+        ..., description="產生報告當下的教師指令快照"
     )
     analysis_prompt_text: Optional[str] = Field(
-        default=None, description="與 analysis_user_prompt_text 同源（DB 欄位 analysis_prompt_text）"
+        ..., description="與 analysis_user_prompt_text 同源（DB 欄位 analysis_prompt_text）"
     )
     analysis_text: Optional[str] = Field(
         default=None, description="分析報告 Markdown"
