@@ -337,7 +337,7 @@ Bank(題庫頁面/page) ─< Bank_Unit(單元) ─< Bank_Group(題組) ─< Bank
 
 ## 3. LLM 設定端點（bank 專屬）
 
-權限：`exists` 須登入；讀寫金鑰/模型須該課程的 developer／manager。
+權限：`exists` 須登入；讀寫金鑰/模型須該課程的 manager／teacher。
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|

@@ -32,9 +32,9 @@
 | Method | Path | 說明 |
 |--------|------|------|
 | GET | `/v1/user-analyses/llm-api-key/exists` | 是否已設定金鑰（**不回傳 key**；一般成員可呼叫） |
-| GET | `/v1/user-analyses/llm-api-key` | 讀取金鑰（需開發者／管理者權限） |
+| GET | `/v1/user-analyses/llm-api-key` | 讀取金鑰（需管理者／教師權限） |
 | PUT | `/v1/user-analyses/llm-api-key` | 寫入金鑰 |
-| GET | `/v1/user-analyses/llm-model` | 讀取模型（需開發者／管理者權限） |
+| GET | `/v1/user-analyses/llm-model` | 讀取模型（需管理者／教師權限） |
 | PUT | `/v1/user-analyses/llm-model` | 寫入模型 |
 
 ### Quiz Analysis（課程彙整）
@@ -42,9 +42,9 @@
 | Method | Path | 說明 |
 |--------|------|------|
 | GET | `/v1/quiz-analyses/llm-api-key/exists` | 是否已設定金鑰（**不回傳 key**；一般成員可呼叫） |
-| GET | `/v1/quiz-analyses/llm-api-key` | 讀取金鑰（需開發者／管理者權限） |
+| GET | `/v1/quiz-analyses/llm-api-key` | 讀取金鑰（需管理者／教師權限） |
 | PUT | `/v1/quiz-analyses/llm-api-key` | 寫入金鑰 |
-| GET | `/v1/quiz-analyses/llm-model` | 讀取模型（需開發者／管理者權限） |
+| GET | `/v1/quiz-analyses/llm-model` | 讀取模型（需管理者／教師權限） |
 | PUT | `/v1/quiz-analyses/llm-model` | 寫入模型 |
 
 **共通 query**（與其他模組相同）：
@@ -72,7 +72,7 @@ Authorization: Bearer <token>
 }
 ```
 
-### 寫入金鑰（教師／管理者設定頁）
+### 寫入金鑰（管理者／教師設定頁）
 
 ```http
 PUT /v1/user-analyses/llm-api-key?course_id=1
@@ -174,7 +174,7 @@ PUT /v1/quiz-analyses/analysis-user-prompt-text
 
 ## 6. 權限
 
-| 端點 | 一般成員 | 開發者／管理者 |
+| 端點 | 一般成員 | 管理者／教師 |
 |------|---------|---------------|
 | `GET …/llm-api-key/exists` | ✅ | ✅ |
 | `GET …/llm-api-key` | ❌ 403 | ✅ |

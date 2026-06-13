@@ -98,12 +98,12 @@ def _require_active_person(person_id: str, college_id: Optional[object] = None) 
 def _require_developer_or_manager_for_course_setting_write(
     person_id: str, course_id: int
 ) -> None:
-    """變更課程設定：僅開發者（1）或管理者（2）。"""
+    """變更課程設定：僅管理者（1）或教師（2）。"""
     ut = _user_type_for_active_person(person_id, course_id)
     if ut is None:
         raise HTTPException(status_code=404, detail="找不到該使用者")
     if ut not in (1, 2):
-        raise HTTPException(status_code=403, detail="僅開發者或管理者可變更課程設定")
+        raise HTTPException(status_code=403, detail="僅管理者或教師可變更課程設定")
 
 
 # 供 answer／exam api_key 端點沿用之別名
@@ -164,14 +164,14 @@ class AddCourseMemberRequest(BaseModel):
 
     person_id: str = Field(..., description="登入帳號（id）")
     name: str = Field(..., description="姓名")
-    user_type: int = Field(..., description="身份：1 開發者、2 管理者、3 學生")
+    user_type: int = Field(..., description="身份：1 管理者、2 教師、3 學生")
 
 
 class EditCourseMemberRequest(BaseModel):
     """PUT /rag/course-members/edit/{person_id} 的 body。"""
 
     name: str = Field(..., description="姓名")
-    user_type: int = Field(..., description="身份：1 開發者、2 管理者、3 學生")
+    user_type: int = Field(..., description="身份：1 管理者、2 教師、3 學生")
 
 
 class BatchCourseMemberRow(BaseModel):

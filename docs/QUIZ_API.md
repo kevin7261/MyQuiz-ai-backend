@@ -325,7 +325,7 @@ LLM 失敗時 HTTP 仍 200，帶 `{ "llm_error": "...", "quiz_group_id": 34, "an
 | GET | `/v1/quiz/llm-model` | — | 讀模型 `{ course_setting_id, course_id, llm_model }` |
 | PUT | `/v1/quiz/llm-model` | `{ "llm_model": "gpt-5.4" }` | 寫模型（key=`quiz-llm-model`，出題／批改共用） |
 
-> 讀／寫金鑰與模型需該課程的開發者／管理者權限，否則 403。`exists` 一般成員可呼叫。
+> 讀／寫金鑰與模型需該課程的管理者／教師權限，否則 403。`exists` 一般成員可呼叫。
 
 ---
 
