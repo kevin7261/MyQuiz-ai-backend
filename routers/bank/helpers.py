@@ -866,8 +866,9 @@ def _upload_bank_zip_contents(
             person_id=person_id,
             page_id=bank_page_id,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError:
+        _logger.exception("儲存上傳 ZIP 失敗")
+        raise HTTPException(status_code=400, detail="儲存上傳失敗，請稍後再試")
     except StorageApiError as e:
         if e.status == 413:
             raise HTTPException(
@@ -877,7 +878,8 @@ def _upload_bank_zip_contents(
                     "或至 Supabase Dashboard → Project Settings → Storage 調高／確認方案限制。"
                 ),
             ) from e
-        raise HTTPException(status_code=502, detail=f"儲存上傳失敗: {e.message}") from e
+        _logger.exception("儲存上傳 ZIP 至 Storage 失敗")
+        raise HTTPException(status_code=502, detail="儲存上傳失敗，請稍後再試") from e
 
     file_size_mb = _bytes_to_mb(len(contents))
     file_metadata = {
@@ -895,8 +897,9 @@ def _upload_bank_zip_contents(
     }
     try:
         supabase.table("Bank").update(update_payload).eq("bank_page_id", bank_page_id).eq("person_id", person_id).eq("course_id", course_id).execute()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        _logger.exception("更新 Bank 表（file_metadata）失敗")
+        raise HTTPException(status_code=500, detail="更新 Bank 表失敗，請稍後再試")
     return file_metadata
 
 
@@ -931,8 +934,9 @@ def _do_delete_bank_file_by_page_id(fid: str, course_id: int) -> tuple[bool, str
             .eq("deleted", False)
             .execute()
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"更新 Bank 表失敗: {e}")
+    except Exception:
+        _logger.exception("軟刪除 Bank 表失敗")
+        raise HTTPException(status_code=500, detail="更新 Bank 表失敗，請稍後再試")
     try:
         def build_delete_units(with_course_filter: bool):
             q = (
@@ -953,6 +957,7 @@ def _do_delete_bank_file_by_page_id(fid: str, course_id: int) -> tuple[bool, str
         try:
             if delete_tab_folder(pid, fid):
                 folder_deleted = True
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        except ValueError:
+            _logger.exception("刪除 storage 資料夾失敗")
+            raise HTTPException(status_code=400, detail="刪除題庫檔案失敗，請稍後再試")
     return folder_deleted, primary_pid

@@ -97,9 +97,9 @@ def list_quizzes(person_id: PersonId, course_id: CourseId):
         return ListQuizResponse(quizzes=quizzes, count=len(quizzes))
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("GET /quiz/pages 錯誤")
-        raise HTTPException(status_code=500, detail=f"列出 Quiz 失敗: {e!s}")
+        raise HTTPException(status_code=500, detail="列出 Quiz 失敗，請稍後再試")
 
 
 @router.post("/pages", status_code=201, summary="Create Quiz", operation_id="quiz_create_page")
@@ -172,9 +172,9 @@ def update_quiz_tab_name(
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("PATCH /quiz/pages/{quiz_page_id} 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="更新失敗，請稍後再試")
 
 
 @router.delete("/pages/{quiz_page_id}", status_code=200, summary="Delete Quiz", operation_id="quiz_delete_page")
@@ -261,9 +261,9 @@ def create_quiz_group(
         return to_json_safe(ins.data[0])
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("POST /quiz/pages/{quiz_page_id}/groups 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="操作失敗，請稍後再試")
 
 
 @router.get("/groups/{quiz_group_id}", summary="Get Quiz Group", operation_id="quiz_get_group")
@@ -351,9 +351,9 @@ def put_quiz_group_question_system_prompt_text(
         ))
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("PUT /quiz/groups/{quiz_group_id}/question-system-prompt-text 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="更新失敗，請稍後再試")
 
 
 @router.get(
@@ -397,9 +397,9 @@ def put_quiz_group_question_user_prompt_text(
         ))
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("PUT /quiz/groups/{quiz_group_id}/question-user-prompt-text 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="更新失敗，請稍後再試")
 
 
 @router.get(
@@ -443,9 +443,9 @@ def put_quiz_group_answer_user_prompt_text(
         ))
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("PUT /quiz/groups/{quiz_group_id}/answer-user-prompt-text 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="更新失敗，請稍後再試")
 
 
 @router.patch("/groups/{quiz_group_id}", summary="Update Quiz Group", operation_id="quiz_update_group")
@@ -497,9 +497,9 @@ def update_quiz_group(
         return to_json_safe(read or {})
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("PATCH /quiz/groups/{quiz_group_id} 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="更新失敗，請稍後再試")
 
 
 @router.delete("/groups/{quiz_group_id}", status_code=200, summary="Delete Quiz Group", operation_id="quiz_delete_group")
@@ -524,9 +524,9 @@ def delete_quiz_group(
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("DELETE /quiz/groups/{quiz_group_id} 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="刪除失敗，請稍後再試")
 
 
 # ---------------------------------------------------------------------------
@@ -637,9 +637,9 @@ def update_quiz_ask_answer_rate(
         return {"quiz_ask_id": quiz_ask_id, "answer_rate": int(body.answer_rate), "updated_at": ts}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("PUT /quiz/asks/{quiz_ask_id}/answer-rate 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="更新失敗，請稍後再試")
 
 
 @router.delete("/asks/{quiz_ask_id}", status_code=200, summary="Delete Quiz Ask", operation_id="quiz_ask_delete")
@@ -667,9 +667,9 @@ def delete_quiz_ask(
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("DELETE /quiz/asks/{quiz_ask_id} 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="刪除失敗，請稍後再試")
 
 
 # ---------------------------------------------------------------------------
@@ -775,9 +775,9 @@ def _update_quiz_qa_rate(caller_person_id: str, course_id: int, quiz_qa_id: int,
         return {"quiz_qa_id": quiz_qa_id, field: int(value), "updated_at": ts}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("PUT /quiz/qa/{quiz_qa_id}/%s 錯誤", field)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="更新失敗，請稍後再試")
 
 
 @router.delete("/qa/{quiz_qa_id}", status_code=200, summary="Delete Quiz QA", operation_id="quiz_qa_delete")
@@ -808,6 +808,6 @@ def delete_quiz_qa(
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("DELETE /quiz/qa/{quiz_qa_id} 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="刪除失敗，請稍後再試")

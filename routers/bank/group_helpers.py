@@ -261,8 +261,9 @@ def bank_llm_generate_qa_impl(
             content=json.dumps(out, ensure_ascii=False).encode("utf-8"),
             media_type="application/json; charset=utf-8",
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError:
+        _logger.exception("bank_llm_generate_qa_impl 參數錯誤")
+        raise HTTPException(status_code=400, detail="出題失敗，請稍後再試")
     except HTTPException:
         raise
     except Exception as e:
@@ -277,7 +278,8 @@ def bank_llm_generate_qa_impl(
                     "question_llm_model": llm_model,
                 }
             )
-        raise HTTPException(status_code=500, detail=str(e))
+        _logger.exception("bank_llm_generate_qa_impl 失敗")
+        raise HTTPException(status_code=500, detail="出題失敗，請稍後再試")
 
 
 def bank_llm_regenerate_qa_impl(
@@ -371,8 +373,9 @@ def bank_llm_regenerate_qa_impl(
             content=json.dumps(out, ensure_ascii=False).encode("utf-8"),
             media_type="application/json; charset=utf-8",
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError:
+        _logger.exception("bank_llm_regenerate_qa_impl 參數錯誤")
+        raise HTTPException(status_code=400, detail="重新出題失敗，請稍後再試")
     except HTTPException:
         raise
     except Exception as e:
@@ -388,7 +391,8 @@ def bank_llm_regenerate_qa_impl(
                     "question_llm_model": llm_model,
                 }
             )
-        raise HTTPException(status_code=500, detail=str(e))
+        _logger.exception("bank_llm_regenerate_qa_impl 失敗")
+        raise HTTPException(status_code=500, detail="重新出題失敗，請稍後再試")
 
 
 # ---------------------------------------------------------------------------

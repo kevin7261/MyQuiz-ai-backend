@@ -10,11 +10,12 @@
 新增／編輯／刪除使用者請用 /v1/rag/course-members。
 """
 
+import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from dependencies.person_id import CurrentUser, PersonId
+from dependencies.person_id import CurrentUser
 from pydantic import BaseModel, Field
 
 from utils.auth import issue_token, token_ttl_seconds
@@ -31,12 +32,48 @@ from utils.supabase import get_supabase
 
 router = APIRouter(tags=["profile"])
 
+_logger = logging.getLogger(__name__)
+
 # User 表實體欄位（user_type 隨 User_Course_Relation 各列；college_name 可自 College 串接）
 USER_TABLE_COLUMNS = "user_id, person_id, college_id, college_name, name, deleted, updated_at, created_at"
+
+# 管理者 / 教師身分（可列出該學院使用者）
+COLLEGE_MANAGER_USER_TYPES = (1, 2)
 
 
 def _normalize_college_id(raw: Any) -> str:
     return str(raw or "").strip()
+
+
+def _caller_is_college_manager(supabase, person_id: str, college_id: Any) -> bool:
+    """呼叫者在該學院是否具管理者（user_type 1）或教師（2）身分。
+
+    依 User_Course_Relation（該學院任一有效選課列）判定；查詢失敗一律視為無權限（fail-closed）。
+    """
+    pid = (person_id or "").strip()
+    cid = _normalize_college_id(college_id)
+    if not pid or not cid:
+        return False
+    try:
+        cid_int = int(cid)
+    except ValueError:
+        return False
+    try:
+        resp = (
+            supabase.table(USER_COURSE_RELATION_TABLE)
+            .select("user_type")
+            .eq("person_id", pid)
+            .eq("college_id", cid_int)
+            .or_(ACTIVE_DELETED_FILTER)
+            .execute()
+        )
+    except Exception:
+        _logger.exception("查詢呼叫者學院角色失敗 person_id=%s college_id=%s", pid, cid)
+        return False
+    return any(
+        int(r.get("user_type") or 0) in COLLEGE_MANAGER_USER_TYPES
+        for r in (resp.data or [])
+    )
 
 
 def _scope_user_query_by_college(query, college_id: Any):
@@ -261,18 +298,30 @@ def _user_list_item(
 
 @router.get("/users", response_model=ListUsersResponse)
 def list_users(
-    _person_id: PersonId,
+    caller: CurrentUser,
     college_id: int = Query(..., description="必填；僅列出該學院（User.college_id）的使用者"),
 ):
     """
-    列出指定學院（必填 query `college_id`）的 User 表內容（含 password）；僅 deleted = false。
-    唯讀；新增／編輯／刪除請用 /v1/rag/course-members。
+    列出指定學院（必填 query `college_id`）的 User 表內容；僅 deleted = false。
+
+    權限：僅該學院的管理者（user_type 1）或教師（2）可呼叫，且 `college_id` 須等於
+    登入身分所屬學校（token 的 college_id），否則 403。
+    回應**不含 password**（密碼不再對外回傳）。唯讀；新增／編輯／刪除請用 /v1/bank/course-members。
     """
+    # 身分 = person_id + college_id：只能查自己所屬學校，跨校查詢一律拒絕。
+    if _normalize_college_id(college_id) != _normalize_college_id(caller.college_id):
+        raise HTTPException(
+            status_code=403, detail="僅能查詢自己所屬學校（college_id）的使用者"
+        )
+    supabase = get_supabase()
+    if not _caller_is_college_manager(supabase, caller.person_id, caller.college_id):
+        raise HTTPException(
+            status_code=403, detail="僅該學院的管理者或教師可列出使用者"
+        )
     try:
-        supabase = get_supabase()
         resp = (
             supabase.table(USER_TABLE)
-            .select(f"{USER_TABLE_COLUMNS}, password")
+            .select(USER_TABLE_COLUMNS)
             .eq("deleted", False)
             .eq("college_id", college_id)
             .execute()
@@ -290,12 +339,13 @@ def list_users(
                     r,
                     college_map,
                     courses_by_uid.get(r["user_id"], []),
-                    include_password=True,
                 )
                 for r in rows
             ],
             count=len(rows),
         )
+    except HTTPException:
+        raise
     except Exception as e:
         err = str(e).lower()
         if "nodename" in err or "errno 8" in err or "name or service not known" in err:
@@ -303,7 +353,8 @@ def list_users(
                 status_code=503,
                 detail="無法連線至 Supabase，請確認 .env 的 SUPABASE_URL 正確且網路可連線。",
             )
-        raise HTTPException(status_code=500, detail=str(e))
+        _logger.exception("GET /users 失敗 college_id=%s", college_id)
+        raise HTTPException(status_code=500, detail="列出使用者失敗，請稍後再試")
 
 
 class ProfileResponse(BaseModel):
@@ -346,8 +397,9 @@ def get_my_profile(caller: CurrentUser):
         return ProfileResponse(**pub)
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        _logger.exception("GET /users/me 失敗 person_id=%s", person_id)
+        raise HTTPException(status_code=500, detail="取得使用者資料失敗，請稍後再試")
 
 
 class UpdateMyPasswordRequest(BaseModel):
@@ -401,8 +453,9 @@ def update_my_password(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        _logger.exception("PUT /users/me/password 失敗 person_id=%s", person_id)
+        raise HTTPException(status_code=500, detail="更新密碼失敗，請稍後再試")
 
 
 @router.post("/auth/refresh", response_model=RefreshTokenResponse)
@@ -471,5 +524,6 @@ def login(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        _logger.exception("POST /auth/login 失敗 person_id=%s", person_id)
+        raise HTTPException(status_code=500, detail="登入失敗，請稍後再試")

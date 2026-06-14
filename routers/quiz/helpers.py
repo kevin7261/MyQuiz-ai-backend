@@ -511,8 +511,9 @@ def quiz_llm_generate_qa_impl(
             content=json.dumps(out, ensure_ascii=False).encode("utf-8"),
             media_type="application/json; charset=utf-8",
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError:
+        _logger.exception("quiz_llm_generate_qa_impl 參數錯誤 quiz_group_id=%s", quiz_group_id)
+        raise HTTPException(status_code=400, detail="參數錯誤，請稍後再試")
     except HTTPException:
         raise
     except Exception as e:
@@ -527,7 +528,8 @@ def quiz_llm_generate_qa_impl(
                     "question_llm_model": llm_model,
                 }
             )
-        raise HTTPException(status_code=500, detail=str(e))
+        _logger.exception("quiz_llm_generate_qa_impl 失敗 quiz_group_id=%s", quiz_group_id)
+        raise HTTPException(status_code=500, detail="操作失敗，請稍後再試")
 
 
 def quiz_llm_regenerate_qa_impl(
@@ -623,8 +625,9 @@ def quiz_llm_regenerate_qa_impl(
             content=json.dumps(out, ensure_ascii=False).encode("utf-8"),
             media_type="application/json; charset=utf-8",
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError:
+        _logger.exception("quiz_llm_regenerate_qa_impl 參數錯誤 quiz_qa_id=%s", quiz_qa_id)
+        raise HTTPException(status_code=400, detail="參數錯誤，請稍後再試")
     except HTTPException:
         raise
     except Exception as e:
@@ -640,7 +643,8 @@ def quiz_llm_regenerate_qa_impl(
                     "question_llm_model": llm_model,
                 }
             )
-        raise HTTPException(status_code=500, detail=str(e))
+        _logger.exception("quiz_llm_regenerate_qa_impl 失敗 quiz_qa_id=%s", quiz_qa_id)
+        raise HTTPException(status_code=500, detail="操作失敗，請稍後再試")
 
 
 # ---------------------------------------------------------------------------
@@ -921,8 +925,9 @@ def quiz_llm_ask_impl(
             )
     except HTTPException:
         raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError:
+        _logger.exception("POST /quiz/groups/{id}/llm-ask 參數錯誤 quiz_group_id=%s", quiz_group_id)
+        raise HTTPException(status_code=400, detail="參數錯誤，請稍後再試")
     except Exception as e:
         if is_llm_call_error(e):
             return llm_error_json_response({
@@ -931,7 +936,7 @@ def quiz_llm_ask_impl(
                 "answer_content": "",
             })
         _logger.exception("POST /quiz/groups/{id}/llm-ask 回答失敗 quiz_group_id=%s", quiz_group_id)
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="操作失敗，請稍後再試") from e
     finally:
         if work_dir is not None:
             cleanup_answer_workspace(work_dir)
@@ -961,7 +966,7 @@ def quiz_llm_ask_impl(
         ins = supabase.table("Quiz_Ask").insert(ask_row).execute()
     except Exception as e:
         _logger.exception("POST /quiz/groups/{id}/llm-ask 寫入 Quiz_Ask 失敗 quiz_group_id=%s", quiz_group_id)
-        raise HTTPException(status_code=500, detail=f"寫入 Quiz_Ask 失敗: {e!s}") from e
+        raise HTTPException(status_code=500, detail="寫入 Quiz_Ask 失敗，請稍後再試") from e
     if not ins.data:
         raise HTTPException(status_code=500, detail="寫入 Quiz_Ask 失敗（無回傳資料）")
     return to_json_safe(ins.data[0])

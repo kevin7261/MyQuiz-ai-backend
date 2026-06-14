@@ -191,9 +191,9 @@ def list_bank(
 
         data = to_json_safe(data)
         return ListBankResponse(banks=data, count=len(data))
-    except Exception as e:
+    except Exception:
         _logger.exception("GET /bank/pages 錯誤")
-        raise HTTPException(status_code=500, detail=f"列出 Bank 失敗: {e!s}")
+        raise HTTPException(status_code=500, detail="列出 Bank 失敗，請稍後再試")
 
 
 @router.patch("/pages/{bank_page_id}")
@@ -247,8 +247,9 @@ def update_unit_tab_name(
         }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        _logger.exception("PATCH /bank/pages/{bank_page_id} 錯誤")
+        raise HTTPException(status_code=500, detail="更新題庫名稱失敗，請稍後再試")
 
 
 @router.delete("/pages/{bank_page_id}", status_code=200, summary="Delete Bank File", operation_id="bank_tab_delete")
@@ -325,8 +326,9 @@ async def create_upload_zip(
         return {**create_result, "file_metadata": file_metadata}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        _logger.exception("POST /bank/pages/{bank_page_id}/build-zip 錯誤")
+        raise HTTPException(status_code=500, detail="建置題庫失敗，請稍後再試")
 
 
 @router.post("/pages/{bank_page_id}/build-zip-stream", include_in_schema=False)
@@ -561,9 +563,9 @@ def list_bank_units(
         return {"units": units, "count": len(units)}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("GET /bank/units 錯誤")
-        raise HTTPException(status_code=500, detail=f"列出 Bank_Unit 失敗: {e!s}")
+        raise HTTPException(status_code=500, detail="列出 Bank_Unit 失敗，請稍後再試")
 
 
 def _fetch_bank_unit_row_by_id_or_http_error(
@@ -665,10 +667,11 @@ def _read_unit_zip_bytes_for_audio(
                 detail = f"{detail}（repack 亦失敗：{repack_err}）"
             raise HTTPException(status_code=404, detail=detail) from e
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            _logger.exception("讀取 upload ZIP 值錯誤")
+            raise HTTPException(status_code=400, detail="讀取 upload ZIP 失敗，請稍後再試") from e
         except Exception as e:
             _logger.exception("讀取 upload ZIP 失敗")
-            raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+            raise HTTPException(status_code=500, detail="讀取 upload ZIP 失敗，請稍後再試") from e
 
     return zip_bytes, zip_is_unit_repack, repack_err
 
@@ -697,21 +700,24 @@ def _extract_unit_audio_with_fallback(
         )
     except ValueError as e:
         if not (from_repack_ok and zip_is_unit_repack):
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            _logger.exception("擷取單元音訊失敗")
+            raise HTTPException(status_code=400, detail="音訊讀取失敗，請稍後再試") from e
         try:
             zip_bytes = read_upload_zip_bytes(owner_pid, bank_page_id)
-        except FileNotFoundError as e2:
+        except FileNotFoundError:
+            _logger.exception("擷取單元音訊 upload 備援讀取失敗")
             raise HTTPException(
                 status_code=400,
-                detail=f"{e!s}（repack ZIP 內亦無法對應音訊，且無 upload 可備援：{e2!s}）",
+                detail="音訊讀取失敗，請稍後再試",
             ) from e
-        except ValueError as e2:
-            raise HTTPException(status_code=400, detail=f"{e!s}（upload 備援：{e2!s}）") from e
-        except Exception as e2:
+        except ValueError:
+            _logger.exception("擷取單元音訊 upload 備援值錯誤")
+            raise HTTPException(status_code=400, detail="音訊讀取失敗，請稍後再試") from e
+        except Exception:
             _logger.exception("讀取 upload ZIP 備援失敗")
             raise HTTPException(
                 status_code=500,
-                detail=f"{e!s}（upload 備援讀取失敗：{e2!s}）",
+                detail="音訊讀取失敗，請稍後再試",
             ) from e
         try:
             return pick_audio_from_upload_zip_with_folder_fallback(
@@ -720,7 +726,8 @@ def _extract_unit_audio_with_fallback(
                 allow_scan_other_top_folders=False,
             )
         except ValueError as e3:
-            raise HTTPException(status_code=400, detail=str(e3)) from e
+            _logger.exception("擷取單元音訊備援解析失敗")
+            raise HTTPException(status_code=400, detail="音訊讀取失敗，請稍後再試") from e3
 
 
 @router.get(
@@ -922,12 +929,14 @@ def _read_upload_zip_bytes_or_http_error(person_id: str, bank_page_id: str) -> b
     try:
         return read_upload_zip_bytes(person_id, bank_page_id)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+        _logger.exception("讀取 upload ZIP 找不到檔案")
+        raise HTTPException(status_code=404, detail="找不到 upload ZIP，請稍後再試") from e
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        _logger.exception("讀取 upload ZIP 值錯誤")
+        raise HTTPException(status_code=400, detail="讀取 upload ZIP 失敗，請稍後再試") from e
     except Exception as e:
         _logger.exception("讀取 upload ZIP 失敗")
-        raise HTTPException(status_code=500, detail=f"讀取 upload ZIP 失敗: {e!s}") from e
+        raise HTTPException(status_code=500, detail="讀取 upload ZIP 失敗，請稍後再試") from e
 
 
 @router.get(
@@ -956,7 +965,8 @@ def bank_page_unit_preview_text(
     try:
         transcript, inner_path = read_single_transcript_text_from_upload_zip(zip_bytes, folder)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        _logger.exception("讀取 upload ZIP 文字單元預覽失敗")
+        raise HTTPException(status_code=400, detail="讀取文字單元失敗，請稍後再試") from e
     if not transcript.strip():
         raise HTTPException(
             status_code=400,
@@ -997,12 +1007,14 @@ def bank_page_unit_preview_mp3_file(
     try:
         contents, suffix, inner_path = pick_audio_from_upload_zip(zip_bytes, folder)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        _logger.exception("讀取 upload ZIP 音訊單元預覽失敗")
+        raise HTTPException(status_code=400, detail="讀取音訊單元失敗，請稍後再試") from e
 
     try:
         transcript, text_file_name = read_mp3_unit_transcript_from_upload_zip(zip_bytes, folder)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        _logger.exception("讀取 upload ZIP 音訊單元逐字稿失敗")
+        raise HTTPException(status_code=400, detail="讀取音訊單元逐字稿失敗，請稍後再試") from e
 
     return BankUnitMp3FilePreviewResponse(
         bank_page_id=tab,
@@ -1042,7 +1054,8 @@ def bank_page_unit_preview_youtube_url(
         vid, inner_path = read_youtube_video_id_from_upload_zip(zip_bytes, folder)
         transcript, _ = read_supplementary_text_from_youtube_unit(zip_bytes, folder)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        _logger.exception("讀取 upload ZIP YouTube 單元預覽失敗")
+        raise HTTPException(status_code=400, detail="讀取 YouTube 單元失敗，請稍後再試") from e
     if not transcript.strip():
         raise HTTPException(
             status_code=400,

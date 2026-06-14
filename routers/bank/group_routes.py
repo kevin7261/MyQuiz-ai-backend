@@ -137,9 +137,9 @@ def create_bank_group(
         return to_json_safe(ins.data[0])
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("POST /bank/pages/{bank_page_id}/units/{bank_unit_id}/groups 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="新增題組失敗，請稍後再試")
 
 
 @router.get(
@@ -258,9 +258,9 @@ def put_bank_group_question_system_prompt_text(
         ))
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("PUT /bank/groups/{bank_group_id}/question-system-prompt-text 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="更新題組失敗，請稍後再試")
 
 
 @router.get(
@@ -304,9 +304,9 @@ def put_bank_group_question_user_prompt_text(
         ))
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("PUT /bank/groups/{bank_group_id}/question-user-prompt-text 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="更新題組失敗，請稍後再試")
 
 
 @router.get(
@@ -350,9 +350,9 @@ def put_bank_group_answer_user_prompt_text(
         ))
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("PUT /bank/groups/{bank_group_id}/answer-user-prompt-text 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="更新題組失敗，請稍後再試")
 
 
 @router.patch("/groups/{bank_group_id}", summary="Update Bank Group", operation_id="bank_update_group")
@@ -410,9 +410,9 @@ def update_bank_group(
         return to_json_safe(read or {})
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("PATCH /bank/groups/{bank_group_id} 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="更新題組失敗，請稍後再試")
 
 
 @router.put("/groups/{bank_group_id}/for-exam", summary="Set Bank Group for_exam flag", operation_id="bank_group_for_exam")
@@ -436,9 +436,9 @@ def mark_bank_group_for_exam(
         return to_json_safe(read or {})
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("PUT /bank/groups/{bank_group_id}/for-exam 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="更新題組失敗，請稍後再試")
 
 
 @router.delete("/groups/{bank_group_id}", status_code=200, summary="Delete Bank Group", operation_id="bank_group_delete")
@@ -465,9 +465,9 @@ def delete_bank_group(
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("DELETE /bank/groups/{bank_group_id} 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="刪除題組失敗，請稍後再試")
 
 
 # ---------------------------------------------------------------------------
@@ -619,6 +619,6 @@ def delete_bank_qa(
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _logger.exception("DELETE /bank/qa/{bank_qa_id} 錯誤")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="刪除題目失敗，請稍後再試")

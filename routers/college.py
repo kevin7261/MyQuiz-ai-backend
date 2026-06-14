@@ -3,6 +3,7 @@
 - GET /colleges：列出 College 表（僅 deleted = false 或 null），含所屬課程與該學院 User 數（user_count）
 """
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -11,6 +12,8 @@ from pydantic import BaseModel, Field
 from utils.db_schema import ACTIVE_DELETED_FILTER, COLLEGE_TABLE, COURSE_TABLE, USER_TABLE
 from utils.supabase import get_supabase
 from utils.taipei_time import to_taipei_iso
+
+_logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["college"])
 
@@ -143,4 +146,5 @@ def list_colleges():
                 status_code=503,
                 detail="無法連線至 Supabase，請確認 .env 的 SUPABASE_URL 正確且網路可連線。",
             )
-        raise HTTPException(status_code=500, detail=str(e))
+        _logger.exception("GET /colleges 失敗")
+        raise HTTPException(status_code=500, detail="列出學院失敗，請稍後再試")

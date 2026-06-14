@@ -3,6 +3,7 @@
 - GET /course/courses：列出 Course 表（僅 deleted = false 或 null），含所屬學院 college_id／college_name
 """
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -12,6 +13,8 @@ from dependencies.person_id import PersonId
 from utils.db_schema import ACTIVE_DELETED_FILTER, COLLEGE_TABLE, COURSE_TABLE
 from utils.supabase import get_supabase
 from utils.taipei_time import to_taipei_iso
+
+_logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["course"])
 
@@ -104,4 +107,5 @@ def list_courses(_person_id: PersonId):
                 status_code=503,
                 detail="無法連線至 Supabase，請確認 .env 的 SUPABASE_URL 正確且網路可連線。",
             )
-        raise HTTPException(status_code=500, detail=str(e))
+        _logger.exception("GET /courses 失敗")
+        raise HTTPException(status_code=500, detail="列出課程失敗，請稍後再試")

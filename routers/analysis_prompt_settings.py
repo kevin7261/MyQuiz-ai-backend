@@ -1,5 +1,6 @@
 """user-analyses／quiz-analyses／course-analyses 共用的分析設定 GET/PUT 端點（Course_Setting）。"""
 
+import logging
 from typing import Callable, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -16,6 +17,8 @@ from utils.course_setting import fetch_course_setting_text
 from utils.llm_key import fetch_api_key_setting_row
 from utils.openapi import openapi_body
 from utils.supabase import get_supabase
+
+_logger = logging.getLogger(__name__)
 
 
 class AnalysisApiKeyExistsResponse(BaseModel):
@@ -141,7 +144,10 @@ def register_analysis_llm_api_key_routes(
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+            _logger.exception("PUT /llm-api-key 失敗")
+            raise HTTPException(
+                status_code=500, detail="儲存失敗，請稍後再試"
+            ) from e
 
 
 def register_analysis_llm_model_routes(
@@ -205,7 +211,10 @@ def register_analysis_llm_model_routes(
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+            _logger.exception("PUT /llm-model 失敗")
+            raise HTTPException(
+                status_code=500, detail="儲存失敗，請稍後再試"
+            ) from e
 
 
 def register_analysis_user_prompt_routes(
@@ -235,7 +244,10 @@ def register_analysis_user_prompt_routes(
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+            _logger.exception("GET /analysis-user-prompt-text 失敗")
+            raise HTTPException(
+                status_code=500, detail="讀取失敗，請稍後再試"
+            ) from e
 
     @router.put(
         "/analysis-user-prompt-text",
@@ -267,4 +279,7 @@ def register_analysis_user_prompt_routes(
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+            _logger.exception("PUT /analysis-user-prompt-text 失敗")
+            raise HTTPException(
+                status_code=500, detail="儲存失敗，請稍後再試"
+            ) from e

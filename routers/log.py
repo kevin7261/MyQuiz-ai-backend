@@ -6,6 +6,7 @@ Log 表查詢 API。
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -16,6 +17,8 @@ from dependencies.person_id import PersonId
 from utils.supabase import get_supabase
 
 router = APIRouter(tags=["log"])
+
+_logger = logging.getLogger(__name__)
 
 LOG_COLUMNS = "log_id, person_id, course_id, api, api_metadata, updated_at, created_at"
 _FETCH_PAGE = 1000
@@ -56,7 +59,8 @@ def _fetch_logs_by_course_id(course_id: int) -> list[dict]:
                 .execute()
             )
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"讀取 Log 失敗：{e!s}") from e
+            _logger.exception("_fetch_logs_by_course_id 失敗 course_id=%s", course_id)
+            raise HTTPException(status_code=500, detail="讀取 Log 失敗，請稍後再試") from e
         batch = resp.data or []
         if not batch:
             break

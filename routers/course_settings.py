@@ -8,6 +8,7 @@
 - DELETE /bank/course-members/{member_person_id}：自課程移除成員（User_Course_Relation deleted=true）；僅 user_type 1／2。
 """
 
+import logging
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Path
@@ -28,6 +29,8 @@ from utils.db_schema import (
 from utils.openapi import openapi_body
 from utils.supabase import get_supabase
 from utils.taipei_time import now_taipei_iso
+
+_logger = logging.getLogger(__name__)
 
 DEFAULT_NEW_MEMBER_PASSWORD = "0000"
 
@@ -488,7 +491,8 @@ def list_course_members(caller: CurrentUser, course_id: CourseId):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        _logger.exception("GET /bank/course-members 失敗 course_id=%s", course_id)
+        raise HTTPException(status_code=500, detail="列出失敗，請稍後再試") from e
 
 
 @router.post("/course-members", response_model=CourseMemberItem, status_code=201)
@@ -515,7 +519,8 @@ def add_course_member(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        _logger.exception("POST /bank/course-members 失敗 course_id=%s", course_id)
+        raise HTTPException(status_code=500, detail="新增失敗，請稍後再試") from e
 
 
 def _batch_add_course_members(
@@ -547,8 +552,9 @@ def _batch_add_course_members(
             created.append(member)
         except HTTPException as he:
             failed.append(BatchCourseMemberFailure(person_id=pid, detail=str(he.detail)))
-        except Exception as e:
-            failed.append(BatchCourseMemberFailure(person_id=pid, detail=str(e)))
+        except Exception:
+            _logger.exception("批次新增課程成員失敗 person_id=%s course_id=%s", pid, course_id)
+            failed.append(BatchCourseMemberFailure(person_id=pid, detail="新增失敗，請稍後再試"))
     return BatchAddCourseMembersResponse(
         created=created,
         failed=failed,
@@ -586,7 +592,8 @@ def batch_add_course_members(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        _logger.exception("POST /bank/course-members/batch 失敗 course_id=%s", course_id)
+        raise HTTPException(status_code=500, detail="批次新增失敗，請稍後再試") from e
 
 
 @router.patch(
@@ -620,7 +627,12 @@ def edit_course_member(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        _logger.exception(
+            "PATCH /bank/course-members/%s 失敗 course_id=%s",
+            target_person_id,
+            course_id,
+        )
+        raise HTTPException(status_code=500, detail="編輯失敗，請稍後再試") from e
 
 
 @router.delete(
@@ -648,4 +660,9 @@ def soft_delete_course_member(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        _logger.exception(
+            "DELETE /bank/course-members/%s 失敗 course_id=%s",
+            target_person_id,
+            course_id,
+        )
+        raise HTTPException(status_code=500, detail="移除失敗，請稍後再試") from e

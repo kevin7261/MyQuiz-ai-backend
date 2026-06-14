@@ -10,14 +10,16 @@ from pathlib import Path
 
 
 def fix_encoding(filename: str) -> str:
-    """修正 ZIP 檔名亂碼（cp437→utf-8，失敗再試 cp437→big5）。"""
+    """修正 ZIP 檔名亂碼（cp437→utf-8，失敗再依序試 big5、gbk）。"""
     try:
         return filename.encode("cp437").decode("utf-8")
     except Exception:
-        try:
-            return filename.encode("cp437").decode("big5")
-        except Exception:
-            return filename
+        for enc in ("big5", "gbk"):
+            try:
+                return filename.encode("cp437").decode(enc)
+            except Exception:
+                continue
+        return filename
 
 
 def get_second_level_folders_from_zip_file(zip_file) -> list[str]:

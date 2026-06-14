@@ -220,7 +220,8 @@ def list_quiz_analyses(person_id: PersonId, course_id: CourseId):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.exception("GET /quiz-analyses 失敗 course_id=%s", course_id)
+        raise HTTPException(status_code=500, detail="列出失敗，請稍後再試") from e
 
 
 @router.post("", response_model=QuizAnalysisAddResponse, status_code=201)
@@ -257,7 +258,8 @@ def add_quiz_analysis(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.exception("POST /quiz-analyses 失敗 course_id=%s", course_id)
+        raise HTTPException(status_code=500, detail="新增失敗，請稍後再試") from e
 
 
 @router.patch("/{quiz_analysis_id}", response_model=QuizAnalysisNameResponse)
@@ -294,7 +296,10 @@ def update_quiz_analysis_name_endpoint(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.exception(
+            "PATCH /quiz-analyses/%s 失敗", quiz_analysis_id
+        )
+        raise HTTPException(status_code=500, detail="更新失敗，請稍後再試") from e
 
 
 @router.delete("/{quiz_analysis_id}", response_model=QuizAnalysisDeleteResponse)
@@ -327,7 +332,10 @@ def delete_quiz_analysis(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.exception(
+            "DELETE /quiz-analyses/%s 失敗", quiz_analysis_id
+        )
+        raise HTTPException(status_code=500, detail="刪除失敗，請稍後再試") from e
 
 
 @router.post("/{quiz_analysis_id}/llm-analysis", response_model=QuizLlmAnalysisResponse)
@@ -420,4 +428,7 @@ def quiz_llm_analysis(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.exception(
+            "POST /quiz-analyses/%s/llm-analysis 失敗", quiz_analysis_id
+        )
+        raise HTTPException(status_code=500, detail="分析失敗，請稍後再試") from e
