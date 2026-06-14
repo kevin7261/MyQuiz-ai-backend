@@ -62,8 +62,8 @@ BANK_QA_SELECT_COLUMNS = (
     "deleted, updated_at, created_at"
 )
 
-# Quiz（試卷／Test）：搭配 bank 出題的應試層，定位等同 exam 之於 rag。
-# Quiz（試卷）→ Quiz_Group（自 Bank_Group 快照之題組）→ Quiz_QA（逐題出題／批改，無追問）。
+# Quiz（測驗／Test）：搭配 bank 出題的應試層，定位等同 exam 之於 rag。
+# Quiz（測驗）→ Quiz_Group（自 Bank_Group 快照之題組）→ Quiz_QA（逐題出題／批改，無追問）。
 QUIZ_TABLE = "Quiz"
 QUIZ_GROUP_TABLE = "Quiz_Group"
 QUIZ_QA_TABLE = "Quiz_QA"

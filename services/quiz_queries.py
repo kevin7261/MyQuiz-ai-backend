@@ -3,7 +3,7 @@ Quiz 模組資料查詢（供 user_analysis、quiz_analysis 使用）。
 
 資料流：Quiz → Quiz_Group → Quiz_QA
 - Quiz_QA.person_id：作答者（學生）
-- Quiz_QA.quiz_page_id：試卷識別碼
+- Quiz_QA.quiz_page_id：測驗識別碼
 """
 
 from __future__ import annotations

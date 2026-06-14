@@ -1,6 +1,6 @@
-"""routers.quiz（試卷／Test）routes。
+"""routers.quiz（測驗／Test）routes。
 
-階層 quiz → page（試卷）→ group（自 Bank_Group 快照）→ qa（逐題出題／批改，無追問）。
+階層 quiz → page（測驗）→ group（自 Bank_Group 快照）→ qa（逐題出題／批改，無追問）。
 URL 慣例對齊 bank／exam：建立／列表巢狀於 parent 之下，單一資源以自身主鍵走淺路徑。
 出題／批改沿用 bank 的 LLM 管線；金鑰／模型走 quiz- 設定（見 .settings_routes）。
 """
@@ -67,7 +67,7 @@ router = APIRouter(prefix="/quiz", tags=["quiz"])
 
 
 # ---------------------------------------------------------------------------
-# 試卷（Quiz）：列表、建立、更名、刪除
+# 測驗（Quiz）：列表、建立、更名、刪除
 # ---------------------------------------------------------------------------
 
 
@@ -108,7 +108,7 @@ def create_quiz(
     caller_person_id: PersonId,
     course_id: CourseId,
 ):
-    """建立一筆 Quiz（試卷）。quiz_page_id 可選（未傳由後端產生）。"""
+    """建立一筆 Quiz（測驗）。quiz_page_id 可選（未傳由後端產生）。"""
     fid = (body.quiz_page_id or "").strip()
     body_pid = (body.person_id or "").strip()
     person_id = body_pid if body_pid else caller_person_id
@@ -206,7 +206,7 @@ def delete_quiz(
 
 @router.get("/bank-groups", response_model=ListQuizBankGroupsResponse, summary="List Bank Groups for Quiz", operation_id="quiz_list_bank_groups")
 def list_quiz_bank_groups(_person_id: PersonId, course_id: CourseId):
-    """列出可加入試卷的 Bank_Group（for_exam=true、未刪除），附其題庫 tab_name 與單元 unit_name／unit_type。
+    """列出可加入測驗的 Bank_Group（for_exam=true、未刪除），附其題庫 tab_name 與單元 unit_name／unit_type。
 
     回傳該 course 全部 for_exam 題組，不分建立者。
     """
@@ -231,7 +231,7 @@ def create_quiz_group(
     course_id: CourseId,
     quiz_page_id: str = PathParam(..., description="目標 Quiz 的 quiz_page_id"),
 ):
-    """挑選一個既有 Bank_Group，把其設定（prompts／qa_count／模型／單元資訊）快照成一筆 Quiz_Group 掛在此試卷下，**不呼叫 LLM**。"""
+    """挑選一個既有 Bank_Group，把其設定（prompts／qa_count／模型／單元資訊）快照成一筆 Quiz_Group 掛在此測驗下，**不呼叫 LLM**。"""
     try:
         supabase = get_supabase()
         page = fetch_quiz_page_row(supabase, quiz_page_id, course_id, cols="quiz_page_id, person_id")

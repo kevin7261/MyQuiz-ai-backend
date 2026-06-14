@@ -1,5 +1,5 @@
 """
-Quiz（試卷／Test）追問回答管線 service（POST /v1/quiz/groups/{quiz_group_id}/llm-ask）。
+Quiz（測驗／Test）追問回答管線 service（POST /v1/quiz/groups/{quiz_group_id}/llm-ask）。
 
 學生在題組出題後，對該題組對應 **Bank 單元的課程內容**仍有不懂之處時發問；
 本模組以 bank 的課程內容（逐字稿／FAISS 向量檢索片段）回答學生問題。

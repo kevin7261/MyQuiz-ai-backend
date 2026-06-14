@@ -1,6 +1,6 @@
-"""routers.quiz（試卷／Test）schemas。
+"""routers.quiz（測驗／Test）schemas。
 
-Quiz（試卷）→ Quiz_Group（自既有 Bank_Group 快照之題組）→ Quiz_QA（逐題出題／批改，無追問）。
+Quiz（測驗）→ Quiz_Group（自既有 Bank_Group 快照之題組）→ Quiz_QA（逐題出題／批改，無追問）。
 與 bank 搭配：出題／批改沿用 bank 的 LLM 管線與內容（RAG ZIP／逐字稿），金鑰／模型走 quiz- 設定。
 程式不與 exam／rag 共用。
 """
@@ -16,16 +16,16 @@ QuizRateValue = Literal[-1, 0, 1]
 
 
 # ---------------------------------------------------------------------------
-# 試卷（Quiz）
+# 測驗（Quiz）
 # ---------------------------------------------------------------------------
 
 
 class CreateQuizRequest(BaseModel):
-    """POST /quiz/pages：建立一份試卷（Quiz）。"""
+    """POST /quiz/pages：建立一份測驗（Quiz）。"""
 
     quiz_page_id: str | None = Field(None, description="選填；未傳則由後端產生")
     person_id: str = Field("", description="選填；未傳以 token 解析的呼叫者為準；有傳須與呼叫者一致")
-    tab_name: str = Field("", description="試卷顯示名稱")
+    tab_name: str = Field("", description="測驗顯示名稱")
 
 
 class UpdateQuizTabNameRequest(BaseModel):
@@ -50,7 +50,7 @@ class ListQuizResponse(BaseModel):
 
 
 class CreateQuizGroupRequest(BaseModel):
-    """POST /quiz/pages/{quiz_page_id}/groups：挑選一個既有 Bank_Group，快照成本試卷下的 Quiz_Group。"""
+    """POST /quiz/pages/{quiz_page_id}/groups：挑選一個既有 Bank_Group，快照成本測驗下的 Quiz_Group。"""
 
     bank_group_id: int = Field(..., gt=0, description="來源 Bank_Group 主鍵（>0）；其設定將快照進新 Quiz_Group")
     group_name: str = Field("", description="選填；題組顯示名稱（空則沿用 Bank_Group.group_name）")

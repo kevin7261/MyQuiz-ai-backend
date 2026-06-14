@@ -1,5 +1,5 @@
 """
-Quiz（試卷／Test，搭配 bank 出題）專屬 LLM API Key／模型（與 bank-/exam-/rag- 完全分開）：
+Quiz（測驗／Test，搭配 bank 出題）專屬 LLM API Key／模型（與 bank-/exam-/rag- 完全分開）：
 依 course_id 自 Course_Setting 讀取。
 - Quiz Key：key=quiz-api-key（GET/PUT /v1/quiz/llm-api-key；GET /v1/quiz/llm-api-key/exists）
 - Quiz 模型（出題、批改共用）：key=quiz-llm-model（GET/PUT /v1/quiz/llm-model；未設定 fallback BANK_QUIZ_LLM_MODEL）

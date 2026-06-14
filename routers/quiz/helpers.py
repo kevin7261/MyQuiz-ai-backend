@@ -1,7 +1,7 @@
-"""routers.quiz（試卷／Test）helpers。
+"""routers.quiz（測驗／Test）helpers。
 
-定位等同 exam 之於 rag：Quiz 是搭配 bank 的「應試／試卷」層。
-- Quiz（試卷）→ Quiz_Group（自既有 Bank_Group 快照之題組）→ Quiz_QA（逐題出題／批改，無追問）。
+定位等同 exam 之於 rag：Quiz 是搭配 bank 的「應試／測驗」層。
+- Quiz（測驗）→ Quiz_Group（自既有 Bank_Group 快照之題組）→ Quiz_QA（逐題出題／批改，無追問）。
 - 出題／批改沿用 **bank 的 LLM 管線**（services.bank_generation／services.bank_answering）與 bank 的內容
   （RAG ZIP／逐字稿）；金鑰／模型走 quiz- 設定（utils.quiz_llm_key）。
 - 程式不與 exam／rag 共用（不 import routers.exam／routers.zip／services.quiz_generation／services.answering）。
@@ -335,7 +335,7 @@ def build_quiz_group_snapshot_row(
 
 
 # ---------------------------------------------------------------------------
-# GET /quiz/pages 巢狀（題組與題目掛在試卷下）
+# GET /quiz/pages 巢狀（題組與題目掛在測驗下）
 # ---------------------------------------------------------------------------
 
 

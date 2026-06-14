@@ -219,7 +219,7 @@ def build_weakness_report_prompts(
     else:
         ctx = _build_quiz_context_block(quizzes)
         material_md = textwrap.dedent(f"""
-            ## 試卷與作答摘要
+            ## 測驗與作答摘要
 
             以下為各題題幹、參考答案、學生作答與評級 quiz_rate（尚無結構化評語時請依此分析作答表現）：
 

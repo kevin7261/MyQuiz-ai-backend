@@ -49,7 +49,7 @@ class BankPrompts(BaseModel):
 
 
 class QuizPrompts(BaseModel):
-    """Quiz（試卷／Test）prompt 模板。
+    """Quiz（測驗／Test）prompt 模板。
 
     出題／批改沿用 `bank` 區塊（quiz 重用 bank 的 LLM 管線，金鑰／模型走 quiz- 設定）；
     此處為 quiz 專屬之「追問」prompt（學生對題組對應之 Bank 課程內容發問，services.quiz_asking）。

@@ -2,7 +2,7 @@
 個人弱點分析 API 模組（資料來源為 Quiz 模組的 Quiz_QA；結果存於 User_Analysis）。
 
 定位等同 person_analysis 之於 Exam_Quiz，差異在於：
-- 資料來源：Quiz_QA（bank 出題試卷），而非 Exam_Quiz（RAG 出題試卷）
+- 資料來源：Quiz_QA（bank 出題測驗），而非 Exam_Quiz（RAG 出題測驗）
 - 結果表：User_Analysis（非 Person_Analysis）
 - API Key：user-analysis-api-key（非 quiz-api-key）
 - LLM 模型：user-analysis-llm-model
@@ -171,7 +171,7 @@ class UserLlmAnalysisResponse(BaseModel):
     quizzes: list[dict] = Field(
         ..., description="已作答 Quiz_QA 依 quiz_page_id → quiz_group_id 分組"
     )
-    count: int = Field(..., description="試卷總數（quiz_page_id 個數）")
+    count: int = Field(..., description="測驗總數（quiz_page_id 個數）")
     weakness_report: Optional[str] = Field(
         default=None,
         description="弱點報告：LLM message.content 原文 Markdown；未設定 API Key、呼叫失敗或無內容時為 null",

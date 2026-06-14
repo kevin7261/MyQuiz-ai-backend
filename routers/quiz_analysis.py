@@ -2,7 +2,7 @@
 測驗課程分析 API 模組（分析整門課程所有學生的 Quiz_QA 作答；結果存於 Quiz_Analysis）。
 
 定位等同 course_analysis 之於 Exam_Quiz，差異在於：
-- 資料來源：Quiz_QA（bank 出題試卷），而非 Exam_Quiz（RAG 出題試卷）
+- 資料來源：Quiz_QA（bank 出題測驗），而非 Exam_Quiz（RAG 出題測驗）
 - 結果表：Quiz_Analysis（非 Course_Analysis）
 - API Key：quiz-analysis-api-key（非 quiz-api-key）
 - LLM 模型：quiz-analysis-llm-model
@@ -171,7 +171,7 @@ class QuizLlmAnalysisResponse(BaseModel):
         ...,
         description="已作答 Quiz_QA 依 quiz_page_id → quiz_group_id 分組（全課程）",
     )
-    count: int = Field(..., description="試卷數（quiz_page_id 個數）")
+    count: int = Field(..., description="測驗數（quiz_page_id 個數）")
     weakness_report: Optional[str] = Field(
         default=None,
         description="分析報告：LLM message.content 原文 Markdown；未設定 API Key、呼叫失敗或無內容時為 null",

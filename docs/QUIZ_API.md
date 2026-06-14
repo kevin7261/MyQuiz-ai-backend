@@ -1,7 +1,7 @@
-# Quiz（試卷／Test）API 文件
+# Quiz（測驗／Test）API 文件
 
-給前端串接用。Quiz 是搭配 **Bank（題庫）** 的「試卷／應試」模組，定位等同 `exam` 之於 `rag`：
-先建一份試卷，挑一個既有的 **Bank 題組**快照進來，再在這個題組下**逐題出題**（題數上限＝`qa_count`），最後作答／批改／評分。**無追問模式**。
+給前端串接用。Quiz 是搭配 **Bank（題庫）** 的「測驗／應試」模組，定位等同 `exam` 之於 `rag`：
+先建一份測驗，挑一個既有的 **Bank 題組**快照進來，再在這個題組下**逐題出題**（題數上限＝`qa_count`），最後作答／批改／評分。**無追問模式**。
 
 > 內容（課程講義）來自 Bank：出題／批改讀的是 Bank 單元的 RAG 向量庫或逐字稿。所以使用前，對應的 Bank 單元要先 `build-zip` 完成，且題組要 `for_exam=true`。
 
@@ -25,12 +25,12 @@
 ### 資料階層
 
 ```
-Quiz(試卷/page) ─< Quiz_Group(題組, 自 Bank_Group 快照) ─< Quiz_QA(題目)
+Quiz(測驗/page) ─< Quiz_Group(題組, 自 Bank_Group 快照) ─< Quiz_QA(題目)
    quiz_page_id          quiz_group_id                      quiz_qa_id
                           └ 來源: bank_page_id / bank_unit_id / bank_group_id
 ```
 
-Quiz_Group 是建立當下從 Bank_Group「快照」過來的：出題／批改 prompt、`qa_count`、模型、單元名稱／類型都複製進 Quiz_Group，**之後改 Bank 不會影響已建立的試卷**。
+Quiz_Group 是建立當下從 Bank_Group「快照」過來的：出題／批改 prompt、`qa_count`、模型、單元名稱／類型都複製進 Quiz_Group，**之後改 Bank 不會影響已建立的測驗**。
 
 ### 單元類型 `unit_type`（沿用 Bank，影響出題／批改的課程來源）
 
@@ -49,9 +49,9 @@ Quiz_Group 是建立當下從 Bank_Group「快照」過來的：出題／批改 
 
 ---
 
-## 1. 試卷（Quiz）
+## 1. 測驗（Quiz）
 
-### 1.1 列出試卷　`GET /v1/quiz/pages`
+### 1.1 列出測驗　`GET /v1/quiz/pages`
 
 回傳該 `course_id`、該登入者、`deleted=false` 的所有 Quiz，**巢狀**帶出 groups → qas（qas 依 `question_series_index` 升序）。
 
@@ -96,7 +96,7 @@ Quiz_Group 是建立當下從 Bank_Group「快照」過來的：出題／批改 
 }
 ```
 
-### 1.2 建立試卷　`POST /v1/quiz/pages`
+### 1.2 建立測驗　`POST /v1/quiz/pages`
 
 **Query**：`course_id`（必）
 **Body**（皆選填）
@@ -147,9 +147,9 @@ Quiz_Group 是建立當下從 Bank_Group「快照」過來的：出題／批改 
 }
 ```
 
-### 2.2 把 Bank 題組加入試卷（快照）　`POST /v1/quiz/pages/{quiz_page_id}/groups`
+### 2.2 把 Bank 題組加入測驗（快照）　`POST /v1/quiz/pages/{quiz_page_id}/groups`
 
-**不呼叫 LLM**。把指定 Bank_Group 的設定快照成一筆 Quiz_Group 掛在此試卷下。
+**不呼叫 LLM**。把指定 Bank_Group 的設定快照成一筆 Quiz_Group 掛在此測驗下。
 
 **Query**：`course_id`（必）
 **Body**
@@ -333,7 +333,7 @@ LLM 失敗時 HTTP 仍 200，帶 `{ "llm_error": "...", "quiz_group_id": 34, "an
 
 ```
 （一次性）PUT /v1/quiz/llm-api-key                       設定金鑰
-1. POST   /v1/quiz/pages                                 建一份試卷 → 取得 quiz_page_id
+1. POST   /v1/quiz/pages                                 建一份測驗 → 取得 quiz_page_id
 2. GET    /v1/quiz/bank-groups                           列可選 Bank 題組
 3. POST   /v1/quiz/pages/{quiz_page_id}/groups           選 bank_group_id 加入 → 取得 quiz_group_id（含 qa_count）
 4. 迴圈 qa_count 次：
@@ -342,7 +342,7 @@ LLM 失敗時 HTTP 仍 200，帶 `{ "llm_error": "...", "quiz_group_id": 34, "an
    POST   /v1/quiz/qa/{quiz_qa_id}/llm-answer            → job_id
    GET    /v1/quiz/qa/answer-result/{job_id}             輪詢到 status=ready
 6. PUT    /v1/quiz/qa/{quiz_qa_id}/question-rate|answer-rate   評分（選用）
-7. GET    /v1/quiz/pages                                 重新載入整份試卷（巢狀 groups→qas）
+7. GET    /v1/quiz/pages                                 重新載入整份測驗（巢狀 groups→qas）
 ```
 
 每支請求記得帶 `Authorization: Bearer <token>` 與 `?course_id=<int>`。

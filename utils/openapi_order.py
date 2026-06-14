@@ -53,7 +53,7 @@ _API_PATH_ORDER: tuple[str, ...] = (
     "/v1/bank/question-system-prompt-text",
     "/v1/bank/question-user-prompt-text",
     "/v1/bank/answer-user-prompt-text",
-    # --- Quiz（試卷／Test）：試卷 ---
+    # --- Quiz（測驗／Test）：測驗 ---
     "/v1/quiz/pages",
     "/v1/quiz/pages/{quiz_page_id}",
     "/v1/quiz/bank-groups",
